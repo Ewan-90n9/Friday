@@ -23,6 +23,10 @@ Friday 是面向软件开发人员的**远程环境运行时故障诊断 Agent**
 - [知识层（Playbook）](docs/architecture/playbook.md)
 - [v1 范围与演进](docs/architecture/roadmap.md)
 
+## 设计语言
+
+- [Friday 设计语言](docs/design/design-language.md)
+
 ## 开发命令
 
 > 暂未确定，待代码落地后补全。Tauri 项目通常使用 `cargo tauri dev` / `cargo tauri build`，但在仓库中核实前不要将其作为既定命令断言。
