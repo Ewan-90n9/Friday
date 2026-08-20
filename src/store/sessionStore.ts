@@ -8,7 +8,7 @@ interface SessionStore {
   messagesBySession: Record<string, ChatMessage[]>;
   agentRunning: Record<string, boolean>;
   inputText: string;
-  eventUnlisten: (() => void) | null;
+  eventUnlisten: (() => void) | null | string;
 
   loadSessions: () => Promise<void>;
   selectSession: (id: string) => void;
@@ -117,10 +117,19 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     const { eventUnlisten } = get();
     if (eventUnlisten) return;
 
-    const unlisten = await onAppEvent((payload) => {
-      get().handleEvent(payload);
-    });
-    set({ eventUnlisten: unlisten });
+    // Mark as in-progress immediately to prevent duplicate registration
+    // (React StrictMode runs useEffect twice in dev)
+    set({ eventUnlisten: "pending" });
+
+    try {
+      const unlisten = await onAppEvent((payload) => {
+        get().handleEvent(payload);
+      });
+      set({ eventUnlisten: unlisten });
+    } catch (e) {
+      set({ eventUnlisten: null });
+      console.error("Failed to init event listener:", errMsg(e));
+    }
   },
 
   handleEvent: (payload) => {
@@ -128,9 +137,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     const state = get();
 
     if (event.type === "agent_started") {
-      set({
-        agentRunning: { ...state.agentRunning, [session_id]: true },
-      });
       const agentMsg: ChatMessage = {
         id: `agent-${agentMessageCounter++}`,
         role: "agent",
@@ -139,10 +145,21 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         status: "streaming",
       };
       const existing = state.messagesBySession[session_id] ?? [];
+      // Only add agent message if there isn't already a streaming agent
+      // message for this session (prevents duplicates from race conditions)
+      const hasStreamingAgent = existing.some(
+        (m) => m.role === "agent" && m.status === "streaming",
+      );
+      const messages = hasStreamingAgent
+        ? existing
+        : [...existing, agentMsg];
+
       set({
+        agentRunning: { ...state.agentRunning, [session_id]: true },
+        currentSessionId: state.currentSessionId ?? session_id,
         messagesBySession: {
           ...state.messagesBySession,
-          [session_id]: [...existing, agentMsg],
+          [session_id]: messages,
         },
       });
       return;
