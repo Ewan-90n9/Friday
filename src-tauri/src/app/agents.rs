@@ -1,6 +1,5 @@
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 
 use crate::agent;
@@ -18,11 +17,8 @@ pub struct AgentRow {
     pub detected_at: String,
 }
 
-fn now_unix_string() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_else(|_| "0".to_string())
+fn now_iso8601() -> String {
+    chrono::Utc::now().to_rfc3339()
 }
 
 pub async fn detect_and_persist(pool: &SqlitePool) -> Result<(), sqlx::Error> {
@@ -35,7 +31,7 @@ pub async fn detect_and_persist(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 }
 
 pub async fn upsert_auto_agent(pool: &SqlitePool, d: &DetectedAgent) -> Result<(), sqlx::Error> {
-    let now = now_unix_string();
+    let now = now_iso8601();
     let path_str = d.path.display().to_string();
 
     let count: i64 = sqlx::query_scalar(
@@ -192,7 +188,7 @@ pub async fn add_agent_cmd(
         .map(|d| d.display_name.to_string())
         .unwrap_or_else(|| provider.clone());
 
-    let now = now_unix_string();
+    let now = now_iso8601();
     let id = uuid::Uuid::new_v4().to_string();
 
     sqlx::query(

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { GearSix } from "@phosphor-icons/react";
 import { FridayMark } from "@/components/FridayMark";
 import { useAgentStore } from "@/store/agentStore";
@@ -31,11 +31,17 @@ function computeStatus(
 
 export function TopBar() {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const activeAgent = useAgentStore((s) => s.activeAgent);
   const loading = useAgentStore((s) => s.loading);
   const error = useAgentStore((s) => s.error);
 
   const { label, dotClass, pulse } = computeStatus(loading, activeAgent, error);
+
+  const handleClose = () => {
+    setSettingsOpen(false);
+    triggerRef.current?.focus();
+  };
 
   return (
     <header
@@ -58,6 +64,7 @@ export function TopBar() {
       {/* 右侧：状态 + 设置 */}
       <div className="flex items-center gap-1">
         <button
+          ref={triggerRef}
           onClick={() => setSettingsOpen(true)}
           className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-muted/50 hover:bg-muted transition-colors cursor-pointer"
           aria-label={`${label}，点击打开设置`}
@@ -83,7 +90,7 @@ export function TopBar() {
         </button>
       </div>
 
-      <AgentSettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <AgentSettingsDialog open={settingsOpen} onClose={handleClose} />
     </header>
   );
 }
