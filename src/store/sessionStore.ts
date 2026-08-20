@@ -70,8 +70,26 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
       set((state) => {
         const existing = state.messagesBySession[sessionId] ?? [];
-        const messages =
-          state.currentSessionId === null ? [userMsg] : [...existing, userMsg];
+        // Events (agent_started, llm_thinking) may arrive before the
+        // invoke promise resolves. Insert the user message at the right
+        // position: before any agent messages.
+        const hasUserMsg = existing.some((m) => m.role === "user");
+        if (hasUserMsg) {
+          // User message already inserted (edge case), just update session
+          return { currentSessionId: sessionId };
+        }
+        // Find first agent message index, insert user message before it
+        const firstAgentIdx = existing.findIndex((m) => m.role === "agent");
+        let messages: ChatMessage[];
+        if (firstAgentIdx === -1) {
+          messages = [...existing, userMsg];
+        } else {
+          messages = [
+            ...existing.slice(0, firstAgentIdx),
+            userMsg,
+            ...existing.slice(firstAgentIdx),
+          ];
+        }
         return {
           currentSessionId: sessionId,
           messagesBySession: { ...state.messagesBySession, [sessionId]: messages },
