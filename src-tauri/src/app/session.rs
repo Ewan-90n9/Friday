@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sqlx::{Row, SqlitePool};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionId(pub String);
@@ -19,14 +20,249 @@ pub enum SessionStatus {
     Closed,
 }
 
-pub async fn create_session(
-    _env: &str,
-    _service: &str,
-    _symptom: &str,
-) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
-    todo!()
+#[derive(Serialize)]
+pub struct SessionRow {
+    pub id: String,
+    pub title: Option<String>,
+    pub status: String,
+    pub created_at: String,
 }
 
-pub async fn close_session(_id: &SessionId) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    todo!()
+fn now_iso8601() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+fn truncate_title(message: &str) -> String {
+    let chars: Vec<char> = message.trim().chars().take(40).collect();
+    chars.into_iter().collect()
+}
+
+pub async fn create_session(
+    pool: &SqlitePool,
+    message: &str,
+) -> Result<Session, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = now_iso8601();
+    let title = truncate_title(message);
+
+    sqlx::query(
+        "INSERT INTO sessions (id, env, service, symptom, status, created_at) \
+         VALUES (?, '', '', '', 'active', ?)",
+    )
+    .bind(&id)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+
+    sqlx::query("UPDATE sessions SET title = ? WHERE id = ?")
+        .bind(&title)
+        .bind(&id)
+        .execute(pool)
+        .await?;
+
+    Ok(Session {
+        id: SessionId(id),
+        env: String::new(),
+        service: String::new(),
+        symptom: String::new(),
+        status: SessionStatus::Active,
+    })
+}
+
+pub async fn close_session(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+    let now = now_iso8601();
+    sqlx::query("UPDATE sessions SET status = 'closed', closed_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn list_sessions(pool: &SqlitePool) -> Result<Vec<SessionRow>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT id, title, status, created_at FROM sessions ORDER BY created_at DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(SessionRow {
+                id: row.try_get("id")?,
+                title: row.try_get("title")?,
+                status: row.try_get("status")?,
+                created_at: row.try_get("created_at")?,
+            })
+        })
+        .collect()
+}
+
+pub async fn get_session(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<Option<SessionRow>, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT id, title, status, created_at FROM sessions WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    row.map(|row| {
+        Ok(SessionRow {
+            id: row.try_get("id")?,
+            title: row.try_get("title")?,
+            status: row.try_get("status")?,
+            created_at: row.try_get("created_at")?,
+        })
+    })
+    .transpose()
+}
+
+pub async fn get_opencode_session_id(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT opencode_session_id FROM sessions WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.and_then(|(oc_id,)| oc_id))
+}
+
+pub async fn update_opencode_session_id(
+    pool: &SqlitePool,
+    id: &str,
+    oc_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE sessions SET opencode_session_id = ? WHERE id = ?")
+        .bind(oc_id)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infra::db;
+
+    async fn setup() -> SqlitePool {
+        let tmp = tempfile::tempdir().unwrap();
+        db::init(tmp.path().to_path_buf()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_create_session_inserts_row() {
+        let pool = setup().await;
+        let session = create_session(&pool, "OOMService 频繁 OOM").await.unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
+            .bind(&session.id.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_create_session_sets_title_to_first_40_chars() {
+        let pool = setup().await;
+        let short_msg = "OOMService OOM 了";
+        let session = create_session(&pool, short_msg).await.unwrap();
+
+        let title: String =
+            sqlx::query_scalar("SELECT title FROM sessions WHERE id = ?")
+                .bind(&session.id.0)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(title, short_msg);
+    }
+
+    #[tokio::test]
+    async fn test_create_session_truncates_long_title() {
+        let pool = setup().await;
+        let long_msg = "这是一条非常非常非常非常非常非常非常非常非常非常非常非常非常非常长的消息要超过四十个字符";
+        let session = create_session(&pool, long_msg).await.unwrap();
+
+        let title: String =
+            sqlx::query_scalar("SELECT title FROM sessions WHERE id = ?")
+                .bind(&session.id.0)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let title_chars: Vec<char> = title.chars().collect();
+        assert_eq!(title_chars.len(), 40);
+    }
+
+    #[tokio::test]
+    async fn test_close_session_updates_status() {
+        let pool = setup().await;
+        let session = create_session(&pool, "test").await.unwrap();
+
+        close_session(&pool, &session.id.0).await.unwrap();
+
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM sessions WHERE id = ?")
+                .bind(&session.id.0)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "closed");
+    }
+
+    #[tokio::test]
+    async fn test_list_sessions_returns_descending_by_created_at() {
+        let pool = setup().await;
+        let s1 = create_session(&pool, "first").await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        let s2 = create_session(&pool, "second").await.unwrap();
+
+        let rows = list_sessions(&pool).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, s2.id.0);
+        assert_eq!(rows[1].id, s1.id.0);
+    }
+
+    #[tokio::test]
+    async fn test_get_session_returns_none_for_nonexistent() {
+        let pool = setup().await;
+        let result = get_session(&pool, "nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_session_returns_row() {
+        let pool = setup().await;
+        let session = create_session(&pool, "test message").await.unwrap();
+
+        let row = get_session(&pool, &session.id.0).await.unwrap().unwrap();
+        assert_eq!(row.id, session.id.0);
+        assert_eq!(row.title, Some("test message".to_string()));
+        assert_eq!(row.status, "active");
+    }
+
+    #[tokio::test]
+    async fn test_get_opencode_session_id_returns_none_initially() {
+        let pool = setup().await;
+        let session = create_session(&pool, "test").await.unwrap();
+
+        let result = get_opencode_session_id(&pool, &session.id.0).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_update_opencode_session_id_persists() {
+        let pool = setup().await;
+        let session = create_session(&pool, "test").await.unwrap();
+
+        update_opencode_session_id(&pool, &session.id.0, "oc-123").await.unwrap();
+
+        let result = get_opencode_session_id(&pool, &session.id.0).await.unwrap();
+        assert_eq!(result, Some("oc-123".to_string()));
+    }
 }
