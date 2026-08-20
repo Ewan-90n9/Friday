@@ -37,16 +37,26 @@ pub fn parse_event(line: &str, session_id: &str) -> Vec<AppEvent> {
     }
 }
 
-/// Extract opencode session ID from a session.created event.
+/// Extract opencode session ID from a session.created event, or from the
+/// sessionID field present on any event (fallback).
 pub fn extract_session_id(line: &str) -> Option<String> {
     let json: Value = serde_json::from_str(line).ok()?;
-    if json.get("type").and_then(|t| t.as_str()) != Some("session.created") {
-        return None;
+
+    // Primary: session.created event has properties.info.id
+    if json.get("type").and_then(|t| t.as_str()) == Some("session.created") {
+        if let Some(id) = json
+            .get("properties")
+            .and_then(|p| p.get("info"))
+            .and_then(|i| i.get("id"))
+            .and_then(|id| id.as_str())
+        {
+            return Some(id.to_string());
+        }
     }
-    json.get("properties")
-        .and_then(|p| p.get("info"))
-        .and_then(|i| i.get("id"))
-        .and_then(|id| id.as_str())
+
+    // Fallback: many events carry a top-level sessionID field
+    json.get("sessionID")
+        .and_then(|s| s.as_str())
         .map(|s| s.to_string())
 }
 
@@ -189,16 +199,21 @@ pub async fn consume_stream(
     let AgentProcess { mut child, stdout, .. } = agent;
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
+    let mut oc_session_captured = false;
 
     loop {
         tokio::select! {
             line = lines.next_line() => {
                 match line {
                     Ok(Some(line)) => {
-                        if let Some(oc_id) = extract_session_id(&line) {
-                            let _ = crate::app::session::update_opencode_session_id(
-                                &pool, &session_id, &oc_id,
-                            ).await;
+                        // Extract opencode session ID from any event that has it
+                        if !oc_session_captured {
+                            if let Some(oc_id) = extract_session_id(&line) {
+                                let _ = crate::app::session::update_opencode_session_id(
+                                    &pool, &session_id, &oc_id,
+                                ).await;
+                                oc_session_captured = true;
+                            }
                         }
 
                         let events = parse_event(&line, &session_id);

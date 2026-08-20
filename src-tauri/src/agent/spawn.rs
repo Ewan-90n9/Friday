@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::Stdio;
+use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, ChildStdout, ChildStderr};
 
 pub struct AgentProcess {
@@ -21,6 +22,44 @@ pub enum SpawnError {
     Db(#[from] sqlx::Error),
 }
 
+/// On Windows, resolve past the .cmd/.ps1 shim to the native opencode.exe
+/// to avoid argv truncation through cmd.exe's %* forwarding.
+/// Based on multica's resolveOpenCodeNativeFromShim.
+fn resolve_native_exe(path: &PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        // The shim is typically at <prefix>/opencode.cmd or <prefix>/opencode (shell script)
+        // The native exe is at <prefix>/node_modules/opencode-ai/node_modules/opencode-windows-x64/bin/opencode.exe
+        if path.extension().and_then(|e| e.to_str()) == Some("exe") {
+            return path.clone();
+        }
+
+        let parent = match path.parent() {
+            Some(p) => p,
+            None => return path.clone(),
+        };
+
+        let candidates = [
+            parent.join("node_modules").join("opencode-ai").join("node_modules").join("opencode-windows-x64").join("bin").join("opencode.exe"),
+            parent.join("node_modules").join("opencode-ai").join("node_modules").join("opencode-windows-x64-baseline").join("bin").join("opencode.exe"),
+            parent.join("node_modules").join("opencode-ai").join("node_modules").join("opencode-windows-arm64").join("bin").join("opencode.exe"),
+        ];
+
+        for candidate in &candidates {
+            if candidate.exists() {
+                return candidate.clone();
+            }
+        }
+
+        path.clone()
+    }
+
+    #[cfg(not(windows))]
+    {
+        path.clone()
+    }
+}
+
 pub async fn spawn_active(
     pool: &sqlx::SqlitePool,
     message: String,
@@ -32,28 +71,36 @@ pub async fn spawn_active(
             .await?;
 
     let (path_str,) = row.ok_or(SpawnError::NoActiveAgent)?;
-    let path = PathBuf::from(&path_str);
+    let raw_path = PathBuf::from(&path_str);
 
-    if !path.exists() {
+    if !raw_path.exists() {
         return Err(SpawnError::BinaryMissing { path: path_str });
     }
 
-    let mut cmd = tokio::process::Command::new(&path);
+    // On Windows, resolve to native .exe to avoid cmd.exe shim issues
+    let exe_path = resolve_native_exe(&raw_path);
+
+    let mut cmd = tokio::process::Command::new(&exe_path);
     cmd.arg("run")
         .arg("--format")
         .arg("json")
-        .arg("--auto")
-        .arg("--thinking");
+        .arg("--dangerously-skip-permissions");
 
     if let Some(ref oc_id) = opencode_session_id {
-        cmd.arg("-s").arg(oc_id);
+        cmd.arg("--session").arg(oc_id);
     }
 
-    cmd.arg(&message);
+    // Prompt is delivered via stdin, not as a positional argument.
+    // This avoids Windows argv truncation (cmd.exe caps at 8191 chars)
+    // and matches multica's approach.
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .stdin(Stdio::null());
+    // Set PWD so opencode resolves its discovery root correctly
+    if let Some(cwd) = std::env::current_dir().ok() {
+        cmd.env("PWD", &cwd);
+    }
 
     let mut child = cmd.spawn()?;
     let pid = child
@@ -62,6 +109,16 @@ pub async fn spawn_active(
             std::io::ErrorKind::Other,
             "no pid",
         )))?;
+
+    // Write prompt to stdin and close it
+    if let Some(mut stdin) = child.stdin.take() {
+        // Spawn a task to write the prompt to stdin to avoid deadlock
+        // with the stdout reader
+        tokio::spawn(async move {
+            let _ = stdin.write_all(message.as_bytes()).await;
+            let _ = stdin.shutdown().await;
+        });
+    }
 
     let stdout = child.stdout.take().ok_or(SpawnError::SpawnFailed(
         std::io::Error::new(std::io::ErrorKind::Other, "stdout not piped"),
@@ -102,5 +159,38 @@ mod tests {
 
         let result = spawn_active(&pool, "test message".to_string(), None).await;
         assert!(matches!(result, Err(SpawnError::BinaryMissing { .. })));
+    }
+
+    #[test]
+    fn test_resolve_native_exe_returns_exe_unchanged() {
+        let path = PathBuf::from("/usr/bin/opencode");
+        let resolved = resolve_native_exe(&path);
+        assert_eq!(resolved, path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_resolve_native_exe_finds_native_on_windows() {
+        // The opencode shim is at:
+        // C:\Users\g00609569\AppData\Local\Microsoft\WinGet\Packages\OpenJS.NodeJS.23_Microsoft.Winget.Source_8wekyb3d8bbwe\node-v23.11.0-win-x64\opencode.cmd
+        // The native exe is at:
+        // <same prefix>\node_modules\opencode-ai\node_modules\opencode-windows-x64\bin\opencode.exe
+        let shim_dir = std::env::var("LOCALAPPDATA")
+            .map(|p| PathBuf::from(p)
+                .join("Microsoft")
+                .join("WinGet")
+                .join("Packages")
+                .join("OpenJS.NodeJS.23_Microsoft.Winget.Source_8wekyb3d8b")
+                .join("node-v23.11.0-win-x64"))
+            .unwrap();
+
+        if shim_dir.exists() {
+            let shim = shim_dir.join("opencode.cmd");
+            if shim.exists() {
+                let resolved = resolve_native_exe(&shim);
+                assert_eq!(resolved.extension().unwrap(), "exe");
+                assert!(resolved.exists());
+            }
+        }
     }
 }
