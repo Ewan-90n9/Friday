@@ -178,9 +178,18 @@ async fn read_stderr_lines<R: tokio::io::AsyncRead + Unpin>(reader: R, session_i
     use tokio::io::{AsyncBufReadExt, BufReader};
     let mut lines = BufReader::new(reader).lines();
     let mut count = 0u64;
-    while let Ok(Some(line)) = lines.next_line().await {
-        tracing::warn!(session_id = %session_id, raw = %line, "stderr line");
-        count += 1;
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                tracing::warn!(session_id = %session_id, raw = %line, "stderr line");
+                count += 1;
+            }
+            Ok(None) => break,
+            Err(e) => {
+                tracing::error!(?e, count, session_id = %session_id, "error reading stderr");
+                break;
+            }
+        }
     }
     count
 }

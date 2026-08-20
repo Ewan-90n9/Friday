@@ -49,7 +49,7 @@ pub async fn stop_agent_for_session(
 }
 
 #[tauri::command]
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip(state, session_id), fields(session_id))]
 pub async fn send_message_cmd(
     state: State<'_, crate::AppState>,
     session_id: Option<String>,
@@ -90,6 +90,8 @@ pub async fn send_message_cmd(
             (id, oc_id)
         }
     };
+
+    tracing::Span::current().record("session_id", &tracing::field::display(&friday_session_id));
 
     // Check if agent is already running for this session
     {

@@ -62,9 +62,10 @@ pub fn init(app_data_dir: PathBuf) -> LoggingGuard {
 }
 
 pub fn set_level(handle: &reload::Handle<EnvFilter, Registry>, level: &str) -> Result<(), String> {
+    let old_level = handle.with_current(|f| format!("{:?}", f)).unwrap_or_default();
     let new_filter = EnvFilter::new(level);
     handle.reload(new_filter).map_err(|e| e.to_string())?;
-    tracing::info!(new_level = level, "log level changed");
+    tracing::info!(old_level = %old_level, new_level = level, "log level changed");
     Ok(())
 }
 
