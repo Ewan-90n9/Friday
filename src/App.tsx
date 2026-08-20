@@ -1,7 +1,8 @@
 export default function App() {
   return (
-    <div style={{ background: "#0F172A", color: "#F8FAFC", height: "100vh" }}>
-      <h1>Friday</h1>
+    <div className="h-screen bg-background text-foreground">
+      <h1 className="text-2xl font-bold">Friday</h1>
+      <p className="text-muted-foreground text-sm">诊断 Agent</p>
     </div>
   );
 }
