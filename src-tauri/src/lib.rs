@@ -1,7 +1,13 @@
+mod app;
 mod exec;
 mod infra;
 mod knowledge;
 mod tools;
+
+pub struct AppState {
+    pub db: sqlx::SqlitePool,
+    pub bus: app::events::EventBus,
+}
 
 pub fn run() {
     tauri::Builder::default()
