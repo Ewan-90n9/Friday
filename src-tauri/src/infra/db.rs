@@ -12,10 +12,37 @@ pub async fn init(app_data_dir: PathBuf) -> Result<SqlitePool, sqlx::Error> {
     sqlx::query(schema1).execute(&pool).await?;
     let schema2 = include_str!("../../migrations/0002_agents.sql");
     sqlx::query(schema2).execute(&pool).await?;
-    let schema3 = include_str!("../../migrations/0003_conversation.sql");
-    sqlx::query(schema3).execute(&pool).await?;
+    // Migration 0003: add conversation columns (idempotent — safe to re-run)
+    add_column_if_not_exists(&pool, "sessions", "opencode_session_id", "TEXT").await?;
+    add_column_if_not_exists(&pool, "sessions", "title", "TEXT").await?;
     tracing::info!(?db_path, "SQLite initialized");
     Ok(pool)
+}
+
+/// Add a column to a table only if it doesn't already exist.
+/// SQLite's ALTER TABLE ADD COLUMN lacks IF NOT EXISTS support.
+async fn add_column_if_not_exists(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    col_type: &str,
+) -> Result<(), sqlx::Error> {
+    let exists: i64 = sqlx::query_scalar(
+        &format!(
+            "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = '{}'",
+            table, column
+        ),
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if exists == 0 {
+        let sql = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, col_type);
+        sqlx::query(&sql).execute(pool).await?;
+        tracing::info!(table, column, "added column");
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
