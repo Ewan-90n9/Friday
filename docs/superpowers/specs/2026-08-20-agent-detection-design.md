@@ -193,35 +193,138 @@ app.manage(AppState { db, bus })
 
 ## 6. 前端
 
+### 6.1 IPC / 类型 / Store
+
 **`src/lib/ipc.ts`** 新增 5 个绑定（与现有 `startDiagnosis` 同风格，`invoke` + snake_case 参数）：
-- `detectAgents()` / `listAgents()` / `addAgent(provider, path)` / `setActiveAgent(id)` / `removeAgent(id)`
-
-**`src/lib/types.ts`** 新增 `AgentRow` 接口（字段与 Rust `AgentRow` 对齐）。
-
-**`src/store/agentStore.ts`（新）** — zustand store，与 `sessionStore` 同模式：
 ```ts
-interface AgentStore {
-  agents: AgentRow[];
-  activeAgent: AgentRow | null;
-  loading: boolean;
-  refresh: () => Promise<void>;     // detectAgents() 后再 listAgents()
-  load: () => Promise<void>;        // 仅 listAgents()
-  addManual: (provider, path) => Promise<void>;
-  setActive: (id) => Promise<void>;
-  remove: (id) => Promise<void>;
+export async function detectAgents(): Promise<void> { return invoke<void>("detect_agents_cmd"); }
+export async function listAgents(): Promise<AgentRow[]> { return invoke<AgentRow[]>("list_agents_cmd"); }
+export async function addAgent(provider: string, path: string): Promise<AgentRow> { return invoke<AgentRow>("add_agent_cmd", { provider, path }); }
+export async function setActiveAgent(id: string): Promise<void> { return invoke<void>("set_active_agent_cmd", { id }); }
+export async function removeAgent(id: string): Promise<void> { return invoke<void>("remove_agent_cmd", { id }); }
+```
+
+**`src/lib/types.ts`** 新增 `AgentRow`（字段与 Rust `AgentRow` snake_case 对齐）：
+```ts
+export interface AgentRow {
+  id: string; provider: string; display_name: string; path: string;
+  version: string | null; source: "auto" | "manual"; is_active: boolean; detected_at: string;
 }
 ```
 
-**UI（最小化，落在现有 TopBar）：**
-1. **TopBar 状态药丸**（现有"待机"灰点位置）——读 `agentStore.activeAgent`：
-   - 有 active：`opencode v0.x`（绿点）
-   - 无 active：`未检测到 Agent`（红点）
-2. **设置弹窗**（点现有齿轮按钮，当前空 `<button>`）——新建 `src/components/agents/AgentSettingsDialog.tsx`：
-   - agent 列表：`display_name` / `path`（截断）/ `version ?? "未知"` / `auto|manual` 标签 / `设为当前`（非 active 才显示）/ `移除`
-   - 底部：「重新检测」→ `refresh()`；「手动添加」表单（provider 下拉 + path 输入）→ `addManual()`
-   - 不加新依赖——原生 `<dialog>` 或现有 Tailwind + phosphor-icons 自绘。
+**`src/store/agentStore.ts`（新）** — zustand store，与 `sessionStore` 同模式。`refresh` = `detectAgents()` 后再 `load()`；`setActive`/`remove` 在 IPC 成功后 `load()` 刷新本地状态：
+```ts
+interface AgentStore {
+  agents: AgentRow[];
+  activeAgent: AgentRow | null;     // agents.find(a => a.is_active) ?? null
+  loading: boolean;                 // detect/list 进行中
+  error: string | null;             // 最近一次操作错误（展示后清空）
+  refresh: () => Promise<void>;
+  load: () => Promise<void>;
+  addManual: (provider: string, path: string) => Promise<void>;
+  setActive: (id: string) => Promise<void>;
+  remove: (id: string) => Promise<void>;
+}
+```
 
-**加载时机**：`DiagnosisPage` 挂载时调 `agentStore.refresh()` 一次。
+### 6.2 新增/修改前端文件
+
+| 文件 | 动作 | 内容 |
+|------|------|------|
+| `src/lib/ipc.ts` | 改 | +5 个 agent IPC 绑定 |
+| `src/lib/types.ts` | 改 | +`AgentRow` 接口 |
+| `src/store/agentStore.ts` | 新 | zustand store |
+| `src/components/agents/AgentSettingsDialog.tsx` | 新 | `<dialog>` 弹窗主组件 |
+| `src/components/agents/AgentListItem.tsx` | 新 | 列表行（含设为当前/移除确认） |
+| `src/components/layout/TopBar.tsx` | 改 | 状态药丸接 `agentStore` + 打开弹窗 |
+| `src/pages/DiagnosisPage.tsx` | 改 | 挂载时 `agentStore.refresh()` |
+
+### 6.3 TopBar 状态药丸
+
+复用设计语言 §5.6 状态指示器模式 + §2 语义色 token。替换现有 `TopBar.tsx` 里"待机"灰点药丸，改为读 `agentStore.activeAgent`：
+
+| 状态 | 视觉 | 文本 | 点色 token | 文本色 |
+|------|------|------|-----------|--------|
+| 有 active + 有版本 | 静态点 + 文本 | `opencode v0.2.15` | `--success` | `--foreground` |
+| 有 active + 无版本 | 静态点 + 文本 | `opencode 版本未知` | `--success` | `--foreground` |
+| 检测中 | 脉冲点 + 文本 | `检测中…` | `--accent` | `--muted-foreground` |
+| 无 active | 静态点 + 文本 | `未检测到 Agent` | `--destructive` | `--muted-foreground` |
+| 检测失败 | 静态点 + 文本 | `检测失败` | `--warning` | `--muted-foreground` |
+
+- 点尺寸 6px（`w-1.5 h-1.5 rounded-full`），脉冲动画用 §8 `--duration-slow` + `opacity 0.5↔1.0`，尊重 `prefers-reduced-motion`。
+- 药丸容器：`bg-muted/50` + `px-2.5 py-1 rounded-md`，点击打开设置弹窗（药丸整体可点，`<button>` 语义）。
+- 文本用 `--text-xs` / `JetBrains Mono`（与品牌一致），`version` 部分用 `--muted-foreground` 降低层级。
+- 齿轮按钮保留，行为与药丸一致（都打开弹窗），避免两个入口混淆——齿轮 `aria-label="Agent 设置"`。
+
+### 6.4 AgentSettingsDialog
+
+**弹窗基座——原生 `<dialog>`**（不引 Radix，`package.json` 无依赖增加）：
+- `<dialog ref={ref}>` + `ref.showModal()` 打开 / `ref.close()` 关闭。`showModal()` 原生提供：焦点陷阱、ESC 关闭、顶层层叠（自动置于所有内容之上）。
+- **scrim**：`dialog::backdrop { background: rgba(0,0,0,0.6); backdrop-filter: blur(2px); }`——纯黑基底上用 60% 黑 + 轻模糊隔离前景，保证前景文本 ≥4.5:1。
+- **层叠层级**：`z-50`（html-tailwind 验证：用 `z-*` 量级，不用 `z-[9999]`）。原生 `<dialog>` 本身在顶层，但显式 `z-50` 保持与未来 fixed 元素的量级一致。
+- **尺寸**：`w-[480px] max-w-[90vw]`，`rounded-xl`（`--radius-xl` 16px），`bg-card` + `border border-border`。
+- **进入动画**：`scale(0.96→1) + opacity(0→1)`，200ms `--ease-out`（§8.3）；`prefers-reduced-motion` 时直接显示。
+
+**布局：**
+```
+┌─────────────────────────────────────────────┐
+│ Agent 设置                            [✕]    │  ← 标题 + 关闭
+├─────────────────────────────────────────────┤
+│ [重新检测]                                   │  ← 工具栏
+├─────────────────────────────────────────────┤
+│ ● OpenCode                    v0.2.15 [auto] │  ← active 行（左 2px 绿边条）
+│   /usr/local/bin/opencode                    │
+│   [设为当前]  [移除]                          │
+│ ─────────────────────────────────────────── │
+│ ○ OpenCode                    v0.1.0 [manual]│  ← 非 active 行
+│   /home/u/.local/bin/opencode                │
+│   [设为当前]  [移除]                          │
+├─────────────────────────────────────────────┤
+│ 手动添加                                     │  ← 折叠区
+│   Provider [opencode ▾]   路径 [__________]  │
+│   [添加]                                     │
+└─────────────────────────────────────────────┘
+```
+
+**agent 列表行（`AgentRow` → `AgentListItem`）：**
+- active 行：左侧 2px `--success` 边条（对齐 §5.1 选中态约定）+ 点用 `--success`；非 active 行：点用 `--muted-foreground`。
+- `display_name`：`--text-sm` / `--foreground` / `IBM Plex Sans`；`version`：`--text-xs` / `JetBrains Mono` / `--muted-foreground`，`null` 显示"版本未知"。
+- `path`：`--text-xs` / `JetBrains Mono` / `--muted-foreground`，`truncate` + `title={path}`（hover 看全路径）。
+- source 标签：`auto` / `manual` badge，`--text-xs` / `--radius-sm` / `bg-muted/50` + `text-muted-foreground`。
+- 行内动作（右侧，`--text-xs` 文字按钮，非 active 才显示"设为当前"）：
+  - **设为当前** → `setActive(id)`；成功后行变为 active 态（即时视觉反馈，§UX 验证：success feedback）。
+  - **移除** → **二次确认**（§UX 验证：destructive action 必须 confirm）：行内展开 `确认移除？[确认][取消]`，或小型 `confirm` 子弹窗；确认后 `remove(id)`。
+- 行 hover：`bg-surface-3`（§2 token），`--duration-fast` 过渡。
+
+**手动添加（折叠区，默认收起）：**
+- provider 下拉：v1 只一项 `opencode`（从后端 `REGISTRY` 渲染；前端可硬编码为 `["opencode"]`，v1 无需新增 IPC 拉 registry）。
+- 路径输入：`<input type="text">`，`bg-muted` + `border-border` + `--text-sm` / `JetBrains Mono`，占位"可执行文件绝对路径"。
+- 「添加」按钮：`addManual(provider, path)`；成功后新行出现在列表顶部（manual 排序在 auto 之后？——见下排序），失败在输入框下显示 `--text-xs` / `--destructive` 错误。
+
+**列表排序**：active 行置顶 → 其余按 `source`（auto 优先）→ `detected_at` 降序。与后端 `list_agents_cmd` 排序一致。
+
+**空状态**：列表为空时显示居中提示"未检测到 Agent，点击上方[重新检测]或手动添加路径"，`--muted-foreground` / `--text-sm`，配 `Robot`（Phosphor）图标 32px。
+
+**检测中态**：`refresh()` 期间「重新检测」按钮禁用 + `CircleNotch` spinner 旋转（`--duration-normal`），列表保持旧数据（不闪空），完成后替换。
+
+**焦点管理（§UX 验证）：**
+- 打开时焦点落到弹窗内首个可交互控件（「重新检测」按钮）。
+- 所有控件可见焦点环：`focus-visible:outline 2px solid var(--color-ring)` + `outline-offset: 2px`（≥2px 周长 + 3:1 对比，§UX Result 1/2）。
+- ESC 关闭（`<dialog>` 原生）；关闭后焦点回到触发器（药丸/齿轮）——`ref.close()` 后手动 `triggerRef.current?.focus()`。
+- 焦点不被 sticky 元素遮挡（§UX Result 3）——弹窗内无 sticky 头/底，内容区可滚动。
+
+### 6.5 加载时机
+
+- `DiagnosisPage` 挂载时调 `agentStore.refresh()` 一次（启动已在后端播种，此处刷新拉取给 UI）。
+- 弹窗打开时不重复 `refresh()`（避免每次打开都跑 `--version` 探测，5s 超时累积）——展示 `load()` 缓存数据，用户点「重新检测」才主动刷新。
+
+### 6.6 无障碍
+
+- 药丸 `<button aria-label>` 含当前状态（"Agent: opencode v0.2.15，点击打开设置"）。
+- 弹窗 `<dialog aria-label="Agent 设置">`。
+- 「设为当前」按钮 `aria-pressed` 反映 active 状态。
+- 状态点为装饰性，`aria-hidden="true"`（信息已由文本承载，不依赖颜色 alone——§7.1 无障碍约定）。
+- 移除确认不依赖颜色，用明确文字"确认移除？"。
 
 ## 7. spawn 集成与错误处理
 
