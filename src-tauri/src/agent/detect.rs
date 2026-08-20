@@ -30,7 +30,7 @@ pub async fn detect() -> Vec<DetectedAgent> {
     found
 }
 
-async fn detect_version(path: &Path) -> Option<String> {
+pub async fn detect_version(path: &Path) -> Option<String> {
     let result = timeout(
         Duration::from_secs(5),
         Command::new(path)

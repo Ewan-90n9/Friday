@@ -38,6 +38,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             app::lifecycle::close_session_cmd,
             app::lifecycle::confirm_tool_cmd,
             app::lifecycle::cancel_diagnosis_cmd,
+            app::agents::detect_agents_cmd,
+            app::agents::list_agents_cmd,
+            app::agents::add_agent_cmd,
+            app::agents::set_active_agent_cmd,
+            app::agents::remove_agent_cmd,
         ])
         .run(tauri::generate_context!())?;
     Ok(())
