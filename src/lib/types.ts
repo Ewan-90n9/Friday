@@ -37,3 +37,36 @@ export interface AgentRow {
   is_active: boolean;
   detected_at: string;
 }
+
+export interface SessionRow {
+  id: string;
+  title: string | null;
+  status: "active" | "closed";
+  created_at: string;
+}
+
+export type ChatPartType = "text" | "reasoning" | "tool";
+
+export interface ToolCallInfo {
+  name: string;
+  args: unknown;
+  status: "running" | "completed" | "error";
+  output?: string;
+  elapsedMs?: number;
+}
+
+export interface ChatPart {
+  type: ChatPartType;
+  text?: string;
+  tool?: ToolCallInfo;
+}
+
+export type ChatMessageStatus = "streaming" | "done" | "stopped" | "error";
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "agent";
+  content: string;
+  parts: ChatPart[];
+  status: ChatMessageStatus;
+}

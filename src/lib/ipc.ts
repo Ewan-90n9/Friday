@@ -1,9 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { EventPayload, AgentRow } from "@/lib/types";
+import type { EventPayload, AgentRow, SessionRow } from "@/lib/types";
 
-export async function startDiagnosis(env: string, service: string, symptom: string): Promise<string> {
-  return invoke<string>("start_diagnosis_cmd", { env, service, symptom });
+export async function sendMessage(sessionId: string | null, message: string): Promise<string> {
+  return invoke<string>("send_message_cmd", { sessionId, message });
+}
+
+export async function listSessions(): Promise<SessionRow[]> {
+  return invoke<SessionRow[]>("list_sessions_cmd");
 }
 
 export async function stopAgent(sessionId: string): Promise<void> {
@@ -16,10 +20,6 @@ export async function closeSession(sessionId: string): Promise<void> {
 
 export async function confirmTool(sessionId: string, tool: string): Promise<void> {
   return invoke<void>("confirm_tool_cmd", { sessionId, tool });
-}
-
-export async function cancelDiagnosis(sessionId: string): Promise<void> {
-  return invoke<void>("cancel_diagnosis_cmd", { sessionId });
 }
 
 export async function onAppEvent(handler: (payload: EventPayload) => void): Promise<() => void> {
