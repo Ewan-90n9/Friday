@@ -49,17 +49,12 @@ pub async fn stop_agent_for_session(
 }
 
 #[tauri::command]
+#[tracing::instrument(skip(state))]
 pub async fn send_message_cmd(
     state: State<'_, crate::AppState>,
     session_id: Option<String>,
     message: String,
 ) -> Result<String, String> {
-    tracing::info!(
-        ?session_id,
-        message_len = message.len(),
-        "send_message_cmd called"
-    );
-
     let pool = state.db.clone();
     let bus = state.bus.clone();
     let agents = state.agents.clone();
@@ -111,7 +106,7 @@ pub async fn send_message_cmd(
         prompt_len = prompt_text.len(),
         "spawning opencode"
     );
-    let agent_process = spawn_active(&pool, prompt_text, oc_session_id)
+    let agent_process = spawn_active(&pool, friday_session_id.clone(), prompt_text, oc_session_id)
         .await
         .map_err(|e| {
             tracing::error!(?e, "failed to spawn opencode");
@@ -164,6 +159,7 @@ pub async fn send_message_cmd(
 }
 
 #[tauri::command]
+#[tracing::instrument(skip(state))]
 pub async fn stop_agent_cmd(
     state: State<'_, crate::AppState>,
     session_id: String,
@@ -172,6 +168,7 @@ pub async fn stop_agent_cmd(
 }
 
 #[tauri::command]
+#[tracing::instrument(skip(state))]
 pub async fn close_session_cmd(
     state: State<'_, crate::AppState>,
     session_id: String,
@@ -199,6 +196,7 @@ pub async fn close_session_cmd(
 pub async fn list_sessions_cmd(
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<session::SessionRow>, String> {
+    tracing::info!("list_sessions_cmd called");
     session::list_sessions(&state.db)
         .await
         .map_err(|e| e.to_string())
@@ -207,9 +205,10 @@ pub async fn list_sessions_cmd(
 #[tauri::command]
 pub async fn confirm_tool_cmd(
     _state: State<'_, crate::AppState>,
-    _session_id: String,
-    _tool: String,
+    session_id: String,
+    tool: String,
 ) -> Result<(), String> {
+    tracing::info!(session_id = %session_id, tool = %tool, "confirm_tool_cmd called");
     Ok(())
 }
 

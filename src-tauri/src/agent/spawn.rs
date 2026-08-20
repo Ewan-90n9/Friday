@@ -60,8 +60,10 @@ fn resolve_native_exe(path: &PathBuf) -> PathBuf {
     }
 }
 
+#[tracing::instrument(skip(pool))]
 pub async fn spawn_active(
     pool: &sqlx::SqlitePool,
+    session_id: String,
     message: String,
     opencode_session_id: Option<String>,
 ) -> Result<AgentProcess, SpawnError> {
@@ -152,10 +154,18 @@ mod tests {
     use crate::infra::db;
 
     #[tokio::test]
+    async fn test_spawn_active_accepts_session_id_param() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = db::init(tmp.path().to_path_buf()).await.unwrap();
+        let result = spawn_active(&pool, "test-sid".to_string(), String::new(), None).await;
+        assert!(matches!(result, Err(SpawnError::NoActiveAgent)));
+    }
+
+    #[tokio::test]
     async fn test_spawn_active_returns_no_active_agent_when_db_empty() {
         let tmp = tempfile::tempdir().unwrap();
         let pool = db::init(tmp.path().to_path_buf()).await.unwrap();
-        let result = spawn_active(&pool, String::new(), None).await;
+        let result = spawn_active(&pool, "test-session".to_string(), String::new(), None).await;
         assert!(matches!(result, Err(SpawnError::NoActiveAgent)));
     }
 
@@ -172,7 +182,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = spawn_active(&pool, "test message".to_string(), None).await;
+        let result = spawn_active(&pool, "test-session".to_string(), "test message".to_string(), None).await;
         assert!(matches!(result, Err(SpawnError::BinaryMissing { .. })));
     }
 
