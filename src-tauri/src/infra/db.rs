@@ -12,6 +12,8 @@ pub async fn init(app_data_dir: PathBuf) -> Result<SqlitePool, sqlx::Error> {
     sqlx::query(schema1).execute(&pool).await?;
     let schema2 = include_str!("../../migrations/0002_agents.sql");
     sqlx::query(schema2).execute(&pool).await?;
+    let schema3 = include_str!("../../migrations/0003_conversation.sql");
+    sqlx::query(schema3).execute(&pool).await?;
     tracing::info!(?db_path, "SQLite initialized");
     Ok(pool)
 }
@@ -63,5 +65,20 @@ mod tests {
         .unwrap();
 
         assert_eq!(index_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_db_init_adds_conversation_columns() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init(tmp.path().to_path_buf()).await.unwrap();
+
+        let col_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('opencode_session_id', 'title')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(col_count, 2);
     }
 }
