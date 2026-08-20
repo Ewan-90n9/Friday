@@ -172,11 +172,25 @@ fn compute_elapsed_ms(state: &Value) -> u64 {
     }
 }
 
+/// Read all lines from a reader, logging each as warn!.
+/// Returns the number of lines read.
+async fn read_stderr_lines<R: tokio::io::AsyncRead + Unpin>(reader: R, session_id: &str) -> u64 {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let mut lines = BufReader::new(reader).lines();
+    let mut count = 0u64;
+    while let Ok(Some(line)) = lines.next_line().await {
+        tracing::warn!(session_id = %session_id, raw = %line, "stderr line");
+        count += 1;
+    }
+    count
+}
+
 /// Consume the stdout stream of an opencode process, parse NDJSON lines,
 /// and emit AppEvents via the EventBus. Handles process lifecycle:
 /// - stdout EOF + exit 0 → DiagnosisDone
 /// - stdout EOF + exit ≠0 → AgentCrashed
 /// - cancellation → AgentStopped
+#[tracing::instrument(skip(agent, bus, pool, agents, cancel))]
 pub async fn consume_stream(
     agent: AgentProcess,
     bus: EventBus,
@@ -187,11 +201,16 @@ pub async fn consume_stream(
 ) {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
-    let AgentProcess { mut child, stdout, .. } = agent;
+    let AgentProcess { mut child, stdout, stderr, .. } = agent;
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
     let mut oc_session_captured = false;
     let mut line_count = 0u64;
+
+    let stderr_sid = session_id.clone();
+    let stderr_handle = tokio::spawn(async move {
+        read_stderr_lines(stderr, &stderr_sid).await
+    });
 
     tracing::info!(session_id = %session_id, "consume_stream started");
 
@@ -201,7 +220,7 @@ pub async fn consume_stream(
                 match line {
                     Ok(Some(line)) => {
                         line_count += 1;
-                        tracing::debug!(line_count, raw = %&line[..line.len().min(200)], "stdout line");
+                        tracing::debug!(line_count, raw = %line, "stdout line");
 
                         // Extract opencode session ID from any event that has it
                         if !oc_session_captured {
@@ -245,6 +264,8 @@ pub async fn consume_stream(
 
     let status = child.wait().await;
     let exit_ok = status.as_ref().map(|s| s.success()).unwrap_or(false);
+
+    let _ = stderr_handle.await;
 
     tracing::info!(
         session_id = %session_id,
@@ -410,5 +431,31 @@ mod tests {
     fn test_extract_session_id_returns_none_for_invalid_json() {
         let result = extract_session_id("not json");
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_read_stderr_lines_captures_all_lines() {
+        use tokio::io::{duplex, AsyncWriteExt};
+
+        let (mut writer, reader) = duplex(1024);
+
+        writer
+            .write_all(b"error line 1\nerror line 2\nerror line 3\n")
+            .await
+            .unwrap();
+        writer.shutdown().await.unwrap();
+
+        let count = read_stderr_lines(reader, "test-session").await;
+
+        assert_eq!(count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_read_stderr_lines_empty() {
+        use tokio::io::duplex;
+
+        let (_, reader) = duplex(1024);
+        let count = read_stderr_lines(reader, "test-session").await;
+        assert_eq!(count, 0);
     }
 }
