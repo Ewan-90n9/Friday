@@ -23,7 +23,7 @@ export function AgentMessage({ message }: AgentMessageProps) {
           className="text-xs text-muted-foreground"
           style={{ fontFamily: "var(--font-mono)" }}
         >
-          ● Friday Agent
+          ● Friday
         </span>
       </div>
 
