@@ -102,9 +102,12 @@ pub async fn spawn_active(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // Set PWD so opencode resolves its discovery root correctly
-    if let Some(cwd) = std::env::current_dir().ok() {
-        cmd.env("PWD", &cwd);
+    // Set PWD to the user's home directory so opencode doesn't pick up
+    // the Friday project's AGENTS.md or .opencode/ config. Friday manages
+    // the conversation context, not the host project's.
+    if let Some(home) = dirs::home_dir() {
+        cmd.env("PWD", &home);
+        cmd.current_dir(&home);
     }
 
     let mut child = cmd.spawn()?;

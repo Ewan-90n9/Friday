@@ -70,26 +70,29 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
       set((state) => {
         const existing = state.messagesBySession[sessionId] ?? [];
-        // Events (agent_started, llm_thinking) may arrive before the
-        // invoke promise resolves. Insert the user message at the right
-        // position: before any agent messages.
-        const hasUserMsg = existing.some((m) => m.role === "user");
-        if (hasUserMsg) {
-          // User message already inserted (edge case), just update session
+        // Check if this specific user message is already in the list
+        // (race condition: events may arrive before invoke resolves)
+        const hasThisUserMsg = existing.some(
+          (m) => m.role === "user" && m.content === trimmed,
+        );
+        if (hasThisUserMsg) {
           return { currentSessionId: sessionId };
         }
-        // Find first agent message index, insert user message before it
-        const firstAgentIdx = existing.findIndex((m) => m.role === "agent");
-        let messages: ChatMessage[];
-        if (firstAgentIdx === -1) {
-          messages = [...existing, userMsg];
-        } else {
-          messages = [
-            ...existing.slice(0, firstAgentIdx),
-            userMsg,
-            ...existing.slice(firstAgentIdx),
-          ];
+        // Insert user message before any streaming agent message
+        let insertIdx = existing.length;
+        for (let i = existing.length - 1; i >= 0; i--) {
+          if (existing[i].role === "agent" && existing[i].status === "streaming") {
+            insertIdx = i;
+          } else if (existing[i].role === "agent") {
+            insertIdx = i + 1;
+            break;
+          }
         }
+        const messages = [
+          ...existing.slice(0, insertIdx),
+          userMsg,
+          ...existing.slice(insertIdx),
+        ];
         return {
           currentSessionId: sessionId,
           messagesBySession: { ...state.messagesBySession, [sessionId]: messages },
