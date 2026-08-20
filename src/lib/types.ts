@@ -1,0 +1,28 @@
+export type SessionStatus = "active" | "closed";
+
+export interface Session {
+  id: string;
+  env: string;
+  service: string;
+  symptom: string;
+  status: SessionStatus;
+}
+
+export type RiskLevel = "read_only" | "low" | "high";
+
+// 字段用 snake_case 与 Rust serde 序列化对齐（Tauri event payload 走 serde，不做 camelCase 转换）
+export type AppEvent =
+  | { type: "agent_started"; session_id: string; agent_pid: number }
+  | { type: "tool_executing"; session_id: string; tool: string; args: unknown }
+  | { type: "tool_result"; session_id: string; tool: string; output: unknown; elapsed_ms: number }
+  | { type: "llm_thinking"; session_id: string; token: string }
+  | { type: "confirm_required"; session_id: string; tool: string; args: unknown; risk_level: RiskLevel }
+  | { type: "agent_stopped"; session_id: string }
+  | { type: "agent_crashed"; session_id: string; reason: string }
+  | { type: "diagnosis_done"; session_id: string; conclusion: string }
+  | { type: "session_closed"; session_id: string };
+
+export interface EventPayload {
+  session_id: string;
+  event: AppEvent;
+}
