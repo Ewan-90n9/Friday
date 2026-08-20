@@ -7,42 +7,52 @@
 | **信息密度优先** | 开发者需要高效获取信息，不做无意义留白 | 诊断步骤紧凑排列，工具输出折叠/展开可控，日志默认紧凑视图 |
 | **状态即视觉** | 系统状态通过颜色和图标一目了然 | 绿=运行中/正常，黄=需确认，红=错误/高风险，灰=已完成/已停止 |
 | **流式透明** | Agent 的每一步思考、执行、结果都实时可见 | LLM 输出 token-by-token 流式渲染，工具执行有生命周期事件动画 |
-| **暗色为本** | 开发者长时间使用，暗色模式是默认而非可选 | 默认 Dark Mode（OLED），Light Mode 作为后续可选项 |
+| **暗色为本** | 开发者长时间使用，暗色模式是默认而非可选 | 纯黑基底（OLED 友好），Light Mode 作为后续可选项 |
 | **可回溯** | 诊断是探索过程，用户需要随时回看历史 | 时间线布局，每步带时间戳，工具结果可展开回看 |
 
 ## 2. 色彩系统
 
 ### 语义色 Token
 
-基于 Slate 深色基底，通过 CSS 变量 + shadcn/ui `@theme inline` 映射到 Tailwind v4。
+基于纯黑基底，通过三层级表面（surface-1/2/3）营造深邃感，CSS 变量 + `@theme inline` 映射到 Tailwind v4。
 
 | Token | Hex | 用途 |
 |-------|-----|------|
-| `--background` | `#0F172A` | 全局背景（Slate-950） |
-| `--foreground` | `#F8FAFC` | 主文本（Slate-50） |
-| `--card` | `#1B2336` | 卡片/面板背景 |
-| `--card-foreground` | `#F8FAFC` | 卡片内文本 |
-| `--primary` | `#1E293B` | 主操作面（Slate-800） |
+| `--background` | `#000000` | 全局背景（纯黑） |
+| `--foreground` | `#E8E8E8` | 主文本 |
+| `--surface-1` | `#0A0A0A` | 一级表面（顶栏、侧栏） |
+| `--surface-2` | `#121212` | 二级表面（卡片、按钮） |
+| `--surface-3` | `#1A1A1A` | 三级表面（hover 态） |
+| `--card` | `#0D0D0D` | 卡片/面板背景 |
+| `--card-foreground` | `#E8E8E8` | 卡片内文本 |
+| `--primary` | `#121212` | 主操作面 |
 | `--primary-foreground` | `#FFFFFF` | 主操作面文本 |
-| `--secondary` | `#334155` | 次要操作面（Slate-700） |
-| `--secondary-foreground` | `#FFFFFF` | 次要操作面文本 |
-| `--muted` | `#272F42` | 静默背景（输入框、禁用区） |
-| `--muted-foreground` | `#94A3B8` | 次要文本（Slate-400） |
-| `--border` | `#475569` | 边框/分隔线（Slate-600） |
-| `--accent` | `#22C55E` | 强调色：运行中/成功（Green-500） |
-| `--accent-foreground` | `#0F172A` | 强调色上文本 |
+| `--secondary` | `#1A1A1A` | 次要操作面 |
+| `--secondary-foreground` | `#E8E8E8` | 次要操作面文本 |
+| `--muted` | `#121212` | 静默背景（输入框、禁用区） |
+| `--muted-foreground` | `#6B6B6B` | 次要文本 |
+| `--border` | `rgba(255,255,255,0.08)` | 边框/分隔线 |
+| `--border-strong` | `rgba(255,255,255,0.14)` | 强边框（分隔线） |
+| `--accent` | `#3B82F6` | 强调色：蓝（Blue-500） |
+| `--accent-foreground` | `#FFFFFF` | 强调色上文本 |
+| `--accent-glow` | `rgba(59,130,246,0.15)` | 强调色辉光 |
 | `--destructive` | `#EF4444` | 错误/高风险（Red-500） |
-| `--ring` | `#FFFFFF` | 键盘焦点环 |
+| `--destructive-foreground` | `#FFFFFF` | 错误色上文本 |
+| `--warning` | `#EAB308` | 警告/需确认（Yellow-500） |
+| `--warning-foreground` | `#000000` | 警告色上文本 |
+| `--success` | `#22C55E` | 成功（Green-500） |
+| `--success-foreground` | `#000000` | 成功色上文本 |
+| `--ring` | `#3B82F6` | 键盘焦点环 |
 
 ### 状态语义色
 
 | 状态 | 颜色 | Token 映射 | 场景 |
 |------|------|-----------|------|
-| 运行中/成功 | 绿 `#22C55E` | `--accent` | Agent 正在思考、工具执行中、诊断完成 |
-| 需确认 | 黄 `#EAB308` | `--warning` (自定义) | 低风险工具等待确认 |
+| 运行中/成功 | 绿 `#22C55E` | `--success` | Agent 正在思考、工具执行中、诊断完成 |
+| 需确认 | 黄 `#EAB308` | `--warning` | 低风险工具等待确认 |
 | 高风险 | 红 `#EF4444` | `--destructive` | 高风险工具警告、错误、SSH 连接失败 |
-| 已停止/已完成 | 灰 `#64748B` | `--muted-foreground` | Agent 已停止、历史会话 |
-| 信息 | 蓝 `#3B82F6` | `--info` (自定义) | 中性提示、环境信息 |
+| 已停止/已完成 | 灰 `#6B6B6B` | `--muted-foreground` | Agent 已停止、历史会话 |
+| 信息/强调 | 蓝 `#3B82F6` | `--accent` / `--info` | 品牌强调、交互高亮、中性提示 |
 
 ### 对比度要求
 
@@ -67,10 +77,10 @@
 
 | Token | 字号 | 行高 | 用途 |
 |-------|------|------|------|
-| `--text-xs` | 12px | 16px | 标签、时间戳、元信息 |
-| `--text-sm` | 14px | 20px | 正文（紧凑）、工具参数 |
-| `--text-base` | 16px | 24px | 正文（默认）、Agent 输出 |
-| `--text-lg` | 18px | 28px | 卡片标题、步骤标题 |
+| `--text-xs` | 11px | 16px | 标签、时间戳、元信息 |
+| `--text-sm` | 13px | 20px | 正文（紧凑）、工具参数 |
+| `--text-base` | 14px | 24px | 正文（默认）、Agent 输出 |
+| `--text-lg` | 16px | 28px | 卡片标题、步骤标题 |
 | `--text-xl` | 20px | 28px | 页面标题 |
 | `--text-2xl` | 24px | 32px | 会话标题 |
 
@@ -90,17 +100,21 @@
 | `--space-2` | 8px | 组件内 padding、小间距 |
 | `--space-3` | 12px | 列表项间距 |
 | `--space-4` | 16px | 卡片 padding、默认间距 |
+| `--space-5` | 20px | 中间距 |
 | `--space-6` | 24px | 区块间距 |
 | `--space-8` | 32px | 大区块间距 |
+| `--space-10` | 40px | 页面级间距 |
 | `--space-12` | 48px | 页面级间距 |
+| `--space-16` | 64px | 大页面级间距 |
 
 ### 圆角
 
 | Token | 值 | 用途 |
 |-------|----|------|
 | `--radius-sm` | 4px | 标签、小按钮 |
-| `--radius-md` | 6px | 按钮、输入框 |
-| `--radius-lg` | 8px | 卡片、面板 |
+| `--radius-md` | 8px | 按钮、输入框 |
+| `--radius-lg` | 12px | 卡片、面板 |
+| `--radius-xl` | 16px | 大卡片、容器 |
 | `--radius-full` | 9999px | 状态点、头像 |
 
 ### 主布局
@@ -108,7 +122,7 @@
 ```
 ┌──────────────────────────────────────────────────────────┐
 │ 顶栏 (48px)                                               │
-│ [Friday logo] [会话标题]              [状态指示] [设置]    │
+│ [F icon] Friday              [状态指示] [设置]            │
 ├──────────┬───────────────────────────────────────────────┤
 │          │                                               │
 │ 会话列表  │            主诊断区                           │
@@ -216,6 +230,14 @@
 
 ## 6. 图标
 
+### App Icon
+
+自定义 SVG 图标（`app-icon.svg`），用于窗口标题栏、任务栏、安装包。设计：纯黑圆角方块 + 白色几何 F + 蓝色 ECG 脉搏线延伸自 F 中横线，象征"诊断 + 监控"。
+
+前端通过 `src/components/FridayMark.tsx` 内联 SVG 组件引用，确保与系统图标一致。
+
+### UI 图标库
+
 - **图标库**：Phosphor Icons (`@phosphor-icons/react`)
 - **默认字重**：`weight="regular"`，活跃/选中态用 `weight="fill"`
 - **尺寸 Token**：`icon-sm` (16px)、`icon-md` (20px)、`icon-lg` (24px)
@@ -305,8 +327,21 @@ GC 频率       [██████░░░░░░░░░░░░] 32%  �
 | 焦点环 | box-shadow transition | 150ms |
 
 - 所有动画尊重 `prefers-reduced-motion`：禁用动画，直接显示最终状态
-- 动画时长统一用 Token：`--duration-fast` (150ms)、`--duration-normal` (250ms)、`--duration-slow` (400ms)
-- 缓动函数：`--ease-out` (cubic-bezier(0.16, 1, 0.3, 1))
+### 动画时长
+
+| Token | 值 | 用途 |
+|-------|----|------|
+| `--duration-fast` | 120ms | 焦点环、颜色过渡 |
+| `--duration-normal` | 200ms | 卡片展开、消息进入 |
+| `--duration-slow` | 350ms | 复杂过渡 |
+
+### 缓动函数
+
+| Token | 值 | 用途 |
+|-------|----|------|
+| `--ease-out` | `cubic-bezier(0.16, 1, 0.3, 1)` | 默认缓出 |
+| `--ease-in-out` | `cubic-bezier(0.4, 0, 0.2, 1)` | 对称过渡 |
+| `--ease-spring` | `cubic-bezier(0.34, 1.56, 0.64, 1)` | 弹性效果 |
 
 ### 8.4 键盘快捷键
 
@@ -325,17 +360,17 @@ GC 频率       [██████░░░░░░░░░░░░] 32%  �
 
 | 层 | 技术 |
 |----|------|
-| 组件库 | shadcn/ui (基于 Radix UI) |
-| 样式 | Tailwind CSS v4 |
+| 样式 | Tailwind CSS v4（`@theme inline` + CSS 变量） |
 | 图标 | `@phosphor-icons/react` |
 | 图表 | 自定义 SVG / Canvas（轻量场景）或 Recharts（复杂图表） |
 | 字体 | JetBrains Mono + IBM Plex Sans (Google Fonts) |
 
-### 9.2 shadcn/ui 主题约定
+### 9.2 主题约定
 
-- 使用 CSS 变量（OKLCH）定义语义色，通过 `@theme inline` 映射到 Tailwind v4
-- 不在组件中硬编码颜色——所有颜色走 `bg-primary`、`text-muted-foreground` 等 token
-- 图表颜色通过 `chartConfig` 统一定义，不在组件内 inline
+- 使用 CSS 变量定义语义色，通过 `@theme inline` 映射到 Tailwind v4
+- 不在组件中硬编码颜色——所有颜色走 `bg-surface-1`、`text-muted-foreground` 等 token
+- 边框使用半透明白色（`rgba(255,255,255,0.08)`），不用实色
+- 滚动条、文本选中、焦点环均在 `globals.css` 全局定义
 
 ### 9.3 禁止项
 

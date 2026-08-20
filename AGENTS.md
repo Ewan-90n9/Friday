@@ -29,7 +29,7 @@ Friday 是面向软件开发人员的**远程环境运行时故障诊断 Agent**
 
 ## 开发命令
 
-- 构建 / 运行：`cargo tauri dev`（开发）/ `cargo tauri build`（打包）
+- 构建 / 运行：`pnpm tauri dev`（开发）/ `pnpm tauri build`（打包）
 - 前端单独运行：`pnpm dev`
 - 前端类型检查：`pnpm typecheck`
 - Rust 检查：`cargo check --manifest-path src-tauri/Cargo.toml`

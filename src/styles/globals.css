@@ -2,60 +2,159 @@
 @import "tailwindcss";
 
 @theme inline {
-  /* 语义色 */
-  --color-background: #0F172A;
-  --color-foreground: #F8FAFC;
-  --color-card: #1B2336;
-  --color-card-foreground: #F8FAFC;
-  --color-primary: #1E293B;
-  --color-primary-foreground: #FFFFFF;
-  --color-secondary: #334155;
-  --color-secondary-foreground: #FFFFFF;
-  --color-muted: #272F42;
-  --color-muted-foreground: #94A3B8;
-  --color-border: #475569;
-  --color-accent: #22C55E;
-  --color-accent-foreground: #0F172A;
-  --color-destructive: #EF4444;
-  --color-ring: #FFFFFF;
-  --color-warning: #EAB308;
-  --color-info: #3B82F6;
+  /* ── 纯黑基底 ── */
+  --color-background: #000000;
+  --color-foreground: #E8E8E8;
 
-  /* 间距 */
+  /* ── 层级表面（黑色之上的微亮分层） ── */
+  --color-surface-1: #0A0A0A;
+  --color-surface-2: #121212;
+  --color-surface-3: #1A1A1A;
+
+  /* ── 兼容旧 token ── */
+  --color-card: #0D0D0D;
+  --color-card-foreground: #E8E8E8;
+  --color-primary: #121212;
+  --color-primary-foreground: #FFFFFF;
+  --color-secondary: #1A1A1A;
+  --color-secondary-foreground: #E8E8E8;
+  --color-muted: #121212;
+  --color-muted-foreground: #6B6B6B;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.14);
+
+  /* ── 语义色 ── */
+  --color-accent: #3B82F6;
+  --color-accent-foreground: #FFFFFF;
+  --color-accent-glow: rgba(59, 130, 246, 0.15);
+  --color-success: #22C55E;
+  --color-success-foreground: #000000;
+  --color-destructive: #EF4444;
+  --color-destructive-foreground: #FFFFFF;
+  --color-warning: #EAB308;
+  --color-warning-foreground: #000000;
+  --color-info: #3B82F6;
+  --color-ring: #3B82F6;
+
+  /* ── 间距（8dp 节奏） ── */
   --spacing-1: 4px;
   --spacing-2: 8px;
   --spacing-3: 12px;
   --spacing-4: 16px;
+  --spacing-5: 20px;
   --spacing-6: 24px;
   --spacing-8: 32px;
+  --spacing-10: 40px;
   --spacing-12: 48px;
+  --spacing-16: 64px;
 
-  /* 圆角 */
+  /* ── 圆角 ── */
   --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
   --radius-full: 9999px;
 
-  /* 字号 */
-  --text-xs: 12px;
-  --text-sm: 14px;
-  --text-base: 16px;
-  --text-lg: 18px;
+  /* ── 字号 ── */
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
   --text-xl: 20px;
   --text-2xl: 24px;
+  --text-3xl: 32px;
 
-  /* 动画时长 */
-  --duration-fast: 150ms;
-  --duration-normal: 250ms;
-  --duration-slow: 400ms;
+  /* ── 动画时长 ── */
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --duration-slow: 350ms;
 
-  /* 缓动 */
+  /* ── 缓动 ── */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ── 字体 ── */
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', monospace;
 }
 
-body {
-  margin: 0;
-  background-color: var(--color-background);
-  color: var(--color-foreground);
-  font-family: 'IBM Plex Sans', sans-serif;
+@layer base {
+  * {
+    color-scheme: dark;
+  }
+
+  html, body, #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    overflow: hidden;
+  }
+
+  /* ── 自定义滚动条（沉稳、不抢眼） ── */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.15);
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* ── 文本选中 ── */
+  ::selection {
+    background: rgba(59, 130, 246, 0.25);
+    color: #FFFFFF;
+  }
+
+  /* ── 焦点环 ── */
+  :focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px var(--color-ring);
+  }
+
+  /* ── 减少动画 ── */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* ── 工具类 ── */
+@utility surface-gradient {
+  background: linear-gradient(
+    180deg,
+    var(--color-surface-2) 0%,
+    var(--color-surface-1) 100%
+  );
+}
+
+@utility text-balance {
+  text-wrap: balance;
 }
