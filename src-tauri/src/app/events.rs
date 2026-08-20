@@ -63,6 +63,11 @@ impl EventBus {
     }
 
     pub fn emit(&self, session_id: &str, event: AppEvent) {
+        tracing::debug!(
+            session_id = %session_id,
+            event_type = ?std::mem::discriminant(&event),
+            "emitting event"
+        );
         let payload = EventPayload {
             session_id: session_id.to_string(),
             event,

@@ -154,6 +154,7 @@ pub async fn list_agents(pool: &SqlitePool) -> Result<Vec<AgentRow>, sqlx::Error
 }
 
 #[tauri::command]
+#[tracing::instrument(skip(state))]
 pub async fn detect_agents_cmd(state: State<'_, crate::AppState>) -> Result<(), String> {
     detect_and_persist(&state.db)
         .await
@@ -162,6 +163,7 @@ pub async fn detect_agents_cmd(state: State<'_, crate::AppState>) -> Result<(), 
 
 #[tauri::command]
 pub async fn list_agents_cmd(state: State<'_, crate::AppState>) -> Result<Vec<AgentRow>, String> {
+    tracing::info!("list_agents_cmd called");
     list_agents(&state.db)
         .await
         .map_err(|e| e.to_string())
@@ -173,6 +175,7 @@ pub async fn add_agent_cmd(
     provider: String,
     path: String,
 ) -> Result<AgentRow, String> {
+    tracing::info!(provider = %provider, path = %path, "add_agent_cmd called");
     let valid = agent::registry::REGISTRY
         .iter()
         .any(|d| d.provider == provider);
@@ -223,6 +226,7 @@ pub async fn set_active_agent_cmd(
     state: State<'_, crate::AppState>,
     id: String,
 ) -> Result<(), String> {
+    tracing::info!(id = %id, "set_active_agent_cmd called");
     set_active(&state.db, &id)
         .await
         .map_err(|e| e.to_string())
@@ -233,6 +237,7 @@ pub async fn remove_agent_cmd(
     state: State<'_, crate::AppState>,
     id: String,
 ) -> Result<(), String> {
+    tracing::info!(id = %id, "remove_agent_cmd called");
     remove_agent(&state.db, &id)
         .await
         .map_err(|e| e.to_string())
