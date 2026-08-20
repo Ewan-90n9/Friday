@@ -26,3 +26,14 @@ export interface EventPayload {
   session_id: string;
   event: AppEvent;
 }
+
+export interface AgentRow {
+  id: string;
+  provider: string;
+  display_name: string;
+  path: string;
+  version: string | null;
+  source: "auto" | "manual";
+  is_active: boolean;
+  detected_at: string;
+}

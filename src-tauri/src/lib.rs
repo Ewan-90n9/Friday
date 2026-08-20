@@ -23,6 +23,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             let guard = infra::logging::init(data_dir.clone());
             let pool = tauri::async_runtime::block_on(infra::db::init(data_dir))?;
+            tauri::async_runtime::block_on(app::agents::detect_and_persist(&pool))?;
 
             app.manage(AppState {
                 db: pool,
@@ -38,6 +39,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             app::lifecycle::close_session_cmd,
             app::lifecycle::confirm_tool_cmd,
             app::lifecycle::cancel_diagnosis_cmd,
+            app::agents::detect_agents_cmd,
+            app::agents::list_agents_cmd,
+            app::agents::add_agent_cmd,
+            app::agents::set_active_agent_cmd,
+            app::agents::remove_agent_cmd,
         ])
         .run(tauri::generate_context!())?;
     Ok(())
