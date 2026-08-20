@@ -48,3 +48,7 @@ export async function setActiveAgent(id: string): Promise<void> {
 export async function removeAgent(id: string): Promise<void> {
   return invoke<void>("remove_agent_cmd", { id });
 }
+
+export async function setLogLevel(level: string): Promise<void> {
+  return invoke<void>("set_log_level_cmd", { level });
+}

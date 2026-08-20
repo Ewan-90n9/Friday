@@ -213,6 +213,14 @@ pub async fn confirm_tool_cmd(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn set_log_level_cmd(
+    state: State<'_, crate::AppState>,
+    level: String,
+) -> Result<(), String> {
+    crate::infra::logging::set_level(&state.filter_handle, &level)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

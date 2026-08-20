@@ -10,6 +10,12 @@ pub struct LoggingGuard {
     _dispatch: tracing::Dispatch,
 }
 
+impl LoggingGuard {
+    pub fn filter_handle(&self) -> reload::Handle<EnvFilter, Registry> {
+        self.filter_handle.clone()
+    }
+}
+
 pub fn init(app_data_dir: PathBuf) -> LoggingGuard {
     let log_dir = app_data_dir.join("logs");
     std::fs::create_dir_all(&log_dir).ok();
