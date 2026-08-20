@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { EventPayload } from "@/lib/types";
+import type { EventPayload, AgentRow } from "@/lib/types";
 
 export async function startDiagnosis(env: string, service: string, symptom: string): Promise<string> {
   return invoke<string>("start_diagnosis_cmd", { env, service, symptom });
@@ -27,4 +27,24 @@ export async function onAppEvent(handler: (payload: EventPayload) => void): Prom
     handler(event.payload);
   });
   return unlisten;
+}
+
+export async function detectAgents(): Promise<void> {
+  return invoke<void>("detect_agents_cmd");
+}
+
+export async function listAgents(): Promise<AgentRow[]> {
+  return invoke<AgentRow[]>("list_agents_cmd");
+}
+
+export async function addAgent(provider: string, path: string): Promise<AgentRow> {
+  return invoke<AgentRow>("add_agent_cmd", { provider, path });
+}
+
+export async function setActiveAgent(id: string): Promise<void> {
+  return invoke<void>("set_active_agent_cmd", { id });
+}
+
+export async function removeAgent(id: string): Promise<void> {
+  return invoke<void>("remove_agent_cmd", { id });
 }
