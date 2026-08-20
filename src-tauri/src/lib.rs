@@ -23,6 +23,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             let guard = infra::logging::init(data_dir.clone());
             let pool = tauri::async_runtime::block_on(infra::db::init(data_dir))?;
+            tauri::async_runtime::block_on(app::agents::detect_and_persist(&pool))?;
 
             app.manage(AppState {
                 db: pool,
