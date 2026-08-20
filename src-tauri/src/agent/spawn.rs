@@ -79,6 +79,11 @@ pub async fn spawn_active(
 
     // On Windows, resolve to native .exe to avoid cmd.exe shim issues
     let exe_path = resolve_native_exe(&raw_path);
+    tracing::info!(
+        raw_path = %raw_path.display(),
+        exe_path = %exe_path.display(),
+        "resolved opencode executable"
+    );
 
     let mut cmd = tokio::process::Command::new(&exe_path);
     cmd.arg("run")
@@ -110,13 +115,20 @@ pub async fn spawn_active(
             "no pid",
         )))?;
 
+    tracing::info!(pid, exe = %exe_path.display(), "opencode process spawned");
+
     // Write prompt to stdin and close it
     if let Some(mut stdin) = child.stdin.take() {
-        // Spawn a task to write the prompt to stdin to avoid deadlock
-        // with the stdout reader
+        let msg = message.clone();
         tokio::spawn(async move {
-            let _ = stdin.write_all(message.as_bytes()).await;
-            let _ = stdin.shutdown().await;
+            tracing::info!(msg_len = msg.len(), "writing prompt to stdin");
+            if let Err(e) = stdin.write_all(msg.as_bytes()).await {
+                tracing::error!(?e, "failed to write prompt to stdin");
+            }
+            if let Err(e) = stdin.shutdown().await {
+                tracing::error!(?e, "failed to close stdin");
+            }
+            tracing::info!("stdin written and closed");
         });
     }
 

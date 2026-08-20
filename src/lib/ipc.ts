@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { EventPayload, AgentRow, SessionRow } from "@/lib/types";
 
 export async function sendMessage(sessionId: string | null, message: string): Promise<string> {
-  return invoke<string>("send_message_cmd", { sessionId, message });
+  return invoke<string>("send_message_cmd", { sessionId: sessionId, message: message });
 }
 
 export async function listSessions(): Promise<SessionRow[]> {

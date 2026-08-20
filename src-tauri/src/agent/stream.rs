@@ -200,15 +200,22 @@ pub async fn consume_stream(
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
     let mut oc_session_captured = false;
+    let mut line_count = 0u64;
+
+    tracing::info!(session_id = %session_id, "consume_stream started");
 
     loop {
         tokio::select! {
             line = lines.next_line() => {
                 match line {
                     Ok(Some(line)) => {
+                        line_count += 1;
+                        tracing::debug!(line_count, raw = %&line[..line.len().min(200)], "stdout line");
+
                         // Extract opencode session ID from any event that has it
                         if !oc_session_captured {
                             if let Some(oc_id) = extract_session_id(&line) {
+                                tracing::info!(oc_id = %oc_id, "captured opencode session id");
                                 let _ = crate::app::session::update_opencode_session_id(
                                     &pool, &session_id, &oc_id,
                                 ).await;
@@ -218,17 +225,22 @@ pub async fn consume_stream(
 
                         let events = parse_event(&line, &session_id);
                         for event in events {
+                            tracing::debug!(event_type = ?std::mem::discriminant(&event), "emitting event");
                             bus.emit(&session_id, event);
                         }
                     }
-                    Ok(None) => break,
+                    Ok(None) => {
+                        tracing::info!(line_count, session_id = %session_id, "stdout EOF");
+                        break;
+                    }
                     Err(e) => {
-                        tracing::error!(?e, "error reading stdout line");
+                        tracing::error!(?e, line_count, "error reading stdout line");
                         break;
                     }
                 }
             }
             _ = cancel.cancelled() => {
+                tracing::info!(session_id = %session_id, "cancellation received, killing child");
                 child.kill().await.ok();
                 bus.emit(&session_id, AppEvent::AgentStopped {
                     session_id: session_id.clone(),
@@ -242,6 +254,13 @@ pub async fn consume_stream(
 
     let status = child.wait().await;
     let exit_ok = status.as_ref().map(|s| s.success()).unwrap_or(false);
+
+    tracing::info!(
+        session_id = %session_id,
+        exit_ok,
+        status = ?status.as_ref().map(|s| s.code()),
+        "child process exited"
+    );
 
     if exit_ok {
         bus.emit(&session_id, AppEvent::DiagnosisDone {

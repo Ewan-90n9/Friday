@@ -54,6 +54,12 @@ pub async fn send_message_cmd(
     session_id: Option<String>,
     message: String,
 ) -> Result<String, String> {
+    tracing::info!(
+        ?session_id,
+        message_len = message.len(),
+        "send_message_cmd called"
+    );
+
     let pool = state.db.clone();
     let bus = state.bus.clone();
     let agents = state.agents.clone();
@@ -61,12 +67,17 @@ pub async fn send_message_cmd(
     // Determine session ID and opencode session ID
     let (friday_session_id, oc_session_id) = match session_id {
         None => {
+            tracing::info!("creating new session");
             let session = session::create_session(&pool, &message)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| {
+                    tracing::error!(?e, "failed to create session");
+                    e.to_string()
+                })?;
             (session.id.0, None)
         }
         Some(id) => {
+            tracing::info!(session_id = %id, "resuming existing session");
             let row = session::get_session(&pool, &id)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -80,6 +91,7 @@ pub async fn send_message_cmd(
             let oc_id = session::get_opencode_session_id(&pool, &id)
                 .await
                 .map_err(|e| e.to_string())?;
+            tracing::info!(?oc_id, "found opencode session id");
             (id, oc_id)
         }
     };
@@ -94,11 +106,20 @@ pub async fn send_message_cmd(
 
     // Build prompt and spawn opencode
     let prompt_text = prompt::build_prompt(&message);
+    tracing::info!(
+        session_id = %friday_session_id,
+        prompt_len = prompt_text.len(),
+        "spawning opencode"
+    );
     let agent_process = spawn_active(&pool, prompt_text, oc_session_id)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            tracing::error!(?e, "failed to spawn opencode");
+            e.to_string()
+        })?;
 
     let pid = agent_process.pid;
+    tracing::info!(pid, session_id = %friday_session_id, "opencode spawned");
 
     // Emit AgentStarted
     bus.emit(
