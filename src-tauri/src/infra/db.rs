@@ -8,8 +8,10 @@ pub async fn init(app_data_dir: PathBuf) -> Result<SqlitePool, sqlx::Error> {
         .max_connections(5)
         .connect(&db_url)
         .await?;
-    let schema = include_str!("../../migrations/0001_init.sql");
-    sqlx::query(schema).execute(&pool).await?;
+    let schema1 = include_str!("../../migrations/0001_init.sql");
+    sqlx::query(schema1).execute(&pool).await?;
+    let schema2 = include_str!("../../migrations/0002_agents.sql");
+    sqlx::query(schema2).execute(&pool).await?;
     tracing::info!(?db_path, "SQLite initialized");
     Ok(pool)
 }
@@ -24,13 +26,28 @@ mod tests {
         let pool = init(tmp.path().to_path_buf()).await.unwrap();
 
         let table_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('sessions', 'diagnosis_steps', 'tool_calls', 'environments')"
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('sessions', 'diagnosis_steps', 'tool_calls', 'environments', 'agents')"
         )
         .fetch_one(&pool)
         .await
         .unwrap();
 
-        assert_eq!(table_count, 4);
+        assert_eq!(table_count, 5);
+    }
+
+    #[tokio::test]
+    async fn test_db_init_creates_agents_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init(tmp.path().to_path_buf()).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_agents_active'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]
