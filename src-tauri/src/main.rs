@@ -1,3 +1,3 @@
 fn main() {
-    friday_lib::run()
+    friday_lib::run().expect("error while running friday");
 }

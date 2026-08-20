@@ -29,12 +29,12 @@ Friday 是面向软件开发人员的**远程环境运行时故障诊断 Agent**
 
 ## 开发命令
 
-> 暂未确定，待代码落地后补全。Tauri 项目通常使用 `cargo tauri dev` / `cargo tauri build`，但在仓库中核实前不要将其作为既定命令断言。
-
-- 构建 / 运行：`TODO`
-- 测试：`TODO`
-- lint：`TODO`
-- typecheck：`TODO`
+- 构建 / 运行：`cargo tauri dev`（开发）/ `cargo tauri build`（打包）
+- 前端单独运行：`pnpm dev`
+- 前端类型检查：`pnpm typecheck`
+- Rust 检查：`cargo check --manifest-path src-tauri/Cargo.toml`
+- Rust 测试：`cargo test --manifest-path src-tauri/Cargo.toml`
+- lint：TODO（待定 clippy + eslint 配置后再补）
 
 ## 约定
 
