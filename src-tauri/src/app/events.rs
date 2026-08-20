@@ -52,6 +52,7 @@ pub struct EventPayload {
     pub event: AppEvent,
 }
 
+#[derive(Clone)]
 pub struct EventBus {
     handle: AppHandle,
 }

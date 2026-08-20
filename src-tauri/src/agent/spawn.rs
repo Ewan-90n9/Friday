@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::{Child, ChildStdout, ChildStderr};
-use tokio_util::sync::CancellationToken;
 
 pub struct AgentProcess {
     pub pid: u32,
@@ -74,10 +73,6 @@ pub async fn spawn_active(
 
     Ok(AgentProcess { pid, child, stdout, stderr })
 }
-
-/// RunningAgent lives in stream.rs but we need CancellationToken here for the type.
-/// Re-exported from stream module. This is a placeholder re-export.
-pub type RunningAgentCancel = CancellationToken;
 
 #[cfg(test)]
 mod tests {

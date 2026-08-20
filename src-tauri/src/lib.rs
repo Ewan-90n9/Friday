@@ -6,11 +6,15 @@ mod knowledge;
 mod tools;
 
 use app::events::EventBus;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tauri::Manager;
+use tokio::sync::Mutex;
 
 pub struct AppState {
     pub db: sqlx::SqlitePool,
     pub bus: EventBus,
+    pub agents: Arc<Mutex<HashMap<String, agent::stream::RunningAgent>>>,
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -28,17 +32,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             app.manage(AppState {
                 db: pool,
                 bus: EventBus::new(handle),
+                agents: Arc::new(Mutex::new(HashMap::new())),
             });
             app.manage(guard);
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            app::lifecycle::start_diagnosis_cmd,
+            app::lifecycle::send_message_cmd,
             app::lifecycle::stop_agent_cmd,
             app::lifecycle::close_session_cmd,
             app::lifecycle::confirm_tool_cmd,
-            app::lifecycle::cancel_diagnosis_cmd,
+            app::lifecycle::list_sessions_cmd,
             app::agents::detect_agents_cmd,
             app::agents::list_agents_cmd,
             app::agents::add_agent_cmd,
