@@ -12,6 +12,13 @@ pub struct RunningAgent {
 
 /// Parse a single NDJSON line and return the corresponding AppEvent(s).
 /// Returns empty vec for events that should be ignored.
+///
+/// opencode `run --format json` outputs flat events like:
+///   {"type":"text", "sessionID":"...", "part":{"type":"text", "text":"hello"}}
+///   {"type":"tool_use", "sessionID":"...", "part":{"tool":"bash", "state":{"status":"completed", ...}}}
+///   {"type":"step_start", ...}
+///   {"type":"step_finish", ...}
+///   {"type":"error", "error":{"data":{"message":"..."}}}
 pub fn parse_event(line: &str, session_id: &str) -> Vec<AppEvent> {
     let json: Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -21,18 +28,51 @@ pub fn parse_event(line: &str, session_id: &str) -> Vec<AppEvent> {
     let event_type = json.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
     match event_type {
-        "message.part.updated" => parse_message_part_updated(&json, session_id),
-        "session.error" => vec![AppEvent::AgentCrashed {
-            session_id: session_id.to_string(),
-            reason: json
-                .get("properties")
-                .and_then(|p| p.get("error"))
+        "text" => {
+            // Text event: part.text contains the output text
+            let part = json.get("part").unwrap_or(&json);
+            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                if !text.is_empty() {
+                    return vec![AppEvent::LlmThinking {
+                        session_id: session_id.to_string(),
+                        token: text.to_string(),
+                    }];
+                }
+            }
+            vec![]
+        }
+        "reasoning" => {
+            // Reasoning event: part.text contains the reasoning text
+            let part = json.get("part").unwrap_or(&json);
+            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                if !text.is_empty() {
+                    return vec![AppEvent::LlmThinking {
+                        session_id: session_id.to_string(),
+                        token: text.to_string(),
+                    }];
+                }
+            }
+            vec![]
+        }
+        "tool_use" => {
+            // Tool use event: part.tool, part.state
+            let part = json.get("part").unwrap_or(&json);
+            parse_tool_event(part, session_id)
+        }
+        "error" => {
+            let reason = json
+                .get("error")
                 .and_then(|e| e.get("data"))
                 .and_then(|d| d.get("message"))
                 .and_then(|m| m.as_str())
                 .unwrap_or("unknown error")
-                .to_string(),
-        }],
+                .to_string();
+            vec![AppEvent::AgentCrashed {
+                session_id: session_id.to_string(),
+                reason,
+            }]
+        }
+        // step_start, step_finish, and other events are ignored
         _ => vec![],
     }
 }
@@ -58,55 +98,6 @@ pub fn extract_session_id(line: &str) -> Option<String> {
     json.get("sessionID")
         .and_then(|s| s.as_str())
         .map(|s| s.to_string())
-}
-
-fn parse_message_part_updated(json: &Value, session_id: &str) -> Vec<AppEvent> {
-    let properties = match json.get("properties") {
-        Some(p) => p,
-        None => return vec![],
-    };
-
-    let part = match properties.get("part") {
-        Some(p) => p,
-        None => return vec![],
-    };
-
-    let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
-
-    match part_type {
-        "text" => {
-            if let Some(delta) = properties.get("delta").and_then(|d| d.as_str()) {
-                if !delta.is_empty() {
-                    return vec![AppEvent::LlmThinking {
-                        session_id: session_id.to_string(),
-                        token: delta.to_string(),
-                    }];
-                }
-            }
-            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                if !text.is_empty() {
-                    return vec![AppEvent::LlmThinking {
-                        session_id: session_id.to_string(),
-                        token: text.to_string(),
-                    }];
-                }
-            }
-            vec![]
-        }
-        "reasoning" => {
-            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                if !text.is_empty() {
-                    return vec![AppEvent::LlmThinking {
-                        session_id: session_id.to_string(),
-                        token: text.to_string(),
-                    }];
-                }
-            }
-            vec![]
-        }
-        "tool" => parse_tool_event(part, session_id),
-        _ => vec![],
-    }
 }
 
 fn parse_tool_event(part: &Value, session_id: &str) -> Vec<AppEvent> {
@@ -287,22 +278,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_text_delta_emits_llm_thinking() {
-        let line = r#"{"type":"message.part.updated","properties":{"part":{"type":"text","text":"Hello"},"delta":"Hel"}}"#;
+    fn test_parse_text_event_emits_llm_thinking() {
+        let line = r#"{"type":"text","timestamp":1787242656024,"sessionID":"ses_abc","part":{"type":"text","text":"你好！我是 Friday Agent。","id":"prt_123"}}"#;
         let events = parse_event(line, "s1");
         assert_eq!(events.len(), 1);
         match &events[0] {
             AppEvent::LlmThinking { session_id, token } => {
                 assert_eq!(session_id, "s1");
-                assert_eq!(token, "Hel");
+                assert_eq!(token, "你好！我是 Friday Agent。");
             }
             _ => panic!("expected LlmThinking, got {:?}", events[0]),
         }
     }
 
     #[test]
-    fn test_parse_reasoning_emits_llm_thinking() {
-        let line = r#"{"type":"message.part.updated","properties":{"part":{"type":"reasoning","text":"analyzing the issue"}}}"#;
+    fn test_parse_text_event_empty_text_returns_empty() {
+        let line = r#"{"type":"text","sessionID":"ses_abc","part":{"type":"text","text":""}}"#;
+        let events = parse_event(line, "s1");
+        assert_eq!(events.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_reasoning_event_emits_llm_thinking() {
+        let line = r#"{"type":"reasoning","sessionID":"ses_abc","part":{"type":"reasoning","text":"analyzing the issue"}}"#;
         let events = parse_event(line, "s1");
         assert_eq!(events.len(), 1);
         match &events[0] {
@@ -315,8 +313,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tool_running_emits_tool_executing() {
-        let line = r#"{"type":"message.part.updated","properties":{"part":{"type":"tool","tool":"bash","state":{"status":"running","input":{"command":"ls -la"}}}}}"#;
+    fn test_parse_tool_use_running_emits_tool_executing() {
+        let line = r#"{"type":"tool_use","sessionID":"ses_abc","part":{"type":"tool","tool":"bash","state":{"status":"running","input":{"command":"ls -la"}}}}"#;
         let events = parse_event(line, "s1");
         assert_eq!(events.len(), 1);
         match &events[0] {
@@ -330,8 +328,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tool_completed_emits_tool_result() {
-        let line = r#"{"type":"message.part.updated","properties":{"part":{"type":"tool","tool":"bash","state":{"status":"completed","output":"file1\nfile2","time":{"start":1000,"end":1800}}}}}"#;
+    fn test_parse_tool_use_completed_emits_tool_result() {
+        let line = r#"{"type":"tool_use","sessionID":"ses_abc","part":{"type":"tool","tool":"bash","state":{"status":"completed","output":"file1\nfile2","time":{"start":1000,"end":1800}}}}"#;
         let events = parse_event(line, "s1");
         assert_eq!(events.len(), 1);
         match &events[0] {
@@ -346,8 +344,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tool_error_emits_tool_result_with_error() {
-        let line = r#"{"type":"message.part.updated","properties":{"part":{"type":"tool","tool":"bash","state":{"status":"error","error":"command failed","time":{"start":1000,"end":1001}}}}}"#;
+    fn test_parse_tool_use_error_emits_tool_result_with_error() {
+        let line = r#"{"type":"tool_use","sessionID":"ses_abc","part":{"type":"tool","tool":"bash","state":{"status":"error","error":"command failed","time":{"start":1000,"end":1001}}}}"#;
         let events = parse_event(line, "s1");
         assert_eq!(events.len(), 1);
         match &events[0] {
@@ -361,8 +359,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_session_error_emits_agent_crashed() {
-        let line = r#"{"type":"session.error","properties":{"error":{"name":"APIError","data":{"message":"rate limited"}}}}"#;
+    fn test_parse_error_event_emits_agent_crashed() {
+        let line = r#"{"type":"error","error":{"name":"APIError","data":{"message":"rate limited"}}}"#;
         let events = parse_event(line, "s1");
         assert_eq!(events.len(), 1);
         match &events[0] {
@@ -375,8 +373,15 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_unmapped_event_returns_empty() {
-        let line = r#"{"type":"session.updated","properties":{}}"#;
+    fn test_parse_step_start_returns_empty() {
+        let line = r#"{"type":"step_start","sessionID":"ses_abc","part":{"id":"prt_1"}}"#;
+        let events = parse_event(line, "s1");
+        assert_eq!(events.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_step_finish_returns_empty() {
+        let line = r#"{"type":"step_finish","sessionID":"ses_abc","part":{"id":"prt_2","reason":"stop"}}"#;
         let events = parse_event(line, "s1");
         assert_eq!(events.len(), 0);
     }
@@ -388,22 +393,15 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_empty_delta_returns_empty() {
-        let line = r#"{"type":"message.part.updated","properties":{"part":{"type":"text","text":""},"delta":""}}"#;
-        let events = parse_event(line, "s1");
-        assert_eq!(events.len(), 0);
-    }
-
-    #[test]
-    fn test_extract_session_id_from_session_created() {
-        let line = r#"{"type":"session.created","properties":{"info":{"id":"oc-session-abc","title":"test"}}}"#;
+    fn test_extract_session_id_from_top_level_field() {
+        let line = r#"{"type":"step_start","timestamp":1787242655298,"sessionID":"ses_fe0096356ffeqwSFqjLhPeA72b","part":{"id":"prt_123"}}"#;
         let result = extract_session_id(line);
-        assert_eq!(result, Some("oc-session-abc".to_string()));
+        assert_eq!(result, Some("ses_fe0096356ffeqwSFqjLhPeA72b".to_string()));
     }
 
     #[test]
-    fn test_extract_session_id_returns_none_for_other_events() {
-        let line = r#"{"type":"message.updated","properties":{}}"#;
+    fn test_extract_session_id_returns_none_when_absent() {
+        let line = r#"{"type":"unknown"}"#;
         let result = extract_session_id(line);
         assert!(result.is_none());
     }
