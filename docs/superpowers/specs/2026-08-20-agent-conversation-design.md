@@ -1,7 +1,7 @@
 # Agent 对话管道 — 设计文档
 
 - 日期：2026-08-20
-- 状态：已批准（逐节通过）
+- 状态：已实现并验证
 - 前置：[Agent 自动识别设计](2026-08-20-agent-detection-design.md)（已完成，spawn_active 可读 DB active agent）
 
 ## 1. 背景与目标
@@ -13,7 +13,7 @@ Agent 自动识别功能已落地——检测 opencode、持久化到 SQLite、U
 ### v1 范围
 
 - 对话管道本身：会话管理、prompt 组装、spawn opencode `run --format json`、流式解析、前端对话 UI
-- opencode 使用自带工具（bash/read/edit），用 `--auto` 自动批准权限
+- opencode 使用自带工具（bash/read/edit），用 `--dangerously-skip-permissions` 自动批准权限
 - 多轮对话：首条消息创建 opencode session，后续消息用 `-s <session_id>` 续聊
 
 ### 不做（YAGNI）
@@ -129,16 +129,18 @@ pub async fn spawn_active(
 ### 5.2 命令构造
 
 ```
-opencode run --format json --auto --thinking [-s <opencode_session_id>] "<message>"
+opencode run --format json --dangerously-skip-permissions [--session <opencode_session_id>]
 ```
 
+prompt 通过 **stdin** 传递（非命令行参数，避免 Windows argv 截断），stdin 写完后关闭。
+
 - `--format json`：stdout 输出 NDJSON（每行一个事件对象）
-- `--auto`：自动批准工具权限
-- `--thinking`：输出推理过程（ReasoningPart 事件）
-- `-s`：仅续聊时传
-- stdout/stderr 均 `Stdio::piped()`
-- 工作目录设为 app data dir（避免 opencode 在意外目录读写）
-- 不传 MCP config（v1 无 MCP 工具）；不传 `OPENCODE_CONFIG_CONTENT`（用 opencode 默认配置）
+- `--dangerously-skip-permissions`：自动批准工具权限（`--auto` 不是有效参数）
+- `--session`：仅续聊时传（注意是 `--session` 不是 `-s`）
+- stdout/stderr/stdin 均 `Stdio::piped()`
+- Windows 上解析到 native `opencode.exe`（绕过 `.cmd`/`.ps1` shim，避免 argv 截断）
+- 工作目录设为用户 home 目录（避免加载宿主项目的 AGENTS.md / .opencode 配置）
+- 不传 MCP config（v1 无 MCP 工具）
 
 ### 5.3 AgentProcess 改造
 
@@ -156,24 +158,33 @@ pub struct AgentProcess {
 
 ### 6.1 NDJSON → AppEvent 映射
 
-用 `serde_json::Value` 灵活解析（不建模每个字段），按 `type` 和 `part.type` 分发：
+opencode `run --format json` 输出**扁平格式**的事件（非 server SDK 的嵌套格式），每行一个 JSON 对象：
+
+```json
+{"type":"step_start", "sessionID":"ses_abc", "part":{...}}
+{"type":"text", "sessionID":"ses_abc", "part":{"type":"text", "text":"回复内容"}}
+{"type":"tool_use", "sessionID":"ses_abc", "part":{"tool":"bash", "state":{"status":"completed", ...}}}
+{"type":"step_finish", "sessionID":"ses_abc", "part":{"reason":"stop", ...}}
+```
+
+用 `serde_json::Value` 灵活解析，按顶层 `type` 分发：
 
 | opencode 事件 | Friday AppEvent | 提取字段 |
 |---|---|---|
-| `session.created` | （内部） | `properties.info.id` → 回写 DB opencode_session_id |
-| `message.part.updated` (part.type=text, has delta) | `LlmThinking { token: delta }` | `properties.delta` |
-| `message.part.updated` (part.type=reasoning) | `LlmThinking { token: text }` | `properties.part.text` |
-| `message.part.updated` (part.type=tool, state.status=running) | `ToolExecuting { tool, args }` | `part.tool`, `part.state.input` |
-| `message.part.updated` (part.type=tool, state.status=completed) | `ToolResult { tool, output, elapsed_ms }` | `part.tool`, `part.state.output`, `part.state.time` |
-| `message.part.updated` (part.type=tool, state.status=error) | `ToolResult { tool, output: error, elapsed_ms }` | `part.tool`, `part.state.error` |
-| `session.idle` | 忽略 | 依赖 stdout EOF + exit code 判断结束，不监听此事件 |
-| `session.error` | `AgentCrashed { reason }` | `properties.error` |
-| stdout EOF + exit 0 | `DiagnosisDone { conclusion: "" }` | 结论已通过 LlmThinking 流式推送 |
+| `text` | `LlmThinking { token }` | `part.text` |
+| `reasoning` | `LlmThinking { token }` | `part.text` |
+| `tool_use` (state.status=running) | `ToolExecuting { tool, args }` | `part.tool`, `part.state.input` |
+| `tool_use` (state.status=completed) | `ToolResult { tool, output, elapsed_ms }` | `part.tool`, `part.state.output`, `part.state.time` |
+| `tool_use` (state.status=error) | `ToolResult { tool, output: error, elapsed_ms }` | `part.tool`, `part.state.error` |
+| `error` | `AgentCrashed { reason }` | `error.data.message` |
+| `step_start` | 忽略 | — |
+| `step_finish` | 忽略 | — |
+| stdout EOF + exit 0 | `DiagnosisDone { conclusion: "" }` | 结论已通过 text 事件流式推送 |
 | stdout EOF + exit ≠0 | `AgentCrashed { reason }` | exit code |
 
-**未映射事件**（忽略）：`message.updated`、`message.removed`、`message.part.removed`、`session.updated`、`session.compacted`、`file.edited`、`todo.updated`、`command.executed`、`pty.*`、`tui.*`、`server.*`、`lsp.*`、`installation.*`。
+**session ID 提取**：每个事件都有顶层 `sessionID` 字段，从中提取 opencode session ID 回写 DB。
 
-**风险标注**：opencode `--format json` 的确切输出格式需在实现时用真实调用验证。上表基于 SDK 类型定义（`types.gen.ts`）推断，如有差异调整映射即可。
+**参考**：对齐 multica 的 `opencodeBackend.processEvents` 实现。
 
 ### 6.2 进程管理与取消模型
 
@@ -316,17 +327,21 @@ handler 注册变更：
 
 ## 10. prompt 组装（`agent/prompt.rs`）
 
-v1 简化为直接返回用户消息：
+注入 Friday 专属人格 system prompt，定义身份、能力、风格、限制：
 
 ```rust
 pub fn build_prompt(message: &str) -> String {
-    message.to_string()
+    format!("{system}\n\n---\n\n用户消息：{message}", system = FRIDAY_SYSTEM_PROMPT, message = message)
 }
 ```
 
-不加 system prompt 包装。后续诊断工具层启用时扩展为 `build_prompt(env, service, symptom, playbook_index)`，注入 Friday 诊断上下文。
+**Friday 人格要点：**
+- 名字是 Friday，不提底层模型名称
+- 面向运行时故障诊断，不是通用聊天
+- 简洁直接，中文交流
+- 诚实告知能力边界
 
-`send_message_cmd` 调 `spawn_active` 时传 `build_prompt(&message)` 的结果。
+后续诊断工具层启用时扩展为 `build_prompt(env, service, symptom, playbook_index)`，注入诊断上下文。
 
 ## 11. 前端
 

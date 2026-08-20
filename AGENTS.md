@@ -6,12 +6,12 @@ Friday 是面向软件开发人员的**远程环境运行时故障诊断 Agent**
 
 技术栈为 **Tauri**（Rust 后端 + React 前端）。
 
-> 仓库当前为空（无提交、无文件）。下述结构约定随代码落地逐步核实与补充。
+> 仓库已落地骨架代码（会话管理、agent 检测、对话管道）。下述结构约定随代码持续演进。
 
 ## 技术栈与结构
 
-- **Tauri**：Rust 后端预期位于 `src-tauri/`，React 前端在其同级目录；两者通过 Tauri IPC（command / event）通信。
-- 修改后端 command 或 event 时，同步检查前端调用侧绑定，避免两端脱节。
+- **Tauri**：Rust 后端位于 `src-tauri/`，React 前端位于 `src/`；两者通过 Tauri IPC（command / event）通信。
+- 修改后端 command 或 event 时，同步检查前端调用侧绑定（`src/lib/ipc.ts`），避免两端脱节。
 - 单体仓库，无多包（workspace）划分。
 
 ## 架构设计
@@ -26,6 +26,12 @@ Friday 是面向软件开发人员的**远程环境运行时故障诊断 Agent**
 ## 设计语言
 
 - [Friday 设计语言](docs/design/design-language.md)
+
+## 已实现功能
+
+- **骨架层**：SQLite 初始化、tracing 日志、Tauri IPC 命令注册、三栏暗色布局
+- **Agent 自动识别**：检测 PATH 上的 opencode 二进制、版本探测、持久化到 SQLite、UI 设置弹窗
+- **对话管道**：多轮对话（`opencode run --format json --dangerously-skip-permissions`）、NDJSON 流式解析、Friday 人格 system prompt、会话列表、流式渲染（文本 + 工具卡片）
 
 ## 开发命令
 
