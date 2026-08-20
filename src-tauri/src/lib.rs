@@ -1,5 +1,6 @@
 mod exec;
 mod infra;
+mod knowledge;
 
 pub fn run() {
     tauri::Builder::default()
