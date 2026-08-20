@@ -1,0 +1,29 @@
+[package]
+name = "friday"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "friday_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+russh = "0.45"
+keyring = "3"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+async-trait = "0.1"
+dirs = "5"
+
+[dev-dependencies]
+tempfile = "3"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
