@@ -6,6 +6,7 @@ mod knowledge;
 mod tools;
 
 use app::events::EventBus;
+use infra::paths::Paths;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::Manager;
@@ -18,6 +19,7 @@ pub struct AppState {
     pub bus: EventBus,
     pub agents: Arc<Mutex<HashMap<String, agent::stream::RunningAgent>>>,
     pub filter_handle: reload::Handle<EnvFilter, Registry>,
+    pub paths: Paths,
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -28,9 +30,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let data_dir = handle.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir).ok();
 
-            let guard = infra::logging::init(data_dir.clone());
+            let paths = Paths::new(data_dir.clone());
+            paths.ensure_dirs()?;
+
+            let guard = infra::logging::init(paths.log_dir());
             let filter_handle = guard.filter_handle();
-            let pool = tauri::async_runtime::block_on(infra::db::init(data_dir))?;
+            let pool = tauri::async_runtime::block_on(infra::db::init(paths.db_path()))?;
             tauri::async_runtime::block_on(app::agents::detect_and_persist(&pool))?;
 
             app.manage(AppState {
@@ -38,6 +43,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 bus: EventBus::new(handle),
                 agents: Arc::new(Mutex::new(HashMap::new())),
                 filter_handle,
+                paths,
             });
             app.manage(guard);
 
@@ -67,7 +73,9 @@ mod tests {
     #[test]
     fn test_filter_handle_cloneable_and_usable() {
         let tmp = tempfile::tempdir().unwrap();
-        let guard = logging::init(tmp.path().to_path_buf());
+        let log_dir = tmp.path().join("logs");
+        std::fs::create_dir_all(&log_dir).unwrap();
+        let guard = logging::init(log_dir);
         let handle = guard.filter_handle();
         let result = logging::set_level(&handle, "info");
         assert!(result.is_ok());
