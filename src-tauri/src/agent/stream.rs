@@ -13,7 +13,7 @@ pub struct RunningAgent {
 /// Parse a single NDJSON line and return the corresponding AppEvent(s).
 /// Returns empty vec for events that should be ignored.
 ///
-/// opencode `run --format json` outputs flat events like:
+/// Agent CLI `run --format json` / `-p --output-format stream-json` outputs flat events like:
 ///   {"type":"text", "sessionID":"...", "part":{"type":"text", "text":"hello"}}
 ///   {"type":"tool_use", "sessionID":"...", "part":{"tool":"bash", "state":{"status":"completed", ...}}}
 ///   {"type":"step_start", ...}

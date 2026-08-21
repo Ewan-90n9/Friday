@@ -58,7 +58,7 @@ pub async fn send_message_cmd(
     let bus = state.bus.clone();
     let agents = state.agents.clone();
 
-    // Determine session ID and opencode session ID
+    // Determine session ID and agent session ID
     let (friday_session_id, agent_session_id) = match session_id {
         None => {
             tracing::info!("creating new session");
@@ -115,7 +115,7 @@ pub async fn send_message_cmd(
     )
     .await
     .map_err(|e| {
-        tracing::error!(?e, "failed to spawn opencode");
+        tracing::error!(?e, "failed to spawn agent");
         e.to_string()
     })?;
 
