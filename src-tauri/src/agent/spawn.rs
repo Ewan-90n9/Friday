@@ -63,7 +63,7 @@ fn resolve_native_exe(path: &PathBuf) -> PathBuf {
 }
 
 struct CommandConfig {
-    print_args: &'static [&'static str],
+    mode_args: &'static [&'static str],
     format_args: &'static [&'static str],
     session_flag: &'static str,
     needs_exe_resolution: bool,
@@ -72,19 +72,19 @@ struct CommandConfig {
 fn command_config_for(provider: &str) -> CommandConfig {
     match provider {
         "opencode" => CommandConfig {
-            print_args: &["run"],
+            mode_args: &["run"],
             format_args: &["--format", "json"],
             session_flag: "--session",
             needs_exe_resolution: true,
         },
         "codeagentcli" => CommandConfig {
-            print_args: &["-p"],
+            mode_args: &["-p"],
             format_args: &["--output-format", "stream-json"],
             session_flag: "--sessions",
             needs_exe_resolution: false,
         },
         _ => CommandConfig {
-            print_args: &["run"],
+            mode_args: &["run"],
             format_args: &["--format", "json"],
             session_flag: "--session",
             needs_exe_resolution: true,
@@ -127,7 +127,7 @@ pub async fn spawn_active(
     );
 
     let mut cmd = tokio::process::Command::new(&exe_path);
-    cmd.args(config.print_args)
+    cmd.args(config.mode_args)
         .args(config.format_args)
         .arg("--dangerously-skip-permissions");
 
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn test_command_config_for_opencode() {
         let config = command_config_for("opencode");
-        assert_eq!(config.print_args, &["run"]);
+        assert_eq!(config.mode_args, &["run"]);
         assert_eq!(config.format_args, &["--format", "json"]);
         assert_eq!(config.session_flag, "--session");
         assert!(config.needs_exe_resolution);
@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn test_command_config_for_codeagentcli() {
         let config = command_config_for("codeagentcli");
-        assert_eq!(config.print_args, &["-p"]);
+        assert_eq!(config.mode_args, &["-p"]);
         assert_eq!(config.format_args, &["--output-format", "stream-json"]);
         assert_eq!(config.session_flag, "--sessions");
         assert!(!config.needs_exe_resolution);
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn test_command_config_for_unknown_falls_back_to_opencode() {
         let config = command_config_for("unknown");
-        assert_eq!(config.print_args, &["run"]);
+        assert_eq!(config.mode_args, &["run"]);
         assert_eq!(config.format_args, &["--format", "json"]);
         assert_eq!(config.session_flag, "--session");
         assert!(config.needs_exe_resolution);
