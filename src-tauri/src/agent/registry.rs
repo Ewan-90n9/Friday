@@ -10,6 +10,11 @@ pub const REGISTRY: &[AgentDescriptor] = &[
         command: "opencode",
         display_name: "OpenCode",
     },
+    AgentDescriptor {
+        provider: "codeagentcli",
+        command: "codeagentcli",
+        display_name: "CodeAgentCLI",
+    },
 ];
 
 #[cfg(test)]
@@ -17,11 +22,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_contains_exactly_one_opencode_entry() {
-        assert_eq!(REGISTRY.len(), 1);
-        let entry = &REGISTRY[0];
-        assert_eq!(entry.provider, "opencode");
-        assert_eq!(entry.command, "opencode");
-        assert_eq!(entry.display_name, "OpenCode");
+    fn registry_contains_opencode_and_codeagentcli() {
+        assert_eq!(REGISTRY.len(), 2);
+
+        let opencode = REGISTRY.iter().find(|d| d.provider == "opencode").unwrap();
+        assert_eq!(opencode.command, "opencode");
+        assert_eq!(opencode.display_name, "OpenCode");
+
+        let codeagent = REGISTRY.iter().find(|d| d.provider == "codeagentcli").unwrap();
+        assert_eq!(codeagent.command, "codeagentcli");
+        assert_eq!(codeagent.display_name, "CodeAgentCLI");
     }
 }
