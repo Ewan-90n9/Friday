@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Playbook {
@@ -14,6 +15,6 @@ pub struct PlaybookStep {
     pub interpret: String,
 }
 
-pub async fn get_playbook(_symptom: &str) -> Option<Playbook> {
+pub async fn get_playbook(_playbooks_dir: &Path, _symptom: &str) -> Option<Playbook> {
     todo!()
 }
