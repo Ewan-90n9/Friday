@@ -135,10 +135,10 @@ pub async fn get_agent_session_id(
 pub async fn update_agent_session_id(
     pool: &SqlitePool,
     id: &str,
-    oc_id: &str,
+    agent_id: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE sessions SET agent_session_id = ? WHERE id = ?")
-        .bind(oc_id)
+        .bind(agent_id)
         .bind(id)
         .execute(pool)
         .await?;
@@ -260,9 +260,9 @@ mod tests {
         let pool = setup().await;
         let session = create_session(&pool, "test").await.unwrap();
 
-        update_agent_session_id(&pool, &session.id.0, "oc-123").await.unwrap();
+        update_agent_session_id(&pool, &session.id.0, "agent-123").await.unwrap();
 
         let result = get_agent_session_id(&pool, &session.id.0).await.unwrap();
-        assert_eq!(result, Some("oc-123".to_string()));
+        assert_eq!(result, Some("agent-123".to_string()));
     }
 }

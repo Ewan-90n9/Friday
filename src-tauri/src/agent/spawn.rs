@@ -83,12 +83,15 @@ fn command_config_for(provider: &str) -> CommandConfig {
             session_flag: "--sessions",
             needs_exe_resolution: false,
         },
-        _ => CommandConfig {
-            mode_args: &["run"],
-            format_args: &["--format", "json"],
-            session_flag: "--session",
-            needs_exe_resolution: true,
-        },
+        _ => {
+            tracing::warn!(provider, "unknown provider, falling back to opencode config");
+            CommandConfig {
+                mode_args: &["run"],
+                format_args: &["--format", "json"],
+                session_flag: "--session",
+                needs_exe_resolution: true,
+            }
+        }
     }
 }
 

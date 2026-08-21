@@ -213,7 +213,7 @@ pub async fn consume_stream(
     let AgentProcess { mut child, stdout, stderr, .. } = agent;
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
-    let mut oc_session_captured = false;
+    let mut agent_session_captured = false;
     let mut line_count = 0u64;
 
     let stderr_sid = session_id.clone();
@@ -232,13 +232,13 @@ pub async fn consume_stream(
                         tracing::debug!(line_count, raw = %line, "stdout line");
 
                         // Extract agent session ID from any event that has it
-                        if !oc_session_captured {
-                            if let Some(oc_id) = extract_session_id(&line) {
-                                tracing::info!(oc_id = %oc_id, "captured agent session id");
+                        if !agent_session_captured {
+                            if let Some(agent_id) = extract_session_id(&line) {
+                                tracing::info!(agent_id = %agent_id, "captured agent session id");
                                 let _ = crate::app::session::update_agent_session_id(
-                                    &pool, &session_id, &oc_id,
+                                    &pool, &session_id, &agent_id,
                                 ).await;
-                                oc_session_captured = true;
+                                agent_session_captured = true;
                             }
                         }
 
