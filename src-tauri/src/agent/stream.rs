@@ -61,17 +61,7 @@ pub fn parse_event(line: &str, session_id: &str) -> Vec<AppEvent> {
             vec![]
         }
         "assistant" => parse_assistant_event(&json, session_id),
-        "result" => {
-            let text = json.get("result").and_then(|r| r.as_str()).unwrap_or("");
-            if !text.is_empty() {
-                vec![AppEvent::LlmThinking {
-                    session_id: session_id.to_string(),
-                    token: text.to_string(),
-                }]
-            } else {
-                vec![]
-            }
-        }
+        "result" => vec![],
         "tool_use" => {
             let part = json.get("part").unwrap_or(&json);
             parse_tool_event(part, session_id)
@@ -134,16 +124,6 @@ fn parse_assistant_event(json: &Value, session_id: &str) -> Vec<AppEvent> {
     for item in content {
         let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
         match item_type {
-            "thinking" => {
-                if let Some(text) = item.get("thinking").and_then(|t| t.as_str()) {
-                    if !text.is_empty() {
-                        events.push(AppEvent::LlmThinking {
-                            session_id: session_id.to_string(),
-                            token: text.to_string(),
-                        });
-                    }
-                }
-            }
             "text" => {
                 if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
                     if !text.is_empty() {
@@ -483,17 +463,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_assistant_thinking_emits_llm_thinking() {
+    fn test_parse_assistant_thinking_skipped() {
         let line = r#"{"type":"assistant","message":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"The user is greeting me.","signature":"123"}],"model":"Glm-5.1"},"session_id":"c7c8d0d3"}"#;
         let events = parse_event(line, "s1");
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            AppEvent::LlmThinking { session_id, token } => {
-                assert_eq!(session_id, "s1");
-                assert_eq!(token, "The user is greeting me.");
-            }
-            _ => panic!("expected LlmThinking"),
-        }
+        assert_eq!(events.len(), 0);
     }
 
     #[test]
@@ -514,23 +487,15 @@ mod tests {
     fn test_parse_assistant_multiple_content_items() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"analyzing"},{"type":"text","text":"here is the answer"}]},"session_id":"c7c8d0d3"}"#;
         let events = parse_event(line, "s1");
-        assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], AppEvent::LlmThinking { token, .. } if token == "analyzing"));
-        assert!(matches!(&events[1], AppEvent::LlmThinking { token, .. } if token == "here is the answer"));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], AppEvent::LlmThinking { token, .. } if token == "here is the answer"));
     }
 
     #[test]
-    fn test_parse_result_event_emits_text() {
+    fn test_parse_result_event_returns_empty() {
         let line = r#"{"type":"result","subtype":"success","is_error":false,"result":"诊断完成","session_id":"c7c8d0d3"}"#;
         let events = parse_event(line, "s1");
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            AppEvent::LlmThinking { session_id, token } => {
-                assert_eq!(session_id, "s1");
-                assert_eq!(token, "诊断完成");
-            }
-            _ => panic!("expected LlmThinking"),
-        }
+        assert_eq!(events.len(), 0);
     }
 
     #[test]
