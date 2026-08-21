@@ -79,7 +79,7 @@ fn command_config_for(provider: &str) -> CommandConfig {
         },
         "codeagentcli" => CommandConfig {
             mode_args: &["-p"],
-            format_args: &["--output-format", "stream-json"],
+            format_args: &["--output-format", "stream-json", "--verbose", "--skip-safe-check"],
             session_flag: "--sessions",
             needs_exe_resolution: false,
         },
@@ -276,7 +276,7 @@ mod tests {
     fn test_command_config_for_codeagentcli() {
         let config = command_config_for("codeagentcli");
         assert_eq!(config.mode_args, &["-p"]);
-        assert_eq!(config.format_args, &["--output-format", "stream-json"]);
+        assert_eq!(config.format_args, &["--output-format", "stream-json", "--verbose", "--skip-safe-check"]);
         assert_eq!(config.session_flag, "--sessions");
         assert!(!config.needs_exe_resolution);
     }
