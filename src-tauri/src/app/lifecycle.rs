@@ -100,7 +100,7 @@ pub async fn send_message_cmd(
         }
     }
 
-    // Get prompt override path and spawn opencode
+    // Get prompt override path and spawn agent
     let prompt_override_path = state.paths.prompts_dir().join("friday.md");
     tracing::info!(
         session_id = %friday_session_id,

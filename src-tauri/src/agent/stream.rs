@@ -77,7 +77,7 @@ pub fn parse_event(line: &str, session_id: &str) -> Vec<AppEvent> {
     }
 }
 
-/// Extract opencode session ID from a session.created event, or from the
+/// Extract agent session ID from a session.created event, or from the
 /// sessionID field present on any event (fallback).
 pub fn extract_session_id(line: &str) -> Option<String> {
     let json: Value = serde_json::from_str(line).ok()?;
