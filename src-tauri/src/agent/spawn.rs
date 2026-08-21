@@ -62,42 +62,77 @@ fn resolve_native_exe(path: &PathBuf) -> PathBuf {
     }
 }
 
+struct CommandConfig {
+    print_args: &'static [&'static str],
+    format_args: &'static [&'static str],
+    session_flag: &'static str,
+    needs_exe_resolution: bool,
+}
+
+fn command_config_for(provider: &str) -> CommandConfig {
+    match provider {
+        "opencode" => CommandConfig {
+            print_args: &["run"],
+            format_args: &["--format", "json"],
+            session_flag: "--session",
+            needs_exe_resolution: true,
+        },
+        "codeagentcli" => CommandConfig {
+            print_args: &["-p"],
+            format_args: &["--output-format", "stream-json"],
+            session_flag: "--sessions",
+            needs_exe_resolution: false,
+        },
+        _ => CommandConfig {
+            print_args: &["run"],
+            format_args: &["--format", "json"],
+            session_flag: "--session",
+            needs_exe_resolution: true,
+        },
+    }
+}
+
 #[tracing::instrument(skip(pool))]
 pub async fn spawn_active(
     pool: &sqlx::SqlitePool,
     session_id: String,
     message: String,
-    opencode_session_id: Option<String>,
+    agent_session_id: Option<String>,
     prompt_override_path: Option<PathBuf>,
 ) -> Result<AgentProcess, SpawnError> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT path FROM agents WHERE is_active = 1 LIMIT 1")
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT path, provider FROM agents WHERE is_active = 1 LIMIT 1")
             .fetch_optional(pool)
             .await?;
 
-    let (path_str,) = row.ok_or(SpawnError::NoActiveAgent)?;
+    let (path_str, provider) = row.ok_or(SpawnError::NoActiveAgent)?;
     let raw_path = PathBuf::from(&path_str);
 
     if !raw_path.exists() {
         return Err(SpawnError::BinaryMissing { path: path_str });
     }
 
-    // On Windows, resolve to native .exe to avoid cmd.exe shim issues
-    let exe_path = resolve_native_exe(&raw_path);
+    let config = command_config_for(&provider);
+
+    let exe_path = if config.needs_exe_resolution {
+        resolve_native_exe(&raw_path)
+    } else {
+        raw_path.clone()
+    };
     tracing::info!(
         raw_path = %raw_path.display(),
         exe_path = %exe_path.display(),
-        "resolved opencode executable"
+        provider = %provider,
+        "resolved agent executable"
     );
 
     let mut cmd = tokio::process::Command::new(&exe_path);
-    cmd.arg("run")
-        .arg("--format")
-        .arg("json")
+    cmd.args(config.print_args)
+        .args(config.format_args)
         .arg("--dangerously-skip-permissions");
 
-    if let Some(ref oc_id) = opencode_session_id {
-        cmd.arg("--session").arg(oc_id);
+    if let Some(ref id) = agent_session_id {
+        cmd.arg(config.session_flag).arg(id);
     }
 
     let prompt_text = prompt::build_prompt(&message, prompt_override_path.as_deref());
@@ -110,7 +145,7 @@ pub async fn spawn_active(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // Set PWD to the user's home directory so opencode doesn't pick up
+    // Set PWD to the user's home directory so the agent doesn't pick up
     // the Friday project's AGENTS.md or .opencode/ config. Friday manages
     // the conversation context, not the host project's.
     if let Some(home) = dirs::home_dir() {
@@ -126,7 +161,7 @@ pub async fn spawn_active(
             "no pid",
         )))?;
 
-    tracing::info!(pid, exe = %exe_path.display(), "opencode process spawned");
+    tracing::info!(pid, exe = %exe_path.display(), provider = %provider, "agent process spawned");
 
     // Write prompt to stdin and close it
     if let Some(mut stdin) = child.stdin.take() {
@@ -223,5 +258,32 @@ mod tests {
                 assert!(resolved.exists());
             }
         }
+    }
+
+    #[test]
+    fn test_command_config_for_opencode() {
+        let config = command_config_for("opencode");
+        assert_eq!(config.print_args, &["run"]);
+        assert_eq!(config.format_args, &["--format", "json"]);
+        assert_eq!(config.session_flag, "--session");
+        assert!(config.needs_exe_resolution);
+    }
+
+    #[test]
+    fn test_command_config_for_codeagentcli() {
+        let config = command_config_for("codeagentcli");
+        assert_eq!(config.print_args, &["-p"]);
+        assert_eq!(config.format_args, &["--output-format", "stream-json"]);
+        assert_eq!(config.session_flag, "--sessions");
+        assert!(!config.needs_exe_resolution);
+    }
+
+    #[test]
+    fn test_command_config_for_unknown_falls_back_to_opencode() {
+        let config = command_config_for("unknown");
+        assert_eq!(config.print_args, &["run"]);
+        assert_eq!(config.format_args, &["--format", "json"]);
+        assert_eq!(config.session_flag, "--session");
+        assert!(config.needs_exe_resolution);
     }
 }
