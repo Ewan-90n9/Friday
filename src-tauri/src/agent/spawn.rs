@@ -3,6 +3,8 @@ use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, ChildStdout, ChildStderr};
 
+use crate::agent::prompt;
+
 pub struct AgentProcess {
     pub pid: u32,
     pub child: Child,
@@ -66,6 +68,7 @@ pub async fn spawn_active(
     session_id: String,
     message: String,
     opencode_session_id: Option<String>,
+    prompt_override_path: Option<PathBuf>,
 ) -> Result<AgentProcess, SpawnError> {
     let row: Option<(String,)> =
         sqlx::query_as("SELECT path FROM agents WHERE is_active = 1 LIMIT 1")
@@ -97,6 +100,9 @@ pub async fn spawn_active(
         cmd.arg("--session").arg(oc_id);
     }
 
+    let prompt_text = prompt::build_prompt(&message, prompt_override_path.as_deref());
+    tracing::info!(prompt_len = prompt_text.len(), "prompt built");
+
     // Prompt is delivered via stdin, not as a positional argument.
     // This avoids Windows argv truncation (cmd.exe caps at 8191 chars)
     // and matches multica's approach.
@@ -124,7 +130,7 @@ pub async fn spawn_active(
 
     // Write prompt to stdin and close it
     if let Some(mut stdin) = child.stdin.take() {
-        let msg = message.clone();
+        let msg = prompt_text.clone();
         tokio::spawn(async move {
             tracing::info!(msg_len = msg.len(), "writing prompt to stdin");
             if let Err(e) = stdin.write_all(msg.as_bytes()).await {
@@ -157,7 +163,7 @@ mod tests {
     async fn test_spawn_active_accepts_session_id_param() {
         let tmp = tempfile::tempdir().unwrap();
         let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
-        let result = spawn_active(&pool, "test-sid".to_string(), String::new(), None).await;
+        let result = spawn_active(&pool, "test-sid".to_string(), String::new(), None, None).await;
         assert!(matches!(result, Err(SpawnError::NoActiveAgent)));
     }
 
@@ -165,7 +171,7 @@ mod tests {
     async fn test_spawn_active_returns_no_active_agent_when_db_empty() {
         let tmp = tempfile::tempdir().unwrap();
         let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
-        let result = spawn_active(&pool, "test-session".to_string(), String::new(), None).await;
+        let result = spawn_active(&pool, "test-session".to_string(), String::new(), None, None).await;
         assert!(matches!(result, Err(SpawnError::NoActiveAgent)));
     }
 
@@ -182,7 +188,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = spawn_active(&pool, "test-session".to_string(), "test message".to_string(), None).await;
+        let result = spawn_active(&pool, "test-session".to_string(), "test message".to_string(), None, None).await;
         assert!(matches!(result, Err(SpawnError::BinaryMissing { .. })));
     }
 
