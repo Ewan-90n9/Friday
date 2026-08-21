@@ -16,9 +16,7 @@ impl LoggingGuard {
     }
 }
 
-pub fn init(app_data_dir: PathBuf) -> LoggingGuard {
-    let log_dir = app_data_dir.join("logs");
-    std::fs::create_dir_all(&log_dir).ok();
+pub fn init(log_dir: PathBuf) -> LoggingGuard {
     let file_appender = rolling::daily(&log_dir, "friday.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
@@ -101,24 +99,27 @@ mod tests {
     fn test_logging_init_creates_log_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let log_dir = tmp.path().join("logs");
-        assert!(!log_dir.exists());
-
-        let _guard = init(tmp.path().to_path_buf());
+        std::fs::create_dir_all(&log_dir).unwrap();
         assert!(log_dir.exists());
+
+        let _guard = init(log_dir);
     }
 
     #[test]
     fn test_init_returns_logging_guard() {
         let tmp = tempfile::tempdir().unwrap();
-        let guard = init(tmp.path().to_path_buf());
-        // Access filter_handle to prove the struct has it
+        let log_dir = tmp.path().join("logs");
+        std::fs::create_dir_all(&log_dir).unwrap();
+        let guard = init(log_dir);
         let _handle = &guard.filter_handle;
     }
 
     #[test]
     fn test_set_level_changes_filter() {
         let tmp = tempfile::tempdir().unwrap();
-        let guard = init(tmp.path().to_path_buf());
+        let log_dir = tmp.path().join("logs");
+        std::fs::create_dir_all(&log_dir).unwrap();
+        let guard = init(log_dir);
         let handle = &guard.filter_handle;
 
         let result = set_level(handle, "trace");
@@ -189,13 +190,11 @@ mod tests {
     #[test]
     fn test_panic_hook_installed() {
         let tmp = tempfile::tempdir().unwrap();
-        let _guard = init(tmp.path().to_path_buf());
+        let log_dir = tmp.path().join("logs");
+        std::fs::create_dir_all(&log_dir).unwrap();
+        let _guard = init(log_dir);
 
-        // Take the hook — if init() panicked, we wouldn't reach here.
-        // Our custom hook chains the previous hook.
         let _hook = std::panic::take_hook();
-
-        // Restore a no-op hook to avoid affecting other tests
         std::panic::set_hook(Box::new(|_| {}));
     }
 }
