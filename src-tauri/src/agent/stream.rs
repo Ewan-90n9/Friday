@@ -13,12 +13,20 @@ pub struct RunningAgent {
 /// Parse a single NDJSON line and return the corresponding AppEvent(s).
 /// Returns empty vec for events that should be ignored.
 ///
-/// Agent CLI `run --format json` / `-p --output-format stream-json` outputs flat events like:
+/// Handles two output formats:
+///
+/// opencode `run --format json`:
 ///   {"type":"text", "sessionID":"...", "part":{"type":"text", "text":"hello"}}
 ///   {"type":"tool_use", "sessionID":"...", "part":{"tool":"bash", "state":{"status":"completed", ...}}}
 ///   {"type":"step_start", ...}
 ///   {"type":"step_finish", ...}
 ///   {"type":"error", "error":{"data":{"message":"..."}}}
+///
+/// codeagentcli `-p --output-format stream-json`:
+///   {"type":"system","subtype":"init","session_id":"...",...}
+///   {"type":"assistant","message":{"content":[{"type":"thinking","thinking":"..."}]}}
+///   {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
+///   {"type":"result","subtype":"success","result":"..."}
 pub fn parse_event(line: &str, session_id: &str) -> Vec<AppEvent> {
     let json: Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -29,7 +37,6 @@ pub fn parse_event(line: &str, session_id: &str) -> Vec<AppEvent> {
 
     match event_type {
         "text" => {
-            // Text event: part.text contains the output text
             let part = json.get("part").unwrap_or(&json);
             if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                 if !text.is_empty() {
@@ -42,7 +49,6 @@ pub fn parse_event(line: &str, session_id: &str) -> Vec<AppEvent> {
             vec![]
         }
         "reasoning" => {
-            // Reasoning event: part.text contains the reasoning text
             let part = json.get("part").unwrap_or(&json);
             if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                 if !text.is_empty() {
@@ -54,8 +60,19 @@ pub fn parse_event(line: &str, session_id: &str) -> Vec<AppEvent> {
             }
             vec![]
         }
+        "assistant" => parse_assistant_event(&json, session_id),
+        "result" => {
+            let text = json.get("result").and_then(|r| r.as_str()).unwrap_or("");
+            if !text.is_empty() {
+                vec![AppEvent::LlmThinking {
+                    session_id: session_id.to_string(),
+                    token: text.to_string(),
+                }]
+            } else {
+                vec![]
+            }
+        }
         "tool_use" => {
-            // Tool use event: part.tool, part.state
             let part = json.get("part").unwrap_or(&json);
             parse_tool_event(part, session_id)
         }
@@ -72,17 +89,15 @@ pub fn parse_event(line: &str, session_id: &str) -> Vec<AppEvent> {
                 reason,
             }]
         }
-        // step_start, step_finish, and other events are ignored
         _ => vec![],
     }
 }
 
-/// Extract agent session ID from a session.created event, or from the
-/// sessionID field present on any event (fallback).
+/// Extract agent session ID from various event formats.
+/// Checks: session.created (opencode), sessionID (opencode), session_id (codeagentcli).
 pub fn extract_session_id(line: &str) -> Option<String> {
     let json: Value = serde_json::from_str(line).ok()?;
 
-    // Primary: session.created event has properties.info.id
     if json.get("type").and_then(|t| t.as_str()) == Some("session.created") {
         if let Some(id) = json
             .get("properties")
@@ -94,10 +109,55 @@ pub fn extract_session_id(line: &str) -> Option<String> {
         }
     }
 
-    // Fallback: many events carry a top-level sessionID field
-    json.get("sessionID")
+    if let Some(id) = json.get("sessionID").and_then(|s| s.as_str()) {
+        return Some(id.to_string());
+    }
+
+    json.get("session_id")
         .and_then(|s| s.as_str())
         .map(|s| s.to_string())
+}
+
+/// Parse codeagentcli assistant event: message.content[] array contains
+/// thinking and text items.
+fn parse_assistant_event(json: &Value, session_id: &str) -> Vec<AppEvent> {
+    let content = match json
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    {
+        Some(arr) => arr,
+        None => return vec![],
+    };
+
+    let mut events = vec![];
+    for item in content {
+        let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        match item_type {
+            "thinking" => {
+                if let Some(text) = item.get("thinking").and_then(|t| t.as_str()) {
+                    if !text.is_empty() {
+                        events.push(AppEvent::LlmThinking {
+                            session_id: session_id.to_string(),
+                            token: text.to_string(),
+                        });
+                    }
+                }
+            }
+            "text" => {
+                if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                    if !text.is_empty() {
+                        events.push(AppEvent::LlmThinking {
+                            session_id: session_id.to_string(),
+                            token: text.to_string(),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    events
 }
 
 fn parse_tool_event(part: &Value, session_id: &str) -> Vec<AppEvent> {
@@ -420,6 +480,78 @@ mod tests {
     fn test_parse_invalid_json_returns_empty() {
         let events = parse_event("not valid json", "s1");
         assert_eq!(events.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_assistant_thinking_emits_llm_thinking() {
+        let line = r#"{"type":"assistant","message":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"The user is greeting me.","signature":"123"}],"model":"Glm-5.1"},"session_id":"c7c8d0d3"}"#;
+        let events = parse_event(line, "s1");
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AppEvent::LlmThinking { session_id, token } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(token, "The user is greeting me.");
+            }
+            _ => panic!("expected LlmThinking"),
+        }
+    }
+
+    #[test]
+    fn test_parse_assistant_text_emits_llm_thinking() {
+        let line = r#"{"type":"assistant","message":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"你好，我是 Friday。"}],"model":"Glm-5.1"},"session_id":"c7c8d0d3"}"#;
+        let events = parse_event(line, "s1");
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AppEvent::LlmThinking { session_id, token } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(token, "你好，我是 Friday。");
+            }
+            _ => panic!("expected LlmThinking"),
+        }
+    }
+
+    #[test]
+    fn test_parse_assistant_multiple_content_items() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"analyzing"},{"type":"text","text":"here is the answer"}]},"session_id":"c7c8d0d3"}"#;
+        let events = parse_event(line, "s1");
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], AppEvent::LlmThinking { token, .. } if token == "analyzing"));
+        assert!(matches!(&events[1], AppEvent::LlmThinking { token, .. } if token == "here is the answer"));
+    }
+
+    #[test]
+    fn test_parse_result_event_emits_text() {
+        let line = r#"{"type":"result","subtype":"success","is_error":false,"result":"诊断完成","session_id":"c7c8d0d3"}"#;
+        let events = parse_event(line, "s1");
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AppEvent::LlmThinking { session_id, token } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(token, "诊断完成");
+            }
+            _ => panic!("expected LlmThinking"),
+        }
+    }
+
+    #[test]
+    fn test_parse_result_event_empty_result_returns_empty() {
+        let line = r#"{"type":"result","subtype":"success","result":""}"#;
+        let events = parse_event(line, "s1");
+        assert_eq!(events.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_system_init_returns_empty() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"c7c8d0d3","tools":["Bash","Edit"]}"#;
+        let events = parse_event(line, "s1");
+        assert_eq!(events.len(), 0);
+    }
+
+    #[test]
+    fn test_extract_session_id_from_codeagentcli_snake_case() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"c7c8d0d3-abc"}"#;
+        let result = extract_session_id(line);
+        assert_eq!(result, Some("c7c8d0d3-abc".to_string()));
     }
 
     #[test]
