@@ -11,4 +11,4 @@
 - **Friday 运行日志**：`tracing` + `tracing-appender` 文件轮转，写入 Tauri app data dir 下的 `logs/` 目录。INFO 为主，关键路径 DEBUG。
 - **诊断过程数据**：会话/步骤/工具调用/结果持久化到 SQLite，供用户回看历史诊断。
 - 两者分离，互不污染。
-- 敏感信息（密码、私钥路径）不入日志。
+- 详细规范见 [日志规范（强制约束）](logging-standard.md)。

@@ -20,6 +20,7 @@ Friday 是面向软件开发人员的**远程环境运行时故障诊断 Agent**
 - [运行时模型（通信 + 并发 + 取消）](docs/architecture/runtime.md)
 - [错误处理与安全边界](docs/architecture/error-handling.md)
 - [基础设施（凭证 + 日志）](docs/architecture/infrastructure.md)
+- [日志规范（强制约束）](docs/architecture/logging-standard.md)
 - [知识层（Playbook）](docs/architecture/playbook.md)
 - [v1 范围与演进](docs/architecture/roadmap.md)
 
@@ -44,4 +45,5 @@ Friday 是面向软件开发人员的**远程环境运行时故障诊断 Agent**
 
 ## 约定
 
-无特殊团队约定。分支、提交信息、CI 等按默认处理；不要强加未要求的规范（如 Conventional Commits）。
+- **日志规范**：编写或修改 Rust 代码时必须遵从 [docs/architecture/logging-standard.md](docs/architecture/logging-standard.md)。核心要求：每个 Tauri command 有 `#[instrument]` 或入口 `info!`；错误路径有 `tracing::error!`/`warn!`；子进程 stderr 必须读取记录；日志不截断、不脱敏。
+- 无特殊团队约定。分支、提交信息、CI 等按默认处理；不要强加未要求的规范（如 Conventional Commits）。
