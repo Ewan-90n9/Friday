@@ -3,6 +3,8 @@ param(
     [string]$Version
 )
 
+$ErrorActionPreference = 'Stop'
+
 $Version = $Version -replace '^v', ''
 
 if ($Version -notmatch '^\d+\.\d+\.\d+') {
@@ -12,19 +14,34 @@ if ($Version -notmatch '^\d+\.\d+\.\d+') {
 
 Write-Host "Injecting version $Version into 3 files..."
 
-$packageJson = Get-Content "package.json" -Raw
+$packageJsonPath = "package.json"
+$packageJson = [System.IO.File]::ReadAllText((Resolve-Path $packageJsonPath))
+$original = $packageJson
 $packageJson = $packageJson -replace '"version"\s*:\s*"[^"]*"', "`"version`": `"$Version`""
-Set-Content -Path "package.json" -Value $packageJson -NoNewline
+if ($packageJson -eq $original) {
+    throw "No version field found in $packageJsonPath"
+}
+[System.IO.File]::WriteAllText((Resolve-Path $packageJsonPath), $packageJson)
 Write-Host "  Updated package.json"
 
-$cargoToml = Get-Content "src-tauri/Cargo.toml" -Raw
+$cargoTomlPath = "src-tauri/Cargo.toml"
+$cargoToml = [System.IO.File]::ReadAllText((Resolve-Path $cargoTomlPath))
+$original = $cargoToml
 $cargoToml = $cargoToml -replace '(?m)^version\s*=\s*"[^"]*"', "version = `"$Version`""
-Set-Content -Path "src-tauri/Cargo.toml" -Value $cargoToml -NoNewline
+if ($cargoToml -eq $original) {
+    throw "No version field found in $cargoTomlPath"
+}
+[System.IO.File]::WriteAllText((Resolve-Path $cargoTomlPath), $cargoToml)
 Write-Host "  Updated src-tauri/Cargo.toml"
 
-$tauriConf = Get-Content "src-tauri/tauri.conf.json" -Raw
+$tauriConfPath = "src-tauri/tauri.conf.json"
+$tauriConf = [System.IO.File]::ReadAllText((Resolve-Path $tauriConfPath))
+$original = $tauriConf
 $tauriConf = $tauriConf -replace '"version"\s*:\s*"[^"]*"', "`"version`": `"$Version`""
-Set-Content -Path "src-tauri/tauri.conf.json" -Value $tauriConf -NoNewline
+if ($tauriConf -eq $original) {
+    throw "No version field found in $tauriConfPath"
+}
+[System.IO.File]::WriteAllText((Resolve-Path $tauriConfPath), $tauriConf)
 Write-Host "  Updated src-tauri/tauri.conf.json"
 
 Write-Host "Done. All 3 files updated to version $Version"
