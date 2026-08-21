@@ -11,8 +11,9 @@ pub async fn init(db_path: PathBuf) -> Result<SqlitePool, sqlx::Error> {
     sqlx::query(schema1).execute(&pool).await?;
     let schema2 = include_str!("../../migrations/0002_agents.sql");
     sqlx::query(schema2).execute(&pool).await?;
-    // Migration 0003: add conversation columns (idempotent — safe to re-run)
-    add_column_if_not_exists(&pool, "sessions", "opencode_session_id", "TEXT").await?;
+    // Migration 0003/0004: rename opencode_session_id → agent_session_id, add title
+    rename_column_if_exists(&pool, "sessions", "opencode_session_id", "agent_session_id").await?;
+    add_column_if_not_exists(&pool, "sessions", "agent_session_id", "TEXT").await?;
     add_column_if_not_exists(&pool, "sessions", "title", "TEXT").await?;
     tracing::info!(?db_path, "SQLite initialized");
     Ok(pool)
@@ -39,6 +40,44 @@ async fn add_column_if_not_exists(
         let sql = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, col_type);
         sqlx::query(&sql).execute(pool).await?;
         tracing::info!(table, column, "added column");
+    }
+
+    Ok(())
+}
+
+/// Rename a column only if the old column exists and the new one doesn't.
+/// SQLite supports ALTER TABLE RENAME COLUMN since 3.25.0.
+async fn rename_column_if_exists(
+    pool: &SqlitePool,
+    table: &str,
+    old_name: &str,
+    new_name: &str,
+) -> Result<(), sqlx::Error> {
+    let old_exists: i64 = sqlx::query_scalar(
+        &format!(
+            "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = '{}'",
+            table, old_name
+        ),
+    )
+    .fetch_one(pool)
+    .await?;
+
+    let new_exists: i64 = sqlx::query_scalar(
+        &format!(
+            "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = '{}'",
+            table, new_name
+        ),
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if old_exists > 0 && new_exists == 0 {
+        let sql = format!(
+            "ALTER TABLE {} RENAME COLUMN {} TO {}",
+            table, old_name, new_name
+        );
+        sqlx::query(&sql).execute(pool).await?;
+        tracing::info!(table, old_name, new_name, "renamed column");
     }
 
     Ok(())
@@ -99,12 +138,75 @@ mod tests {
         let pool = init(tmp.path().join("friday.db")).await.unwrap();
 
         let col_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('opencode_session_id', 'title')",
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('agent_session_id', 'title')",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
 
         assert_eq!(col_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_rename_column_if_exists_renames_column() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_url = format!("sqlite://{}?mode=rwc", tmp.path().join("test.db").display());
+        let pool = SqlitePoolOptions::new()
+            .connect(&db_url)
+            .await
+            .unwrap();
+
+        sqlx::query("CREATE TABLE test_table (old_col TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        rename_column_if_exists(&pool, "test_table", "old_col", "new_col")
+            .await
+            .unwrap();
+
+        let new_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('test_table') WHERE name = 'new_col'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(new_count, 1);
+
+        let old_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('test_table') WHERE name = 'old_col'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(old_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_rename_column_if_exists_noop_when_old_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_url = format!("sqlite://{}?mode=rwc", tmp.path().join("test.db").display());
+        let pool = SqlitePoolOptions::new()
+            .connect(&db_url)
+            .await
+            .unwrap();
+
+        sqlx::query("CREATE TABLE test_table (new_col TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // old_col doesn't exist, new_col already exists — should be no-op
+        rename_column_if_exists(&pool, "test_table", "old_col", "new_col")
+            .await
+            .unwrap();
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('test_table') WHERE name = 'new_col'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
     }
 }

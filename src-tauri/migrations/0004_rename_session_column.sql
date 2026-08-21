@@ -1,0 +1,3 @@
+-- Rename opencode_session_id to agent_session_id for multi-provider support.
+-- Executed in db.rs::init via rename_column_if_exists (SQLite ALTER TABLE RENAME COLUMN).
+-- This file documents the migration; the actual execution is in Rust for idempotency.
