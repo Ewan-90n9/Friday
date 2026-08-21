@@ -145,6 +145,7 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
                   aria-label="Provider"
                 >
                   <option value="opencode">opencode</option>
+                  <option value="codeagentcli">codeagentcli</option>
                 </select>
                 <input
                   type="text"
