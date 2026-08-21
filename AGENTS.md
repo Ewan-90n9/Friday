@@ -43,6 +43,17 @@ Friday 是面向软件开发人员的**远程环境运行时故障诊断 Agent**
 - Rust 测试：`cargo test --manifest-path src-tauri/Cargo.toml`
 - lint：TODO（待定 clippy + eslint 配置后再补）
 
+## 发版流程
+
+- **版本规则**：SemVer + 0.x.y 预发布阶段。Tag 格式 `vX.Y.Z`（如 `v0.1.0`）。详见 [版本号规则与自动化发布设计](docs/superpowers/specs/2026-08-21-versioning-release-design.md)。
+- **发版步骤**：
+  1. 确认主分支代码就绪，本地跑 `pnpm typecheck` + `cargo check --manifest-path src-tauri/Cargo.toml`。
+  2. 打 tag：`git tag vX.Y.Z && git push origin vX.Y.Z`（或在 GitHub Releases 页面创建）。
+  3. CI 自动构建并发布（`.msi` + `.exe`），无需人工干预。
+  4. 几分钟后在 Releases 页面验证产物和 release notes。
+- **版本同步**：源码中版本号保持 `0.1.0` 不变，CI 从 tag 提取版本号自动注入 `package.json`、`Cargo.toml`、`tauri.conf.json`。不要手动改版本号。
+- **CI 配置**：`.github/workflows/release.yml`，版本注入脚本 `scripts/set-version.ps1`。
+
 ## 约定
 
 - **日志规范**：编写或修改 Rust 代码时必须遵从 [docs/architecture/logging-standard.md](docs/architecture/logging-standard.md)。核心要求：每个 Tauri command 有 `#[instrument]` 或入口 `info!`；错误路径有 `tracing::error!`/`warn!`；子进程 stderr 必须读取记录；日志不截断、不脱敏。
