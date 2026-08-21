@@ -194,7 +194,7 @@ async fn read_stderr_lines<R: tokio::io::AsyncRead + Unpin>(reader: R, session_i
     count
 }
 
-/// Consume the stdout stream of an opencode process, parse NDJSON lines,
+/// Consume the stdout stream of an agent process, parse NDJSON lines,
 /// and emit AppEvents via the EventBus. Handles process lifecycle:
 /// - stdout EOF + exit 0 → DiagnosisDone
 /// - stdout EOF + exit ≠0 → AgentCrashed
@@ -231,11 +231,11 @@ pub async fn consume_stream(
                         line_count += 1;
                         tracing::debug!(line_count, raw = %line, "stdout line");
 
-                        // Extract opencode session ID from any event that has it
+                        // Extract agent session ID from any event that has it
                         if !oc_session_captured {
                             if let Some(oc_id) = extract_session_id(&line) {
-                                tracing::info!(oc_id = %oc_id, "captured opencode session id");
-                                let _ = crate::app::session::update_opencode_session_id(
+                                tracing::info!(oc_id = %oc_id, "captured agent session id");
+                                let _ = crate::app::session::update_agent_session_id(
                                     &pool, &session_id, &oc_id,
                                 ).await;
                                 oc_session_captured = true;

@@ -120,24 +120,24 @@ pub async fn get_session(
     .transpose()
 }
 
-pub async fn get_opencode_session_id(
+pub async fn get_agent_session_id(
     pool: &SqlitePool,
     id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(Option<String>,)> =
-        sqlx::query_as("SELECT opencode_session_id FROM sessions WHERE id = ?")
+        sqlx::query_as("SELECT agent_session_id FROM sessions WHERE id = ?")
             .bind(id)
             .fetch_optional(pool)
             .await?;
     Ok(row.and_then(|(oc_id,)| oc_id))
 }
 
-pub async fn update_opencode_session_id(
+pub async fn update_agent_session_id(
     pool: &SqlitePool,
     id: &str,
     oc_id: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE sessions SET opencode_session_id = ? WHERE id = ?")
+    sqlx::query("UPDATE sessions SET agent_session_id = ? WHERE id = ?")
         .bind(oc_id)
         .bind(id)
         .execute(pool)
@@ -247,22 +247,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_opencode_session_id_returns_none_initially() {
+    async fn test_get_agent_session_id_returns_none_initially() {
         let pool = setup().await;
         let session = create_session(&pool, "test").await.unwrap();
 
-        let result = get_opencode_session_id(&pool, &session.id.0).await.unwrap();
+        let result = get_agent_session_id(&pool, &session.id.0).await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
-    async fn test_update_opencode_session_id_persists() {
+    async fn test_update_agent_session_id_persists() {
         let pool = setup().await;
         let session = create_session(&pool, "test").await.unwrap();
 
-        update_opencode_session_id(&pool, &session.id.0, "oc-123").await.unwrap();
+        update_agent_session_id(&pool, &session.id.0, "oc-123").await.unwrap();
 
-        let result = get_opencode_session_id(&pool, &session.id.0).await.unwrap();
+        let result = get_agent_session_id(&pool, &session.id.0).await.unwrap();
         assert_eq!(result, Some("oc-123".to_string()));
     }
 }

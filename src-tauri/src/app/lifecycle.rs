@@ -59,7 +59,7 @@ pub async fn send_message_cmd(
     let agents = state.agents.clone();
 
     // Determine session ID and opencode session ID
-    let (friday_session_id, oc_session_id) = match session_id {
+    let (friday_session_id, agent_session_id) = match session_id {
         None => {
             tracing::info!("creating new session");
             let session = session::create_session(&pool, &message)
@@ -82,11 +82,11 @@ pub async fn send_message_cmd(
                 }
                 Some(_) => {}
             }
-            let oc_id = session::get_opencode_session_id(&pool, &id)
+            let agent_id = session::get_agent_session_id(&pool, &id)
                 .await
                 .map_err(|e| e.to_string())?;
-            tracing::info!(?oc_id, "found opencode session id");
-            (id, oc_id)
+            tracing::info!(?agent_id, "found agent session id");
+            (id, agent_id)
         }
     };
 
@@ -104,13 +104,13 @@ pub async fn send_message_cmd(
     let prompt_override_path = state.paths.prompts_dir().join("friday.md");
     tracing::info!(
         session_id = %friday_session_id,
-        "spawning opencode"
+        "spawning agent"
     );
     let agent_process = spawn_active(
         &pool,
         friday_session_id.clone(),
         message,
-        oc_session_id,
+        agent_session_id,
         Some(prompt_override_path),
     )
     .await
@@ -120,7 +120,7 @@ pub async fn send_message_cmd(
     })?;
 
     let pid = agent_process.pid;
-    tracing::info!(pid, session_id = %friday_session_id, "opencode spawned");
+    tracing::info!(pid, session_id = %friday_session_id, "agent spawned");
 
     // Emit AgentStarted
     bus.emit(
