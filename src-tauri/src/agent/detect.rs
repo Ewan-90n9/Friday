@@ -80,7 +80,11 @@ mod tests {
     async fn detect_returns_vec_without_panicking() {
         let result = detect().await;
         for agent in &result {
-            assert_eq!(agent.provider, "opencode");
+            assert!(
+                crate::agent::registry::REGISTRY.iter().any(|d| d.provider == agent.provider),
+                "detected provider {} not in registry",
+                agent.provider
+            );
         }
     }
 }
