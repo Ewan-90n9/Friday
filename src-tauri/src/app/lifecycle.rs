@@ -1,5 +1,4 @@
 use super::session;
-use crate::agent::prompt;
 use crate::agent::spawn::spawn_active;
 use crate::agent::stream::{self, RunningAgent};
 use crate::app::events::AppEvent;
@@ -101,19 +100,24 @@ pub async fn send_message_cmd(
         }
     }
 
-    // Build prompt and spawn opencode
-    let prompt_text = prompt::build_prompt(&message);
+    // Get prompt override path and spawn opencode
+    let prompt_override_path = state.paths.prompts_dir().join("friday.md");
     tracing::info!(
         session_id = %friday_session_id,
-        prompt_len = prompt_text.len(),
         "spawning opencode"
     );
-    let agent_process = spawn_active(&pool, friday_session_id.clone(), prompt_text, oc_session_id)
-        .await
-        .map_err(|e| {
-            tracing::error!(?e, "failed to spawn opencode");
-            e.to_string()
-        })?;
+    let agent_process = spawn_active(
+        &pool,
+        friday_session_id.clone(),
+        message,
+        oc_session_id,
+        Some(prompt_override_path),
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "failed to spawn opencode");
+        e.to_string()
+    })?;
 
     let pid = agent_process.pid;
     tracing::info!(pid, session_id = %friday_session_id, "opencode spawned");
