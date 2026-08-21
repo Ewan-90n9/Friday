@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: windows-latest
@@ -16,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@v3
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -33,7 +37,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Inject version from tag
         shell: pwsh
