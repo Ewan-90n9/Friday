@@ -1,8 +1,7 @@
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 use std::path::PathBuf;
 
-pub async fn init(app_data_dir: PathBuf) -> Result<SqlitePool, sqlx::Error> {
-    let db_path = app_data_dir.join("friday.db");
+pub async fn init(db_path: PathBuf) -> Result<SqlitePool, sqlx::Error> {
     let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
@@ -52,7 +51,7 @@ mod tests {
     #[tokio::test]
     async fn test_db_init_creates_tables() {
         let tmp = tempfile::tempdir().unwrap();
-        let pool = init(tmp.path().to_path_buf()).await.unwrap();
+        let pool = init(tmp.path().join("friday.db")).await.unwrap();
 
         let table_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('sessions', 'diagnosis_steps', 'tool_calls', 'environments', 'agents')"
@@ -67,7 +66,7 @@ mod tests {
     #[tokio::test]
     async fn test_db_init_creates_agents_index() {
         let tmp = tempfile::tempdir().unwrap();
-        let pool = init(tmp.path().to_path_buf()).await.unwrap();
+        let pool = init(tmp.path().join("friday.db")).await.unwrap();
 
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_agents_active'"
@@ -82,7 +81,7 @@ mod tests {
     #[tokio::test]
     async fn test_db_init_creates_indexes() {
         let tmp = tempfile::tempdir().unwrap();
-        let pool = init(tmp.path().to_path_buf()).await.unwrap();
+        let pool = init(tmp.path().join("friday.db")).await.unwrap();
 
         let index_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('idx_diagnosis_steps_session', 'idx_tool_calls_session')"
@@ -97,7 +96,7 @@ mod tests {
     #[tokio::test]
     async fn test_db_init_adds_conversation_columns() {
         let tmp = tempfile::tempdir().unwrap();
-        let pool = init(tmp.path().to_path_buf()).await.unwrap();
+        let pool = init(tmp.path().join("friday.db")).await.unwrap();
 
         let col_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('opencode_session_id', 'title')",

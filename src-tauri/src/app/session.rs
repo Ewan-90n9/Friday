@@ -152,7 +152,7 @@ mod tests {
 
     async fn setup() -> SqlitePool {
         let tmp = tempfile::tempdir().unwrap();
-        db::init(tmp.path().to_path_buf()).await.unwrap()
+        db::init(tmp.path().join("friday.db")).await.unwrap()
     }
 
     #[tokio::test]

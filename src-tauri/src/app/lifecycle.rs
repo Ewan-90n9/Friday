@@ -238,7 +238,7 @@ mod tests {
     #[tokio::test]
     async fn test_close_session_updates_status() {
         let tmp = tempfile::tempdir().unwrap();
-        let pool = db::init(tmp.path().to_path_buf()).await.unwrap();
+        let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
         let s = session::create_session(&pool, "test").await.unwrap();
         session::close_session(&pool, &s.id.0).await.unwrap();
 

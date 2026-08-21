@@ -156,7 +156,7 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_active_accepts_session_id_param() {
         let tmp = tempfile::tempdir().unwrap();
-        let pool = db::init(tmp.path().to_path_buf()).await.unwrap();
+        let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
         let result = spawn_active(&pool, "test-sid".to_string(), String::new(), None).await;
         assert!(matches!(result, Err(SpawnError::NoActiveAgent)));
     }
@@ -164,7 +164,7 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_active_returns_no_active_agent_when_db_empty() {
         let tmp = tempfile::tempdir().unwrap();
-        let pool = db::init(tmp.path().to_path_buf()).await.unwrap();
+        let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
         let result = spawn_active(&pool, "test-session".to_string(), String::new(), None).await;
         assert!(matches!(result, Err(SpawnError::NoActiveAgent)));
     }
@@ -172,7 +172,7 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_active_returns_binary_missing_when_path_invalid() {
         let tmp = tempfile::tempdir().unwrap();
-        let pool = db::init(tmp.path().to_path_buf()).await.unwrap();
+        let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
 
         sqlx::query(
             "INSERT INTO agents (id, provider, display_name, path, version, source, is_active, detected_at, created_at) \
