@@ -46,4 +46,5 @@ Friday 是面向软件开发人员的**远程环境运行时故障诊断 Agent**
 ## 约定
 
 - **日志规范**：编写或修改 Rust 代码时必须遵从 [docs/architecture/logging-standard.md](docs/architecture/logging-standard.md)。核心要求：每个 Tauri command 有 `#[instrument]` 或入口 `info!`；错误路径有 `tracing::error!`/`warn!`；子进程 stderr 必须读取记录；日志不截断、不脱敏。
+- **文件管理**：所有运行时文件路径通过 `infra/paths.rs` 的 `Paths` struct 统一解析，不内联 `.join()`。`Paths` 存入 `AppState`，各模块从 `State<AppState>` 取路径。新增文件类别时，在 `Paths` 加方法 + `ensure_dirs()` 加目录，不散落到各模块。详见 [文件管理设计](docs/superpowers/specs/2026-08-21-file-management-design.md)。
 - 无特殊团队约定。分支、提交信息、CI 等按默认处理；不要强加未要求的规范（如 Conventional Commits）。
