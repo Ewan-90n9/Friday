@@ -20,7 +20,8 @@ export type AppEvent =
   | { type: "agent_stopped"; session_id: string }
   | { type: "agent_crashed"; session_id: string; reason: string }
   | { type: "diagnosis_done"; session_id: string; conclusion: string }
-  | { type: "session_closed"; session_id: string };
+  | { type: "session_closed"; session_id: string }
+  | { type: "session_deleted"; session_id: string };
 
 export interface EventPayload {
   session_id: string;
@@ -41,8 +42,9 @@ export interface AgentRow {
 export interface SessionRow {
   id: string;
   title: string | null;
-  status: "active" | "closed";
+  status: "active" | "closed" | "archived";
   created_at: string;
+  archived_at: string | null;
 }
 
 export type ChatPartType = "text" | "reasoning" | "tool";
@@ -69,4 +71,24 @@ export interface ChatMessage {
   content: string;
   parts: ChatPart[];
   status: ChatMessageStatus;
+}
+
+export interface MessagePartRow {
+  part_type: "text" | "tool";
+  seq: number;
+  text: string | null;
+  tool_name: string | null;
+  tool_args: string | null;
+  tool_status: string | null;
+  tool_output: string | null;
+  tool_elapsed_ms: number | null;
+}
+
+export interface MessageRow {
+  id: string;
+  role: "user" | "agent";
+  content: string | null;
+  status: string | null;
+  seq: number;
+  parts: MessagePartRow[];
 }

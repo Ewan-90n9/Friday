@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { EventPayload, AgentRow, SessionRow } from "@/lib/types";
+import type { EventPayload, AgentRow, SessionRow, MessageRow } from "@/lib/types";
 
 export async function sendMessage(sessionId: string | null, message: string): Promise<string> {
   return invoke<string>("send_message_cmd", { sessionId: sessionId, message: message });
@@ -16,6 +16,22 @@ export async function stopAgent(sessionId: string): Promise<void> {
 
 export async function closeSession(sessionId: string): Promise<void> {
   return invoke<void>("close_session_cmd", { sessionId });
+}
+
+export async function getSessionMessages(sessionId: string): Promise<MessageRow[]> {
+  return invoke<MessageRow[]>("get_session_messages_cmd", { sessionId });
+}
+
+export async function archiveSession(sessionId: string): Promise<void> {
+  return invoke<void>("archive_session_cmd", { sessionId });
+}
+
+export async function unarchiveSession(sessionId: string): Promise<void> {
+  return invoke<void>("unarchive_session_cmd", { sessionId });
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  return invoke<void>("delete_session_cmd", { sessionId });
 }
 
 export async function confirmTool(sessionId: string, tool: string): Promise<void> {
