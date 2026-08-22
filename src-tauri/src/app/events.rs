@@ -44,6 +44,9 @@ pub enum AppEvent {
     SessionClosed {
         session_id: String,
     },
+    SessionDeleted {
+        session_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -115,5 +118,15 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("confirm_required"));
         assert!(json.contains("low"));
+    }
+
+    #[test]
+    fn test_session_deleted_serialization() {
+        let event = AppEvent::SessionDeleted {
+            session_id: "s99".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("session_deleted"));
+        assert!(json.contains("s99"));
     }
 }
