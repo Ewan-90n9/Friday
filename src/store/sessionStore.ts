@@ -1,23 +1,30 @@
 import { create } from "zustand";
-import type { SessionRow, ChatMessage, ChatPart, AppEvent } from "@/lib/types";
-import { sendMessage as ipcSendMessage, stopAgent, listSessions, onAppEvent } from "@/lib/ipc";
+import { sendMessage as ipcSendMessage, stopAgent, listSessions, onAppEvent, getSessionMessages, archiveSession as ipcArchiveSession, unarchiveSession as ipcUnarchiveSession, deleteSession as ipcDeleteSession } from "@/lib/ipc";
+import type { SessionRow, ChatMessage, ChatPart, AppEvent, MessageRow } from "@/lib/types";
 
 interface SessionStore {
   sessions: SessionRow[];
+  archivedSessions: SessionRow[];
   currentSessionId: string | null;
   messagesBySession: Record<string, ChatMessage[]>;
   agentRunning: Record<string, boolean>;
   inputText: string;
+  sidebarView: "sessions" | "archived";
   eventUnlisten: (() => void) | null | string;
 
   loadSessions: () => Promise<void>;
-  selectSession: (id: string) => void;
+  loadArchivedSessions: () => Promise<void>;
+  selectSession: (id: string) => Promise<void>;
   newSession: () => void;
   setInputText: (text: string) => void;
   sendMessage: () => Promise<void>;
   stopAgent: () => Promise<void>;
   initEventListener: () => Promise<void>;
   handleEvent: (payload: { session_id: string; event: AppEvent }) => void;
+  setSidebarView: (view: "sessions" | "archived") => void;
+  archiveSession: (id: string) => Promise<void>;
+  unarchiveSession: (id: string) => Promise<void>;
+  deleteSession: (id: string) => Promise<void>;
 }
 
 function errMsg(e: unknown): string {
@@ -26,24 +33,91 @@ function errMsg(e: unknown): string {
 
 let agentMessageCounter = 0;
 
+function convertMessages(rows: MessageRow[]): ChatMessage[] {
+  return rows.map((row) => {
+    const parts: ChatPart[] = row.parts.map((p) => {
+      if (p.part_type === "text") {
+        return { type: "text", text: p.text ?? "" };
+      } else {
+        let args: unknown;
+        try {
+          args = p.tool_args ? JSON.parse(p.tool_args) : null;
+        } catch {
+          args = p.tool_args;
+        }
+        return {
+          type: "tool",
+          tool: {
+            name: p.tool_name ?? "unknown",
+            args,
+            status: (p.tool_status as "running" | "completed" | "error") ?? "completed",
+            output: p.tool_output ?? undefined,
+            elapsedMs: p.tool_elapsed_ms ?? undefined,
+          },
+        };
+      }
+    });
+
+    return {
+      id: row.id,
+      role: row.role as "user" | "agent",
+      content: row.content ?? "",
+      parts,
+      status: (row.status as ChatMessage["status"]) ?? "done",
+    };
+  });
+}
+
 export const useSessionStore = create<SessionStore>((set, get) => ({
   sessions: [],
+  archivedSessions: [],
   currentSessionId: null,
   messagesBySession: {},
   agentRunning: {},
   inputText: "",
+  sidebarView: "sessions",
   eventUnlisten: null,
 
   loadSessions: async () => {
     try {
-      const sessions = await listSessions();
+      const sessions = await listSessions(false);
       set({ sessions });
     } catch (e) {
       console.error("Failed to load sessions:", errMsg(e));
     }
   },
 
-  selectSession: (id) => set({ currentSessionId: id }),
+  loadArchivedSessions: async () => {
+    try {
+      const archivedSessions = await listSessions(true);
+      set({ archivedSessions });
+    } catch (e) {
+      console.error("Failed to load archived sessions:", errMsg(e));
+    }
+  },
+
+  setSidebarView: (view) => {
+    if (view === "archived") {
+      get().loadArchivedSessions();
+    }
+    set({ sidebarView: view });
+  },
+
+  selectSession: async (id) => {
+    set({ currentSessionId: id });
+    const { messagesBySession } = get();
+    if (!messagesBySession[id]) {
+      try {
+        const rows = await getSessionMessages(id);
+        const messages = convertMessages(rows);
+        set((state) => ({
+          messagesBySession: { ...state.messagesBySession, [id]: messages },
+        }));
+      } catch (e) {
+        console.error("Failed to load session messages:", errMsg(e));
+      }
+    }
+  },
 
   newSession: () => set({ currentSessionId: null, inputText: "" }),
 
@@ -113,6 +187,49 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       await stopAgent(currentSessionId);
     } catch (e) {
       console.error("Failed to stop agent:", errMsg(e));
+    }
+  },
+
+  archiveSession: async (id) => {
+    try {
+      await ipcArchiveSession(id);
+      set((state) => ({
+        sessions: state.sessions.filter((s) => s.id !== id),
+        archivedSessions: [...state.archivedSessions, ...state.sessions.filter((s) => s.id === id)],
+      }));
+    } catch (e) {
+      console.error("Failed to archive session:", errMsg(e));
+    }
+  },
+
+  unarchiveSession: async (id) => {
+    try {
+      await ipcUnarchiveSession(id);
+      const { archivedSessions } = get();
+      const restored = archivedSessions.find((s) => s.id === id);
+      set((state) => ({
+        archivedSessions: state.archivedSessions.filter((s) => s.id !== id),
+        sessions: restored ? [...state.sessions, restored] : state.sessions,
+      }));
+    } catch (e) {
+      console.error("Failed to unarchive session:", errMsg(e));
+    }
+  },
+
+  deleteSession: async (id) => {
+    try {
+      await ipcDeleteSession(id);
+      const { messagesBySession, currentSessionId } = get();
+      const newMessages = { ...messagesBySession };
+      delete newMessages[id];
+      set((state) => ({
+        sessions: state.sessions.filter((s) => s.id !== id),
+        archivedSessions: state.archivedSessions.filter((s) => s.id !== id),
+        messagesBySession: newMessages,
+        currentSessionId: currentSessionId === id ? null : currentSessionId,
+      }));
+    } catch (e) {
+      console.error("Failed to delete session:", errMsg(e));
     }
   },
 
@@ -310,6 +427,19 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         sessions: get().sessions.map((s) =>
           s.id === session_id ? { ...s, status: "closed" as const } : s,
         ),
+      });
+      return;
+    }
+
+    if (event.type === "session_deleted") {
+      const { messagesBySession, currentSessionId } = get();
+      const newMessages = { ...messagesBySession };
+      delete newMessages[session_id];
+      set({
+        sessions: get().sessions.filter((s) => s.id !== session_id),
+        archivedSessions: get().archivedSessions.filter((s) => s.id !== session_id),
+        messagesBySession: newMessages,
+        currentSessionId: currentSessionId === session_id ? null : currentSessionId,
       });
       return;
     }
