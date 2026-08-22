@@ -1,5 +1,6 @@
 pub mod embedding;
 pub mod experience;
+pub mod memory;
 pub mod parsing;
 pub mod playbook;
 pub mod summary;
