@@ -334,6 +334,50 @@ pub async fn get_session_messages(
     Ok(result)
 }
 
+pub async fn archive_session(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+    let now = now_iso8601();
+    sqlx::query("UPDATE sessions SET status = 'archived', archived_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn unarchive_session(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE sessions SET status = 'closed', archived_at = NULL WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn delete_session(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+    // Manual cascade: SQLite doesn't enforce foreign keys by default
+    let message_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM session_messages WHERE session_id = ?")
+        .bind(id)
+        .fetch_all(pool)
+        .await?;
+
+    for (msg_id,) in &message_ids {
+        sqlx::query("DELETE FROM session_message_parts WHERE message_id = ?")
+            .bind(msg_id)
+            .execute(pool)
+            .await?;
+    }
+
+    sqlx::query("DELETE FROM session_messages WHERE session_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+    sqlx::query("DELETE FROM sessions WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,5 +606,102 @@ mod tests {
         let pool = setup().await;
         let messages = get_session_messages(&pool, "nonexistent").await.unwrap();
         assert!(messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_archive_session_sets_status_and_timestamp() {
+        let pool = setup().await;
+        let session = create_session(&pool, "test").await.unwrap();
+        archive_session(&pool, &session.id.0).await.unwrap();
+
+        let (status, archived_at): (String, Option<String>) =
+            sqlx::query_as("SELECT status, archived_at FROM sessions WHERE id = ?")
+                .bind(&session.id.0)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "archived");
+        assert!(archived_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_unarchive_session_resets_status_and_clears_timestamp() {
+        let pool = setup().await;
+        let session = create_session(&pool, "test").await.unwrap();
+        archive_session(&pool, &session.id.0).await.unwrap();
+        unarchive_session(&pool, &session.id.0).await.unwrap();
+
+        let (status, archived_at): (String, Option<String>) =
+            sqlx::query_as("SELECT status, archived_at FROM sessions WHERE id = ?")
+                .bind(&session.id.0)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "closed");
+        assert!(archived_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_removes_row() {
+        let pool = setup().await;
+        let session = create_session(&pool, "test").await.unwrap();
+        delete_session(&pool, &session.id.0).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
+            .bind(&session.id.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_cascades_messages_and_parts() {
+        let pool = setup().await;
+        let session = create_session(&pool, "test").await.unwrap();
+        let msg_id = insert_message(&pool, &session.id.0, "user", Some("hello"), Some("done"), 0).await.unwrap();
+        insert_text_part(&pool, &msg_id, 0, "text content").await.unwrap();
+
+        delete_session(&pool, &session.id.0).await.unwrap();
+
+        let msg_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session_messages WHERE session_id = ?")
+            .bind(&session.id.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(msg_count, 0);
+
+        let part_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session_message_parts WHERE message_id = ?")
+            .bind(&msg_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(part_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_list_sessions_excludes_archived() {
+        let pool = setup().await;
+        let s1 = create_session(&pool, "active session").await.unwrap();
+        let s2 = create_session(&pool, "will be archived").await.unwrap();
+        archive_session(&pool, &s2.id.0).await.unwrap();
+
+        let rows = list_sessions(&pool, false).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, s1.id.0);
+    }
+
+    #[tokio::test]
+    async fn test_list_sessions_archived_only() {
+        let pool = setup().await;
+        let s1 = create_session(&pool, "active session").await.unwrap();
+        let s2 = create_session(&pool, "archived session").await.unwrap();
+        archive_session(&pool, &s2.id.0).await.unwrap();
+
+        let rows = list_sessions(&pool, true).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, s2.id.0);
+        assert_eq!(rows[0].status, "archived");
+        assert!(rows[0].archived_at.is_some());
     }
 }
