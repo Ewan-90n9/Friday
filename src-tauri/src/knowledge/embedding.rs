@@ -105,17 +105,20 @@ impl EmbeddingService {
 
     #[cfg(windows)]
     fn download_file(url: &str, dest: &PathBuf) -> Result<(), String> {
-        let dest_str = dest.to_string_lossy();
+        let dest_str = dest.to_string_lossy().replace('\'', "''");
+        let url_escaped = url.replace('\'', "''");
+        let ps_script = format!(
+            "try {{ \
+                $resp = Invoke-WebRequest -Uri '{}' -UseBasicParsing -TimeoutSec 120 -MaximumRedirection 10 -ErrorAction Stop; \
+                [System.IO.File]::WriteAllBytes('{}', $resp.Content); \
+            }} catch {{ \
+                Write-Error $_.Exception.Message; \
+                exit 1; \
+            }}",
+            url_escaped, dest_str
+        );
         let output = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &format!(
-                    "try {{ Invoke-WebRequest -Uri '{}' -OutFile '{}' -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop }} catch {{ Write-Error $_.Exception.Message; exit 1 }}",
-                    url, dest_str
-                ),
-            ])
+            .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
             .output()
             .map_err(|e| format!("failed to run powershell: {e}"))?;
 
