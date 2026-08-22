@@ -193,10 +193,14 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   archiveSession: async (id) => {
     try {
       await ipcArchiveSession(id);
-      set((state) => ({
-        sessions: state.sessions.filter((s) => s.id !== id),
-        archivedSessions: [...state.archivedSessions, ...state.sessions.filter((s) => s.id === id)],
-      }));
+      const { sessions } = get();
+      const archived = sessions.find((s) => s.id === id);
+      if (archived) {
+        set((state) => ({
+          sessions: state.sessions.filter((s) => s.id !== id),
+          archivedSessions: [...state.archivedSessions, { ...archived, status: "archived" as const, archived_at: new Date().toISOString() }],
+        }));
+      }
     } catch (e) {
       console.error("Failed to archive session:", errMsg(e));
     }
