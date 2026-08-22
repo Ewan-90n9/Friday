@@ -141,6 +141,7 @@ pub async fn send_message_cmd(
         message,
         agent_session_id,
         Some(prompt_override_path),
+        None,  // experiences — wired up in Task 14
     )
     .await
     {

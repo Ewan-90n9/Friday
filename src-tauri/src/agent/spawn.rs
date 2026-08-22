@@ -102,6 +102,7 @@ pub async fn spawn_active(
     message: String,
     agent_session_id: Option<String>,
     prompt_override_path: Option<PathBuf>,
+    experiences: Option<&[crate::knowledge::experience::Experience]>,
 ) -> Result<AgentProcess, SpawnError> {
     let row: Option<(String, String)> =
         sqlx::query_as("SELECT path, provider FROM agents WHERE is_active = 1 LIMIT 1")
@@ -138,7 +139,15 @@ pub async fn spawn_active(
         cmd.arg(config.session_flag).arg(id);
     }
 
-    let prompt_text = prompt::build_prompt(&message, prompt_override_path.as_deref());
+    let prompt_text = if let Some(exps) = experiences {
+        if !exps.is_empty() {
+            prompt::build_prompt_with_experiences(&message, prompt_override_path.as_deref(), exps)
+        } else {
+            prompt::build_prompt(&message, prompt_override_path.as_deref())
+        }
+    } else {
+        prompt::build_prompt(&message, prompt_override_path.as_deref())
+    };
     tracing::info!(prompt_len = prompt_text.len(), "prompt built");
 
     // Prompt is delivered via stdin, not as a positional argument.
@@ -335,7 +344,7 @@ mod tests {
     async fn test_spawn_active_accepts_session_id_param() {
         let tmp = tempfile::tempdir().unwrap();
         let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
-        let result = spawn_active(&pool, "test-sid".to_string(), String::new(), None, None).await;
+        let result = spawn_active(&pool, "test-sid".to_string(), String::new(), None, None, None).await;
         assert!(matches!(result, Err(SpawnError::NoActiveAgent)));
     }
 
@@ -343,7 +352,7 @@ mod tests {
     async fn test_spawn_active_returns_no_active_agent_when_db_empty() {
         let tmp = tempfile::tempdir().unwrap();
         let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
-        let result = spawn_active(&pool, "test-session".to_string(), String::new(), None, None).await;
+        let result = spawn_active(&pool, "test-session".to_string(), String::new(), None, None, None).await;
         assert!(matches!(result, Err(SpawnError::NoActiveAgent)));
     }
 
@@ -360,7 +369,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = spawn_active(&pool, "test-session".to_string(), "test message".to_string(), None, None).await;
+        let result = spawn_active(&pool, "test-session".to_string(), "test message".to_string(), None, None, None).await;
         assert!(matches!(result, Err(SpawnError::BinaryMissing { .. })));
     }
 
