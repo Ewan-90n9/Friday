@@ -105,31 +105,39 @@ impl EmbeddingService {
 
     #[cfg(windows)]
     fn download_file(url: &str, dest: &PathBuf) -> Result<(), String> {
-        let dest_str = dest.to_string_lossy().replace('\'', "''");
-        let url_escaped = url.replace('\'', "''");
-        let ps_script = format!(
-            "try {{ \
-                $resp = Invoke-WebRequest -Uri '{}' -UseBasicParsing -TimeoutSec 120 -MaximumRedirection 10 -ErrorAction Stop; \
-                [System.IO.File]::WriteAllBytes('{}', $resp.Content); \
-            }} catch {{ \
-                Write-Error $_.Exception.Message; \
-                exit 1; \
-            }}",
-            url_escaped, dest_str
-        );
-        let output = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+        let dest_str = dest.to_string_lossy();
+        let output = std::process::Command::new("curl.exe")
+            .args([
+                "-L",
+                "-o",
+                &dest_str,
+                "--connect-timeout",
+                "30",
+                "--max-time",
+                "300",
+                "--retry",
+                "2",
+                "-s",
+                "-S",
+                "-w",
+                "%{http_code}",
+                url,
+            ])
             .output()
-            .map_err(|e| format!("failed to run powershell: {e}"))?;
+            .map_err(|e| format!("failed to run curl: {e}"))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(format!("powershell download failed: {} {}", stdout.trim(), stderr.trim()));
+            return Err(format!("curl failed: {}", stderr.trim()));
         }
 
         if !dest.exists() {
             return Err("file not created after download".to_string());
+        }
+
+        let http_code = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !http_code.starts_with('2') {
+            return Err(format!("HTTP {}", http_code));
         }
 
         Ok(())
