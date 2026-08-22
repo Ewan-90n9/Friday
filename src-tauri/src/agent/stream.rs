@@ -212,6 +212,95 @@ fn compute_elapsed_ms(state: &Value) -> u64 {
     }
 }
 
+struct MessageAccumulator {
+    message_id: String,
+    parts: Vec<AccumulatedPart>,
+    current_text: String,
+    pending_tool_args: Option<String>,
+    pending_tool_name: Option<String>,
+}
+
+enum AccumulatedPart {
+    Text(String),
+    Tool {
+        name: String,
+        args: String,
+        status: String,
+        output: String,
+        elapsed_ms: i64,
+    },
+}
+
+impl MessageAccumulator {
+    fn new(message_id: String) -> Self {
+        Self {
+            message_id,
+            parts: Vec::new(),
+            current_text: String::new(),
+            pending_tool_args: None,
+            pending_tool_name: None,
+        }
+    }
+
+    fn handle_event(&mut self, event: &AppEvent) {
+        match event {
+            AppEvent::LlmThinking { token, .. } => {
+                self.current_text.push_str(token);
+            }
+            AppEvent::ToolExecuting { tool, args, .. } => {
+                self.flush_current_text();
+                self.pending_tool_args = Some(serde_json::to_string(args).unwrap_or_default());
+                self.pending_tool_name = Some(tool.clone());
+            }
+            AppEvent::ToolResult { tool, output, elapsed_ms, .. } => {
+                self.flush_current_text();
+                let args = self.pending_tool_args.take().unwrap_or_default();
+                let output_str = match output {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => serde_json::to_string(other).unwrap_or_default(),
+                };
+                self.parts.push(AccumulatedPart::Tool {
+                    name: tool.clone(),
+                    args,
+                    status: "completed".to_string(),
+                    output: output_str,
+                    elapsed_ms: *elapsed_ms as i64,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    fn flush_current_text(&mut self) {
+        if !self.current_text.is_empty() {
+            self.parts.push(AccumulatedPart::Text(std::mem::take(&mut self.current_text)));
+        }
+    }
+
+    async fn flush_to_db(&mut self, pool: &sqlx::SqlitePool) {
+        self.flush_current_text();
+        for (seq, part) in self.parts.iter().enumerate() {
+            let seq = seq as i64;
+            match part {
+                AccumulatedPart::Text(text) => {
+                    if let Err(e) = crate::app::session::insert_text_part(
+                        pool, &self.message_id, seq, text,
+                    ).await {
+                        tracing::error!(?e, message_id = %self.message_id, seq, "failed to persist text part");
+                    }
+                }
+                AccumulatedPart::Tool { name, args, status, output, elapsed_ms } => {
+                    if let Err(e) = crate::app::session::insert_tool_part(
+                        pool, &self.message_id, seq, name, args, status, output, *elapsed_ms,
+                    ).await {
+                        tracing::error!(?e, message_id = %self.message_id, seq, tool = %name, "failed to persist tool part");
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Read all lines from a reader, logging each as warn!.
 /// Returns the number of lines read.
 async fn read_stderr_lines<R: tokio::io::AsyncRead + Unpin>(reader: R, session_id: &str) -> u64 {
@@ -244,6 +333,7 @@ pub async fn consume_stream(
     agent: AgentProcess,
     bus: EventBus,
     session_id: String,
+    agent_message_id: String,
     pool: sqlx::SqlitePool,
     agents: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, RunningAgent>>>,
     cancel: CancellationToken,
@@ -255,6 +345,7 @@ pub async fn consume_stream(
     let mut lines = reader.lines();
     let mut agent_session_captured = false;
     let mut line_count = 0u64;
+    let mut accumulator = MessageAccumulator::new(agent_message_id.clone());
 
     let stderr_sid = session_id.clone();
     let stderr_handle = tokio::spawn(async move {
@@ -283,6 +374,9 @@ pub async fn consume_stream(
                         }
 
                         let events = parse_event(&line, &session_id);
+                        for event in &events {
+                            accumulator.handle_event(event);
+                        }
                         for event in events {
                             tracing::debug!(event_type = ?std::mem::discriminant(&event), "emitting event");
                             bus.emit(&session_id, event);
@@ -304,6 +398,10 @@ pub async fn consume_stream(
                 bus.emit(&session_id, AppEvent::AgentStopped {
                     session_id: session_id.clone(),
                 });
+                accumulator.flush_to_db(&pool).await;
+                if let Err(e) = crate::app::session::update_message_status(&pool, &agent_message_id, "stopped").await {
+                    tracing::error!(?e, message_id = %agent_message_id, "failed to update message status on stop");
+                }
                 let mut map = agents.lock().await;
                 map.remove(&session_id);
                 return;
@@ -337,6 +435,12 @@ pub async fn consume_stream(
             session_id: session_id.clone(),
             reason,
         });
+    }
+
+    let final_status = if exit_ok { "done" } else { "error" };
+    accumulator.flush_to_db(&pool).await;
+    if let Err(e) = crate::app::session::update_message_status(&pool, &agent_message_id, final_status).await {
+        tracing::error!(?e, message_id = %agent_message_id, "failed to update message status");
     }
 
     let mut map = agents.lock().await;
@@ -563,5 +667,97 @@ mod tests {
         let (_, reader) = duplex(1024);
         let count = read_stderr_lines(reader, "test-session").await;
         assert_eq!(count, 0);
+    }
+
+    use crate::infra::db;
+
+    fn make_llm_thinking(token: &str) -> AppEvent {
+        AppEvent::LlmThinking {
+            session_id: "s1".to_string(),
+            token: token.to_string(),
+        }
+    }
+
+    fn make_tool_executing(name: &str) -> AppEvent {
+        AppEvent::ToolExecuting {
+            session_id: "s1".to_string(),
+            tool: name.to_string(),
+            args: serde_json::Value::Null,
+        }
+    }
+
+    fn make_tool_result(name: &str, output: &str, elapsed: u64) -> AppEvent {
+        AppEvent::ToolResult {
+            session_id: "s1".to_string(),
+            tool: name.to_string(),
+            output: serde_json::Value::String(output.to_string()),
+            elapsed_ms: elapsed,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_accumulator_text_accumulation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
+        let session = crate::app::session::create_session(&pool, "test").await.unwrap();
+        let msg_id = crate::app::session::insert_message(&pool, &session.id.0, "agent", None, Some("streaming"), 0).await.unwrap();
+
+        let mut acc = MessageAccumulator::new(msg_id.clone());
+        acc.handle_event(&make_llm_thinking("Hello "));
+        acc.handle_event(&make_llm_thinking("world!"));
+
+        acc.flush_to_db(&pool).await;
+        crate::app::session::update_message_status(&pool, &msg_id, "done").await.unwrap();
+
+        let messages = crate::app::session::get_session_messages(&pool, &session.id.0).await.unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].parts.len(), 1);
+        assert_eq!(messages[0].parts[0].part_type, "text");
+        assert_eq!(messages[0].parts[0].text, Some("Hello world!".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_accumulator_tool_result_persists_immediately() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
+        let session = crate::app::session::create_session(&pool, "test").await.unwrap();
+        let msg_id = crate::app::session::insert_message(&pool, &session.id.0, "agent", None, Some("streaming"), 0).await.unwrap();
+
+        let mut acc = MessageAccumulator::new(msg_id.clone());
+        acc.handle_event(&make_tool_executing("bash"));
+        acc.handle_event(&make_tool_result("bash", "file1\nfile2", 500));
+        acc.handle_event(&make_llm_thinking("Done."));
+        acc.flush_to_db(&pool).await;
+
+        let messages = crate::app::session::get_session_messages(&pool, &session.id.0).await.unwrap();
+        assert_eq!(messages[0].parts.len(), 2);
+        assert_eq!(messages[0].parts[0].part_type, "tool");
+        assert_eq!(messages[0].parts[0].tool_name, Some("bash".to_string()));
+        assert_eq!(messages[0].parts[0].tool_status, Some("completed".to_string()));
+        assert_eq!(messages[0].parts[1].part_type, "text");
+        assert_eq!(messages[0].parts[1].text, Some("Done.".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_accumulator_multiple_text_parts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
+        let session = crate::app::session::create_session(&pool, "test").await.unwrap();
+        let msg_id = crate::app::session::insert_message(&pool, &session.id.0, "agent", None, Some("streaming"), 0).await.unwrap();
+
+        let mut acc = MessageAccumulator::new(msg_id.clone());
+        acc.handle_event(&make_llm_thinking("First text"));
+        acc.handle_event(&make_tool_executing("bash"));
+        acc.handle_event(&make_tool_result("bash", "output", 100));
+        acc.handle_event(&make_llm_thinking("Second text"));
+        acc.flush_to_db(&pool).await;
+
+        let messages = crate::app::session::get_session_messages(&pool, &session.id.0).await.unwrap();
+        assert_eq!(messages[0].parts.len(), 3);
+        assert_eq!(messages[0].parts[0].part_type, "text");
+        assert_eq!(messages[0].parts[0].text, Some("First text".to_string()));
+        assert_eq!(messages[0].parts[1].part_type, "tool");
+        assert_eq!(messages[0].parts[2].part_type, "text");
+        assert_eq!(messages[0].parts[2].text, Some("Second text".to_string()));
     }
 }

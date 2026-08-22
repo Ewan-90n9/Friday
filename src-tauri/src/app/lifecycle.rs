@@ -148,6 +148,7 @@ pub async fn send_message_cmd(
             agent_process,
             bus_clone,
             session_id_clone,
+            String::new(),
             pool_clone,
             agents_clone,
             cancel_for_task,
