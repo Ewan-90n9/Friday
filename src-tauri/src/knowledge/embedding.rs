@@ -2,7 +2,6 @@ use fastembed::{
     InitOptionsUserDefined, Pooling, QuantizationMode, TextEmbedding, TokenizerFiles,
     UserDefinedEmbeddingModel,
 };
-use std::io::Read;
 use std::path::PathBuf;
 
 const MODEL_REPO: &str = "Xenova/bge-small-zh-v1.5";
@@ -18,38 +17,6 @@ const MODEL_FILES: [&str; 5] = [
     "special_tokens_map.json",
     "tokenizer_config.json",
 ];
-
-fn detect_proxy() -> Option<String> {
-    for var in &["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
-        if let Ok(proxy) = std::env::var(var) {
-            if !proxy.is_empty() {
-                return Some(proxy);
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        use winreg::enums::*;
-        use winreg::RegKey;
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        if let Ok(settings) = hkcu.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings") {
-            let proxy_enable: u32 = settings.get_value("ProxyEnable").unwrap_or(0);
-            if proxy_enable == 1 {
-                let proxy_server: String = settings.get_value("ProxyServer").unwrap_or_default();
-                if !proxy_server.is_empty() {
-                    if proxy_server.starts_with("http://") || proxy_server.starts_with("https://") {
-                        return Some(proxy_server);
-                    } else {
-                        return Some(format!("http://{}", proxy_server));
-                    }
-                }
-            }
-        }
-    }
-
-    None
-}
 
 pub struct EmbeddingService {
     model: TextEmbedding,
@@ -136,24 +103,47 @@ impl EmbeddingService {
         Ok(())
     }
 
+    #[cfg(windows)]
     fn download_file(url: &str, dest: &PathBuf) -> Result<(), String> {
-        let mut builder = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(120));
+        let dest_str = dest.to_string_lossy();
+        let output = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &format!(
+                    "try {{ Invoke-WebRequest -Uri '{}' -OutFile '{}' -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop }} catch {{ Write-Error $_.Exception.Message; exit 1 }}",
+                    url, dest_str
+                ),
+            ])
+            .output()
+            .map_err(|e| format!("failed to run powershell: {e}"))?;
 
-        if let Some(proxy) = detect_proxy() {
-            tracing::info!(proxy = %proxy, "using proxy for model download");
-            builder = builder.proxy(
-                ureq::Proxy::new(&proxy).map_err(|e| format!("invalid proxy: {e}"))?
-            );
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(format!("powershell download failed: {} {}", stdout.trim(), stderr.trim()));
         }
 
-        let agent = builder.build();
+        if !dest.exists() {
+            return Err("file not created after download".to_string());
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    fn download_file(url: &str, dest: &PathBuf) -> Result<(), String> {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(120))
+            .build();
 
         let response = agent
             .get(url)
             .call()
             .map_err(|e| format!("HTTP request failed: {e}"))?;
 
+        use std::io::Read;
         let mut reader = response.into_reader();
         let mut buf = Vec::new();
         reader
