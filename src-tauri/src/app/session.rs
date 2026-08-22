@@ -185,6 +185,155 @@ pub async fn update_agent_session_id(
     Ok(())
 }
 
+pub async fn next_message_seq(
+    pool: &SqlitePool,
+    session_id: &str,
+) -> Result<i64, sqlx::Error> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM session_messages WHERE session_id = ?",
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(count)
+}
+
+pub async fn insert_message(
+    pool: &SqlitePool,
+    session_id: &str,
+    role: &str,
+    content: Option<&str>,
+    status: Option<&str>,
+    seq: i64,
+) -> Result<String, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = now_iso8601();
+    sqlx::query(
+        "INSERT INTO session_messages (id, session_id, role, content, status, seq, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(session_id)
+    .bind(role)
+    .bind(content)
+    .bind(status)
+    .bind(seq)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(id)
+}
+
+pub async fn update_message_status(
+    pool: &SqlitePool,
+    message_id: &str,
+    status: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE session_messages SET status = ? WHERE id = ?")
+        .bind(status)
+        .bind(message_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn insert_text_part(
+    pool: &SqlitePool,
+    message_id: &str,
+    seq: i64,
+    text: &str,
+) -> Result<(), sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO session_message_parts (id, message_id, part_type, seq, text) \
+         VALUES (?, ?, 'text', ?, ?)",
+    )
+    .bind(&id)
+    .bind(message_id)
+    .bind(seq)
+    .bind(text)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn insert_tool_part(
+    pool: &SqlitePool,
+    message_id: &str,
+    seq: i64,
+    tool_name: &str,
+    tool_args: &str,
+    tool_status: &str,
+    tool_output: &str,
+    tool_elapsed_ms: i64,
+) -> Result<(), sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO session_message_parts \
+         (id, message_id, part_type, seq, tool_name, tool_args, tool_status, tool_output, tool_elapsed_ms) \
+         VALUES (?, ?, 'tool', ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(message_id)
+    .bind(seq)
+    .bind(tool_name)
+    .bind(tool_args)
+    .bind(tool_status)
+    .bind(tool_output)
+    .bind(tool_elapsed_ms)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_session_messages(
+    pool: &SqlitePool,
+    session_id: &str,
+) -> Result<Vec<MessageRow>, sqlx::Error> {
+    let messages: Vec<(String, String, Option<String>, Option<String>, i64)> = sqlx::query_as(
+        "SELECT id, role, content, status, seq FROM session_messages \
+         WHERE session_id = ? ORDER BY seq ASC",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut result = Vec::with_capacity(messages.len());
+    for (msg_id, role, content, status, seq) in messages {
+        let parts: Vec<(String, String, i64, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>)> = sqlx::query_as(
+            "SELECT id, part_type, seq, text, tool_name, tool_args, tool_status, tool_output, tool_elapsed_ms \
+             FROM session_message_parts WHERE message_id = ? ORDER BY seq ASC",
+        )
+        .bind(&msg_id)
+        .fetch_all(pool)
+        .await?;
+
+        let part_rows: Vec<MessagePartRow> = parts
+            .into_iter()
+            .map(|(_, part_type, seq, text, tool_name, tool_args, tool_status, tool_output, tool_elapsed_ms)| MessagePartRow {
+                part_type,
+                seq,
+                text,
+                tool_name,
+                tool_args,
+                tool_status,
+                tool_output,
+                tool_elapsed_ms,
+            })
+            .collect();
+
+        result.push(MessageRow {
+            id: msg_id,
+            role,
+            content,
+            status,
+            seq,
+            parts: part_rows,
+        });
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,5 +453,114 @@ mod tests {
 
         let result = get_agent_session_id(&pool, &session.id.0).await.unwrap();
         assert_eq!(result, Some("agent-123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_next_message_seq_starts_at_zero() {
+        let pool = setup().await;
+        let session = create_session(&pool, "test").await.unwrap();
+        let seq = next_message_seq(&pool, &session.id.0).await.unwrap();
+        assert_eq!(seq, 0);
+    }
+
+    #[tokio::test]
+    async fn test_next_message_seq_increments() {
+        let pool = setup().await;
+        let session = create_session(&pool, "test").await.unwrap();
+        insert_message(&pool, &session.id.0, "user", Some("hello"), Some("done"), 0).await.unwrap();
+        insert_message(&pool, &session.id.0, "agent", None, Some("streaming"), 1).await.unwrap();
+        let seq = next_message_seq(&pool, &session.id.0).await.unwrap();
+        assert_eq!(seq, 2);
+    }
+
+    #[tokio::test]
+    async fn test_insert_message_returns_id() {
+        let pool = setup().await;
+        let session = create_session(&pool, "test").await.unwrap();
+        let id = insert_message(&pool, &session.id.0, "user", Some("hello"), Some("done"), 0).await.unwrap();
+        assert!(!id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_update_message_status() {
+        let pool = setup().await;
+        let session = create_session(&pool, "test").await.unwrap();
+        let msg_id = insert_message(&pool, &session.id.0, "agent", None, Some("streaming"), 0).await.unwrap();
+        update_message_status(&pool, &msg_id, "done").await.unwrap();
+
+        let status: String = sqlx::query_scalar("SELECT status FROM session_messages WHERE id = ?")
+            .bind(&msg_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "done");
+    }
+
+    #[tokio::test]
+    async fn test_insert_text_part() {
+        let pool = setup().await;
+        let session = create_session(&pool, "test").await.unwrap();
+        let msg_id = insert_message(&pool, &session.id.0, "agent", None, Some("streaming"), 0).await.unwrap();
+        insert_text_part(&pool, &msg_id, 0, "Hello world").await.unwrap();
+
+        let text: String = sqlx::query_scalar("SELECT text FROM session_message_parts WHERE message_id = ?")
+            .bind(&msg_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(text, "Hello world");
+    }
+
+    #[tokio::test]
+    async fn test_insert_tool_part() {
+        let pool = setup().await;
+        let session = create_session(&pool, "test").await.unwrap();
+        let msg_id = insert_message(&pool, &session.id.0, "agent", None, Some("streaming"), 0).await.unwrap();
+        insert_tool_part(&pool, &msg_id, 0, "bash", r#"{"command":"ls"}"#, "completed", "file1\nfile2", 800).await.unwrap();
+
+        let (name, status, output, elapsed): (String, String, String, i64) =
+            sqlx::query_as("SELECT tool_name, tool_status, tool_output, tool_elapsed_ms FROM session_message_parts WHERE message_id = ?")
+                .bind(&msg_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(name, "bash");
+        assert_eq!(status, "completed");
+        assert_eq!(output, "file1\nfile2");
+        assert_eq!(elapsed, 800);
+    }
+
+    #[tokio::test]
+    async fn test_get_session_messages_returns_messages_with_parts() {
+        let pool = setup().await;
+        let session = create_session(&pool, "test").await.unwrap();
+
+        let user_id = insert_message(&pool, &session.id.0, "user", Some("diagnose OOM"), Some("done"), 0).await.unwrap();
+        let agent_id = insert_message(&pool, &session.id.0, "agent", None, Some("done"), 1).await.unwrap();
+        insert_text_part(&pool, &agent_id, 0, "Analysis complete").await.unwrap();
+        insert_tool_part(&pool, &agent_id, 1, "jstat", "{}", "completed", "output", 100).await.unwrap();
+
+        let messages = get_session_messages(&pool, &session.id.0).await.unwrap();
+        assert_eq!(messages.len(), 2);
+
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content, Some("diagnose OOM".to_string()));
+        assert_eq!(messages[0].seq, 0);
+        assert_eq!(messages[0].parts.len(), 0);
+
+        assert_eq!(messages[1].role, "agent");
+        assert_eq!(messages[1].seq, 1);
+        assert_eq!(messages[1].parts.len(), 2);
+        assert_eq!(messages[1].parts[0].part_type, "text");
+        assert_eq!(messages[1].parts[0].text, Some("Analysis complete".to_string()));
+        assert_eq!(messages[1].parts[1].part_type, "tool");
+        assert_eq!(messages[1].parts[1].tool_name, Some("jstat".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_get_session_messages_empty_for_nonexistent() {
+        let pool = setup().await;
+        let messages = get_session_messages(&pool, "nonexistent").await.unwrap();
+        assert!(messages.is_empty());
     }
 }
