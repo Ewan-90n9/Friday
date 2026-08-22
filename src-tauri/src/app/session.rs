@@ -26,6 +26,29 @@ pub struct SessionRow {
     pub title: Option<String>,
     pub status: String,
     pub created_at: String,
+    pub archived_at: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct MessagePartRow {
+    pub part_type: String,
+    pub seq: i64,
+    pub text: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_args: Option<String>,
+    pub tool_status: Option<String>,
+    pub tool_output: Option<String>,
+    pub tool_elapsed_ms: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct MessageRow {
+    pub id: String,
+    pub role: String,
+    pub content: Option<String>,
+    pub status: Option<String>,
+    pub seq: i64,
+    pub parts: Vec<MessagePartRow>,
 }
 
 fn now_iso8601() -> String {
@@ -79,12 +102,27 @@ pub async fn close_session(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Erro
     Ok(())
 }
 
-pub async fn list_sessions(pool: &SqlitePool) -> Result<Vec<SessionRow>, sqlx::Error> {
-    let rows = sqlx::query(
-        "SELECT id, title, status, created_at FROM sessions ORDER BY created_at DESC",
-    )
-    .fetch_all(pool)
-    .await?;
+pub async fn list_sessions(
+    pool: &SqlitePool,
+    include_archived: bool,
+) -> Result<Vec<SessionRow>, sqlx::Error> {
+    let rows = if include_archived {
+        sqlx::query(
+            "SELECT id, title, status, created_at, archived_at \
+             FROM sessions WHERE status = 'archived' \
+             ORDER BY archived_at DESC",
+        )
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query(
+            "SELECT id, title, status, created_at, archived_at \
+             FROM sessions WHERE status IN ('active', 'closed') \
+             ORDER BY created_at DESC",
+        )
+        .fetch_all(pool)
+        .await?
+    };
 
     rows.into_iter()
         .map(|row| {
@@ -93,6 +131,7 @@ pub async fn list_sessions(pool: &SqlitePool) -> Result<Vec<SessionRow>, sqlx::E
                 title: row.try_get("title")?,
                 status: row.try_get("status")?,
                 created_at: row.try_get("created_at")?,
+                archived_at: row.try_get("archived_at")?,
             })
         })
         .collect()
@@ -103,7 +142,7 @@ pub async fn get_session(
     id: &str,
 ) -> Result<Option<SessionRow>, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT id, title, status, created_at FROM sessions WHERE id = ?",
+        "SELECT id, title, status, created_at, archived_at FROM sessions WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -115,6 +154,7 @@ pub async fn get_session(
             title: row.try_get("title")?,
             status: row.try_get("status")?,
             created_at: row.try_get("created_at")?,
+            archived_at: row.try_get("archived_at")?,
         })
     })
     .transpose()
@@ -222,7 +262,7 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         let s2 = create_session(&pool, "second").await.unwrap();
 
-        let rows = list_sessions(&pool).await.unwrap();
+        let rows = list_sessions(&pool, false).await.unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, s2.id.0);
         assert_eq!(rows[1].id, s1.id.0);

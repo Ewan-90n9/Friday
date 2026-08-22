@@ -203,7 +203,7 @@ pub async fn list_sessions_cmd(
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<session::SessionRow>, String> {
     tracing::info!("list_sessions_cmd called");
-    session::list_sessions(&state.db)
+    session::list_sessions(&state.db, false)
         .await
         .map_err(|e| e.to_string())
 }
