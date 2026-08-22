@@ -1,4 +1,7 @@
+use std::fmt::Write;
 use std::path::Path;
+
+use crate::knowledge::experience::{Experience, Outcome};
 
 const FRIDAY_SYSTEM_PROMPT: &str = r#"你是 Friday，一个面向软件开发人员的远程环境运行时故障诊断助手。
 
@@ -38,6 +41,40 @@ pub fn build_system_prompt(override_path: Option<&Path>) -> String {
 pub fn build_prompt(message: &str, override_path: Option<&Path>) -> String {
     let system = build_system_prompt(override_path);
     format!("{system}\n\n---\n\n用户消息：{message}")
+}
+
+pub fn build_prompt_with_experiences(
+    message: &str,
+    override_path: Option<&Path>,
+    experiences: &[Experience],
+) -> String {
+    let system = build_system_prompt(override_path);
+
+    if experiences.is_empty() {
+        return format!("{system}\n\n---\n\n用户消息：{message}");
+    }
+
+    let mut exp_section = String::from("## 历史经验参考\n");
+    for (i, exp) in experiences.iter().enumerate() {
+        let label = match exp.outcome {
+            Outcome::Positive => "成功",
+            Outcome::Negative => "未成功",
+            Outcome::Uncertain => "不确定",
+        };
+        let title = format!("{} {}", exp.service, exp.symptom);
+        writeln!(exp_section, "### 经验 {}（{}）：{}", i + 1, label, title).ok();
+        writeln!(exp_section, "症状：{}", exp.symptom).ok();
+        if let Some(rc) = &exp.root_cause {
+            writeln!(exp_section, "根因：{}", rc).ok();
+        }
+        writeln!(exp_section, "排查路径：{}", exp.investigation_path).ok();
+        if !exp.experience_lesson.is_empty() {
+            writeln!(exp_section, "经验：{}", exp.experience_lesson).ok();
+        }
+        writeln!(exp_section).ok();
+    }
+
+    format!("{system}\n\n---\n\n{exp_section}\n---\n\n用户消息：{message}")
 }
 
 #[cfg(test)]
@@ -94,6 +131,49 @@ mod tests {
         let result = build_prompt("hello", Some(&path));
         assert!(result.contains("Custom system."));
         assert!(!result.contains(FRIDAY_SYSTEM_PROMPT));
+        assert!(result.contains("hello"));
+    }
+
+    use crate::knowledge::experience::{Experience, Outcome};
+
+    fn make_test_experience(outcome: Outcome, root_cause: Option<&str>) -> Experience {
+        Experience {
+            id: "test-id".to_string(),
+            symptom: "OOM".to_string(),
+            service: "OrderService".to_string(),
+            language: "java".to_string(),
+            root_cause: root_cause.map(|s| s.to_string()),
+            investigation_path: "jstat -> arthas thread".to_string(),
+            experience_lesson: "Check thread count first".to_string(),
+            outcome,
+            occurrence_count: 1,
+            last_seen_at: "2026-08-22T00:00:00Z".to_string(),
+            created_at: "2026-08-22T00:00:00Z".to_string(),
+            query_text: "OrderService OOM".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_build_prompt_with_experiences_injects_section() {
+        let exps = vec![
+            make_test_experience(Outcome::Positive, Some("ThreadPool leak")),
+            make_test_experience(Outcome::Negative, None),
+        ];
+        let result = build_prompt_with_experiences("hello", None, &exps);
+
+        assert!(result.contains("## 历史经验参考"));
+        assert!(result.contains("成功"));
+        assert!(result.contains("未成功"));
+        assert!(result.contains("ThreadPool leak"));
+        assert!(result.contains("hello"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_empty_experiences_no_section() {
+        let exps: Vec<Experience> = vec![];
+        let result = build_prompt_with_experiences("hello", None, &exps);
+
+        assert!(!result.contains("## 历史经验参考"));
         assert!(result.contains("hello"));
     }
 }
