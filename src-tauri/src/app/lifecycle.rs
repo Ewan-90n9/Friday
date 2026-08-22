@@ -349,6 +349,18 @@ pub async fn delete_session_cmd(
     Ok(())
 }
 
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn get_session_summary_cmd(
+    state: State<'_, crate::AppState>,
+    session_id: String,
+) -> Result<Option<String>, String> {
+    crate::knowledge::summary::get_summary(&state.db, &session_id)
+        .await
+        .map(|opt| opt.map(|s| s.summary_text))
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
