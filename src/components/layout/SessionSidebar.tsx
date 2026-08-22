@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect } from "react";
-import { ChatCircle, Plus, DotsThree, Archive, Trash, ArrowUUpLeft } from "@phosphor-icons/react";
+import { useState } from "react";
+import { ChatCircle, Plus, Archive, Trash, ArrowUUpLeft } from "@phosphor-icons/react";
 import { useSessionStore } from "@/store/sessionStore";
 import { DeleteConfirmDialog } from "@/components/chat/DeleteConfirmDialog";
 
@@ -16,48 +16,7 @@ export function SessionSidebar() {
   const unarchiveSession = useSessionStore((s) => s.unarchiveSession);
   const deleteSession = useSessionStore((s) => s.deleteSession);
 
-  const [contextMenu, setContextMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setContextMenu(null);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  const handleContextMenu = (e: React.MouseEvent, sessionId: string) => {
-    e.preventDefault();
-    setContextMenu({ sessionId, x: e.clientX, y: e.clientY });
-  };
-
-  const handleDotsClick = (e: React.MouseEvent, sessionId: string) => {
-    e.stopPropagation();
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setContextMenu({ sessionId, x: rect.right, y: rect.bottom });
-  };
-
-  const handleArchive = async () => {
-    if (!contextMenu) return;
-    await archiveSession(contextMenu.sessionId);
-    setContextMenu(null);
-  };
-
-  const handleUnarchive = async () => {
-    if (!contextMenu) return;
-    await unarchiveSession(contextMenu.sessionId);
-    setContextMenu(null);
-  };
-
-  const handleDeleteClick = () => {
-    if (!contextMenu) return;
-    setDeleteTarget(contextMenu.sessionId);
-    setContextMenu(null);
-  };
 
   const handleDeleteConfirm = async () => {
     if (!deleteTarget) return;
@@ -76,18 +35,19 @@ export function SessionSidebar() {
     const dimmed = isClosed || isArchived;
 
     return (
-      <button
+      <div
         key={s.id}
-        type="button"
-        onClick={() => selectSession(s.id)}
-        onContextMenu={(e) => handleContextMenu(e, s.id)}
-        className={`relative w-full text-left px-3 py-2 rounded-lg mb-0.5 transition-colors cursor-pointer ${
+        className={`group relative w-full text-left px-3 py-2 rounded-lg mb-0.5 transition-colors ${
           isActive
             ? "bg-surface-2 border-l-2 border-success pl-[10px]"
             : "hover:bg-surface-2"
         } ${dimmed ? "opacity-60" : ""}`}
       >
-        <div className="flex items-center gap-1.5 mb-0.5">
+        <button
+          type="button"
+          onClick={() => selectSession(s.id)}
+          className="flex items-center gap-1.5 mb-0.5 w-full text-left"
+        >
           <span
             className={`w-1.5 h-1.5 rounded-full shrink-0 ${
               isRunning ? "bg-success animate-pulse" : "bg-muted-foreground"
@@ -97,23 +57,49 @@ export function SessionSidebar() {
           <span className="text-sm font-medium text-foreground truncate flex-1">
             {s.title || "无标题会话"}
           </span>
-          <button
-            onClick={(e) => handleDotsClick(e, s.id)}
-            className="text-muted-foreground hover:text-foreground shrink-0"
-            aria-label="会话操作"
+        </button>
+
+        <div className="flex items-center justify-between">
+          <span
+            className="text-xs text-muted-foreground"
+            style={{ fontFamily: "var(--font-mono)" }}
           >
-            <DotsThree size={16} weight="bold" />
-          </button>
+            {isArchived && s.archived_at
+              ? `归档于 ${s.archived_at.slice(0, 10)}`
+              : s.created_at.slice(0, 10)}
+          </span>
+
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            {isArchiveView ? (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); unarchiveSession(s.id); }}
+                className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-surface-3 transition-colors"
+                aria-label="取消归档"
+              >
+                <ArrowUUpLeft size={14} weight="regular" aria-hidden="true" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); archiveSession(s.id); }}
+                className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-surface-3 transition-colors"
+                aria-label="归档会话"
+              >
+                <Archive size={14} weight="regular" aria-hidden="true" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setDeleteTarget(s.id); }}
+              className="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+              aria-label="删除会话"
+            >
+              <Trash size={14} weight="regular" aria-hidden="true" />
+            </button>
+          </div>
         </div>
-        <span
-          className="text-xs text-muted-foreground"
-          style={{ fontFamily: "var(--font-mono)" }}
-        >
-          {isArchived && s.archived_at
-            ? `归档于 ${s.archived_at.slice(0, 10)}`
-            : s.created_at.slice(0, 10)}
-        </span>
-      </button>
+      </div>
     );
   };
 
@@ -185,40 +171,6 @@ export function SessionSidebar() {
           >
             <Plus size={16} weight="regular" aria-hidden="true" />
             新建会话
-          </button>
-        </div>
-      )}
-
-      {/* Context menu */}
-      {contextMenu && (
-        <div
-          ref={menuRef}
-          className="fixed z-50 bg-surface-2 border border-border-strong rounded-lg py-1 shadow-xl"
-          style={{ left: contextMenu.x, top: contextMenu.y, minWidth: 140 }}
-        >
-          {isArchiveView ? (
-            <button
-              onClick={handleUnarchive}
-              className="flex items-center gap-2 w-full px-3 py-2 text-sm text-foreground hover:bg-surface-3 transition-colors text-left"
-            >
-              <ArrowUUpLeft size={14} weight="regular" aria-hidden="true" />
-              取消归档
-            </button>
-          ) : (
-            <button
-              onClick={handleArchive}
-              className="flex items-center gap-2 w-full px-3 py-2 text-sm text-foreground hover:bg-surface-3 transition-colors text-left"
-            >
-              <Archive size={14} weight="regular" aria-hidden="true" />
-              归档会话
-            </button>
-          )}
-          <button
-            onClick={handleDeleteClick}
-            className="flex items-center gap-2 w-full px-3 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors text-left"
-          >
-            <Trash size={14} weight="regular" aria-hidden="true" />
-            删除会话
           </button>
         </div>
       )}
