@@ -213,7 +213,9 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const restored = archivedSessions.find((s) => s.id === id);
       set((state) => ({
         archivedSessions: state.archivedSessions.filter((s) => s.id !== id),
-        sessions: restored ? [...state.sessions, restored] : state.sessions,
+        sessions: restored
+          ? [...state.sessions, { ...restored, status: "closed" as const, archived_at: null }]
+          : state.sessions,
       }));
     } catch (e) {
       console.error("Failed to unarchive session:", errMsg(e));
