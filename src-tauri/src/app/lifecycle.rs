@@ -135,7 +135,7 @@ pub async fn send_message_cmd(
         session_id = %friday_session_id,
         "spawning agent"
     );
-    let agent_process = spawn_active(
+    let agent_process = match spawn_active(
         &pool,
         friday_session_id.clone(),
         message,
@@ -143,10 +143,22 @@ pub async fn send_message_cmd(
         Some(prompt_override_path),
     )
     .await
-    .map_err(|e| {
-        tracing::error!(?e, "failed to spawn agent");
-        e.to_string()
-    })?;
+    {
+        Ok(process) => process,
+        Err(e) => {
+            tracing::error!(?e, "failed to spawn agent");
+            if let Err(update_err) =
+                crate::app::session::update_message_status(&pool, &agent_message_id, "error").await
+            {
+                tracing::error!(
+                    ?update_err,
+                    message_id = %agent_message_id,
+                    "failed to update orphaned agent message status"
+                );
+            }
+            return Err(e.to_string());
+        }
+    };
 
     let pid = agent_process.pid;
     tracing::info!(pid, session_id = %friday_session_id, "agent spawned");
