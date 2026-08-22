@@ -28,12 +28,21 @@ impl EmbeddingService {
 
         if !MODEL_FILES.iter().all(|f| model_dir.join(f).exists()) {
             if let Some(ref res_dir) = resource_dir {
-                let res_model_dir = res_dir.join("model");
-                tracing::info!(
-                    res_dir = %res_model_dir.display(),
-                    "checking bundled model resources"
-                );
-                if MODEL_FILES.iter().all(|f| res_model_dir.join(f).exists()) {
+                let candidates = [
+                    res_dir.join("model"),
+                    res_dir.join("resources").join("model"),
+                    res_dir.to_path_buf(),
+                ];
+                let res_model_dir = candidates
+                    .iter()
+                    .find(|d| MODEL_FILES.iter().all(|f| d.join(f).exists()))
+                    .cloned();
+
+                if let Some(res_model_dir) = res_model_dir {
+                    tracing::info!(
+                        res_dir = %res_model_dir.display(),
+                        "found bundled model resources, copying"
+                    );
                     std::fs::create_dir_all(model_dir.join("onnx"))
                         .map_err(|e| format!("create model dir: {e}"))?;
                     for f in &MODEL_FILES {
@@ -46,6 +55,11 @@ impl EmbeddingService {
                         }
                     }
                     tracing::info!("model files copied from bundled resources");
+                } else {
+                    tracing::info!(
+                        res_dir = %res_dir.display(),
+                        "no bundled model resources found at any candidate path"
+                    );
                 }
             }
 
