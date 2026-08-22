@@ -1,6 +1,6 @@
 use fastembed::{
-    get_cache_dir, read_file_to_bytes, EmbeddingModel, InitOptions, InitOptionsUserDefined,
-    Pooling, QuantizationMode, TextEmbedding, TokenizerFiles, UserDefinedEmbeddingModel,
+    EmbeddingModel, InitOptions, InitOptionsUserDefined, Pooling, QuantizationMode, TextEmbedding,
+    TokenizerFiles, UserDefinedEmbeddingModel,
 };
 use std::path::PathBuf;
 
@@ -11,6 +11,12 @@ pub struct EmbeddingService {
 impl EmbeddingService {
     pub fn new(models_dir: PathBuf) -> Result<Self, String> {
         let repo_dir = models_dir.join("models--Xenova--bge-small-zh-v1.5");
+        tracing::info!(
+            models_dir = %models_dir.display(),
+            repo_dir = %repo_dir.display(),
+            repo_exists = repo_dir.exists(),
+            "checking for cached embedding model"
+        );
 
         if repo_dir.exists() {
             tracing::info!("found cached model, loading from local files");
@@ -31,6 +37,7 @@ impl EmbeddingService {
             .to_string();
 
         let snapshot_dir = snapshots_dir.join(&commit_hash);
+        tracing::info!(snapshot_dir = %snapshot_dir.display(), "loading model from snapshot");
 
         let onnx_path = snapshot_dir.join("onnx").join("model.onnx");
         let tokenizer_path = snapshot_dir.join("tokenizer.json");
@@ -38,19 +45,23 @@ impl EmbeddingService {
         let special_tokens_path = snapshot_dir.join("special_tokens_map.json");
         let tokenizer_config_path = snapshot_dir.join("tokenizer_config.json");
 
-        let onnx_file = read_file_to_bytes(&onnx_path)
-            .map_err(|e| format!("failed to read model.onnx: {e}"))?;
+        tracing::info!(onnx_path = %onnx_path.display(), exists = onnx_path.exists(), "checking onnx file");
+
+        let onnx_file = std::fs::read(&onnx_path)
+            .map_err(|e| format!("failed to read model.onnx at {}: {e}", onnx_path.display()))?;
 
         let tokenizer_files = TokenizerFiles {
-            tokenizer_file: read_file_to_bytes(&tokenizer_path)
+            tokenizer_file: std::fs::read(&tokenizer_path)
                 .map_err(|e| format!("failed to read tokenizer.json: {e}"))?,
-            config_file: read_file_to_bytes(&config_path)
+            config_file: std::fs::read(&config_path)
                 .map_err(|e| format!("failed to read config.json: {e}"))?,
-            special_tokens_map_file: read_file_to_bytes(&special_tokens_path)
+            special_tokens_map_file: std::fs::read(&special_tokens_path)
                 .map_err(|e| format!("failed to read special_tokens_map.json: {e}"))?,
-            tokenizer_config_file: read_file_to_bytes(&tokenizer_config_path)
+            tokenizer_config_file: std::fs::read(&tokenizer_config_path)
                 .map_err(|e| format!("failed to read tokenizer_config.json: {e}"))?,
         };
+
+        tracing::info!(onnx_size = onnx_file.len(), "loaded onnx model bytes");
 
         let model = UserDefinedEmbeddingModel::new(onnx_file, tokenizer_files)
             .with_pooling(Pooling::Cls)
@@ -59,6 +70,7 @@ impl EmbeddingService {
         let model = TextEmbedding::try_new_from_user_defined(model, InitOptionsUserDefined::new())
             .map_err(|e| format!("failed to init embedding model from cache: {e}"))?;
 
+        tracing::info!("embedding model loaded successfully from local cache");
         Ok(Self { model })
     }
 
