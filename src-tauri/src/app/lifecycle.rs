@@ -80,6 +80,9 @@ pub async fn send_message_cmd(
                 Some(row) if row.status == "closed" => {
                     return Err("会话已关闭".to_string())
                 }
+                Some(row) if row.status == "archived" => {
+                    return Err("会话已归档".to_string())
+                }
                 Some(_) => {}
             }
             let agent_id = session::get_agent_session_id(&pool, &id)
