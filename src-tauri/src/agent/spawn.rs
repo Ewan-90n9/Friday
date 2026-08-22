@@ -192,6 +192,140 @@ pub async fn spawn_active(
     Ok(AgentProcess { pid, child, stdout, stderr })
 }
 
+/// One-shot LLM call via agent CLI. No --sessions, no stream parsing.
+/// Writes prompt to stdin, reads full stdout, returns the text output.
+/// Used for summary generation and experience extraction.
+#[tracing::instrument(skip(pool))]
+pub async fn spawn_one_shot(
+    pool: &sqlx::SqlitePool,
+    prompt: String,
+) -> Result<String, SpawnError> {
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT path, provider FROM agents WHERE is_active = 1 LIMIT 1")
+            .fetch_optional(pool)
+            .await?;
+
+    let (path_str, provider) = row.ok_or(SpawnError::NoActiveAgent)?;
+    let raw_path = PathBuf::from(&path_str);
+
+    if !raw_path.exists() {
+        return Err(SpawnError::BinaryMissing { path: path_str });
+    }
+
+    let config = command_config_for(&provider);
+
+    let exe_path = if config.needs_exe_resolution {
+        resolve_native_exe(&raw_path)
+    } else {
+        raw_path.clone()
+    };
+    tracing::info!(
+        exe_path = %exe_path.display(),
+        provider = %provider,
+        "spawn_one_shot resolved agent executable"
+    );
+
+    let mut cmd = tokio::process::Command::new(&exe_path);
+    cmd.args(config.mode_args)
+        .args(config.format_args)
+        .arg("--dangerously-skip-permissions");
+
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    if let Some(home) = dirs::home_dir() {
+        cmd.env("PWD", &home);
+        cmd.current_dir(&home);
+    }
+
+    let mut child = cmd.spawn()?;
+    let pid = child
+        .id()
+        .ok_or(SpawnError::SpawnFailed(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "no pid",
+        )))?;
+
+    tracing::info!(pid, "spawn_one_shot agent process spawned");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let msg = prompt.clone();
+        tokio::spawn(async move {
+            if let Err(e) = stdin.write_all(msg.as_bytes()).await {
+                tracing::error!(?e, "spawn_one_shot: failed to write prompt to stdin");
+            }
+            if let Err(e) = stdin.shutdown().await {
+                tracing::error!(?e, "spawn_one_shot: failed to close stdin");
+            }
+        });
+    }
+
+    let stderr = child.stderr.take().ok_or(SpawnError::SpawnFailed(
+        std::io::Error::new(std::io::ErrorKind::Other, "stderr not piped"),
+    ))?;
+    let stderr_handle = tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            tracing::warn!(raw = %line, "spawn_one_shot stderr line");
+        }
+    });
+
+    let stdout = child.stdout.take().ok_or(SpawnError::SpawnFailed(
+        std::io::Error::new(std::io::ErrorKind::Other, "stdout not piped"),
+    ))?;
+
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let mut lines = BufReader::new(stdout).lines();
+    let mut output = String::new();
+
+    while let Ok(Some(line)) = lines.next_line().await {
+        if provider == "opencode" {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                if v.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    if let Some(text) = v
+                        .get("part")
+                        .and_then(|p| p.get("text"))
+                        .and_then(|t| t.as_str())
+                    {
+                        output.push_str(text);
+                    }
+                }
+            }
+        } else {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                if v.get("type").and_then(|t| t.as_str()) == Some("result") {
+                    if let Some(result) = v.get("result").and_then(|r| r.as_str()) {
+                        output.push_str(result);
+                    }
+                } else if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
+                    if let Some(content) = v
+                        .get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_array())
+                    {
+                        for block in content {
+                            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                    output.push_str(text);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = child.wait().await;
+    let _ = stderr_handle.await;
+
+    tracing::info!(output_len = output.len(), "spawn_one_shot completed");
+
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,6 +362,14 @@ mod tests {
 
         let result = spawn_active(&pool, "test-session".to_string(), "test message".to_string(), None, None).await;
         assert!(matches!(result, Err(SpawnError::BinaryMissing { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_spawn_one_shot_accepts_session_id_param() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
+        let result = spawn_one_shot(&pool, "test prompt".to_string()).await;
+        assert!(matches!(result, Err(SpawnError::NoActiveAgent)));
     }
 
     #[test]
