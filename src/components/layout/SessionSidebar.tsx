@@ -76,8 +76,9 @@ export function SessionSidebar() {
     const dimmed = isClosed || isArchived;
 
     return (
-      <div
+      <button
         key={s.id}
+        type="button"
         onClick={() => selectSession(s.id)}
         onContextMenu={(e) => handleContextMenu(e, s.id)}
         className={`relative w-full text-left px-3 py-2 rounded-lg mb-0.5 transition-colors cursor-pointer ${
@@ -112,7 +113,7 @@ export function SessionSidebar() {
             ? `归档于 ${s.archived_at.slice(0, 10)}`
             : s.created_at.slice(0, 10)}
         </span>
-      </div>
+      </button>
     );
   };
 

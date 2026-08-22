@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Warning } from "@phosphor-icons/react";
 
 interface DeleteConfirmDialogProps {
@@ -7,6 +8,17 @@ interface DeleteConfirmDialogProps {
 }
 
 export function DeleteConfirmDialog({ open, onCancel, onConfirm }: DeleteConfirmDialogProps) {
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onCancel();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [open, onCancel]);
+
   if (!open) return null;
 
   return (
@@ -16,6 +28,9 @@ export function DeleteConfirmDialog({ open, onCancel, onConfirm }: DeleteConfirm
       onClick={onCancel}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-dialog-title"
         className="bg-card border border-border rounded-xl p-6 max-w-sm w-full mx-4"
         onClick={(e) => e.stopPropagation()}
       >
@@ -25,6 +40,7 @@ export function DeleteConfirmDialog({ open, onCancel, onConfirm }: DeleteConfirm
           </div>
           <div>
             <h3
+              id="delete-dialog-title"
               className="text-foreground text-sm font-medium mb-1"
               style={{ fontFamily: "var(--font-sans)" }}
             >
