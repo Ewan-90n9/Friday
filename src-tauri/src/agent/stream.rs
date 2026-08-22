@@ -217,7 +217,6 @@ struct MessageAccumulator {
     parts: Vec<AccumulatedPart>,
     current_text: String,
     pending_tool_args: Option<String>,
-    pending_tool_name: Option<String>,
 }
 
 enum AccumulatedPart {
@@ -238,7 +237,6 @@ impl MessageAccumulator {
             parts: Vec::new(),
             current_text: String::new(),
             pending_tool_args: None,
-            pending_tool_name: None,
         }
     }
 
@@ -247,10 +245,9 @@ impl MessageAccumulator {
             AppEvent::LlmThinking { token, .. } => {
                 self.current_text.push_str(token);
             }
-            AppEvent::ToolExecuting { tool, args, .. } => {
+            AppEvent::ToolExecuting { args, .. } => {
                 self.flush_current_text();
                 self.pending_tool_args = Some(serde_json::to_string(args).unwrap_or_default());
-                self.pending_tool_name = Some(tool.clone());
             }
             AppEvent::ToolResult { tool, output, elapsed_ms, .. } => {
                 self.flush_current_text();
@@ -279,19 +276,19 @@ impl MessageAccumulator {
 
     async fn flush_to_db(&mut self, pool: &sqlx::SqlitePool) {
         self.flush_current_text();
-        for (seq, part) in self.parts.iter().enumerate() {
+        for (seq, part) in self.parts.drain(..).enumerate() {
             let seq = seq as i64;
             match part {
                 AccumulatedPart::Text(text) => {
                     if let Err(e) = crate::app::session::insert_text_part(
-                        pool, &self.message_id, seq, text,
+                        pool, &self.message_id, seq, &text,
                     ).await {
                         tracing::error!(?e, message_id = %self.message_id, seq, "failed to persist text part");
                     }
                 }
                 AccumulatedPart::Tool { name, args, status, output, elapsed_ms } => {
                     if let Err(e) = crate::app::session::insert_tool_part(
-                        pool, &self.message_id, seq, name, args, status, output, *elapsed_ms,
+                        pool, &self.message_id, seq, &name, &args, &status, &output, elapsed_ms,
                     ).await {
                         tracing::error!(?e, message_id = %self.message_id, seq, tool = %name, "failed to persist tool part");
                     }
