@@ -20,6 +20,8 @@ pub struct AppState {
     pub agents: Arc<Mutex<HashMap<String, agent::stream::RunningAgent>>>,
     pub filter_handle: reload::Handle<EnvFilter, Registry>,
     pub paths: Paths,
+    pub embedding: Option<Arc<crate::knowledge::embedding::EmbeddingService>>,
+    pub vec_store: Option<Arc<crate::knowledge::vec_store::VecStore>>,
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -38,12 +40,40 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let pool = tauri::async_runtime::block_on(infra::db::init(paths.db_path()))?;
             tauri::async_runtime::block_on(app::agents::detect_and_persist(&pool))?;
 
+            let embedding = match crate::knowledge::embedding::EmbeddingService::new(
+                paths.models_dir(),
+            ) {
+                Ok(e) => {
+                    tracing::info!("embedding model loaded");
+                    Some(Arc::new(e))
+                }
+                Err(e) => {
+                    tracing::error!(?e, "failed to load embedding model, memory features disabled");
+                    None
+                }
+            };
+
+            let vec_store = match crate::knowledge::vec_store::VecStore::new(
+                paths.db_path().to_str().unwrap_or("friday.db"),
+            ) {
+                Ok(v) => {
+                    tracing::info!("vec store initialized");
+                    Some(Arc::new(v))
+                }
+                Err(e) => {
+                    tracing::error!(?e, "failed to init vec store, memory features disabled");
+                    None
+                }
+            };
+
             app.manage(AppState {
                 db: pool,
                 bus: EventBus::new(handle),
                 agents: Arc::new(Mutex::new(HashMap::new())),
                 filter_handle,
                 paths,
+                embedding,
+                vec_store,
             });
             app.manage(guard);
 

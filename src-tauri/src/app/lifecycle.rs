@@ -59,6 +59,7 @@ pub async fn send_message_cmd(
     let agents = state.agents.clone();
 
     // Determine session ID and agent session ID
+    let is_new_session = session_id.is_none();
     let (friday_session_id, agent_session_id) = match session_id {
         None => {
             tracing::info!("creating new session");
@@ -129,10 +130,24 @@ pub async fn send_message_cmd(
     })?;
     tracing::info!(agent_message_id = %agent_message_id, "created agent message record");
 
+    // Retrieve relevant experiences for new sessions
+    let experiences: Vec<crate::knowledge::experience::Experience> = if is_new_session {
+        if let (Some(ref embedding), Some(ref vec_store)) = (state.embedding.as_ref(), state.vec_store.as_ref()) {
+            crate::knowledge::memory::recall_experiences(&pool, embedding, vec_store, &message)
+                .await
+        } else {
+            tracing::warn!("embedding or vec_store not available, skipping experience recall");
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
     // Get prompt override path and spawn agent
     let prompt_override_path = state.paths.prompts_dir().join("friday.md");
     tracing::info!(
         session_id = %friday_session_id,
+        experience_count = experiences.len(),
         "spawning agent"
     );
     let agent_process = match spawn_active(
@@ -141,7 +156,7 @@ pub async fn send_message_cmd(
         message,
         agent_session_id,
         Some(prompt_override_path),
-        None,  // experiences — wired up in Task 14
+        Some(&experiences),
     )
     .await
     {
@@ -182,6 +197,8 @@ pub async fn send_message_cmd(
     let pool_clone = pool.clone();
     let agents_clone = agents.clone();
     let agent_message_id_clone = agent_message_id.clone();
+    let embedding_clone = state.embedding.clone();
+    let vec_store_clone = state.vec_store.clone();
 
     let handle = tokio::spawn(async move {
         stream::consume_stream(
@@ -192,6 +209,8 @@ pub async fn send_message_cmd(
             pool_clone,
             agents_clone,
             cancel_for_task,
+            embedding_clone,
+            vec_store_clone,
         )
         .await;
     });

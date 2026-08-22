@@ -325,7 +325,12 @@ async fn read_stderr_lines<R: tokio::io::AsyncRead + Unpin>(reader: R, session_i
 /// - stdout EOF + exit 0 → DiagnosisDone
 /// - stdout EOF + exit ≠0 → AgentCrashed
 /// - cancellation → AgentStopped
-#[tracing::instrument(skip(agent, bus, pool, agents, cancel))]
+enum ExitReason {
+    Normal,
+    Cancelled,
+}
+
+#[tracing::instrument(skip(agent, bus, pool, agents, cancel, embedding, vec_store))]
 pub async fn consume_stream(
     agent: AgentProcess,
     bus: EventBus,
@@ -334,6 +339,8 @@ pub async fn consume_stream(
     pool: sqlx::SqlitePool,
     agents: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, RunningAgent>>>,
     cancel: CancellationToken,
+    embedding: Option<std::sync::Arc<crate::knowledge::embedding::EmbeddingService>>,
+    vec_store: Option<std::sync::Arc<crate::knowledge::vec_store::VecStore>>,
 ) {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -350,6 +357,8 @@ pub async fn consume_stream(
     });
 
     tracing::info!(session_id = %session_id, "consume_stream started");
+
+    let mut exit_reason = ExitReason::Normal;
 
     loop {
         tokio::select! {
@@ -395,13 +404,8 @@ pub async fn consume_stream(
                 bus.emit(&session_id, AppEvent::AgentStopped {
                     session_id: session_id.clone(),
                 });
-                accumulator.flush_to_db(&pool).await;
-                if let Err(e) = crate::app::session::update_message_status(&pool, &agent_message_id, "stopped").await {
-                    tracing::error!(?e, message_id = %agent_message_id, "failed to update message status on stop");
-                }
-                let mut map = agents.lock().await;
-                map.remove(&session_id);
-                return;
+                exit_reason = ExitReason::Cancelled;
+                break;
             }
         }
     }
@@ -411,37 +415,59 @@ pub async fn consume_stream(
 
     let _ = stderr_handle.await;
 
-    tracing::info!(
-        session_id = %session_id,
-        exit_ok,
-        status = ?status.as_ref().map(|s| s.code()),
-        "child process exited"
-    );
+    let (final_status, fallback_outcome) = match exit_reason {
+        ExitReason::Normal => {
+            if exit_ok {
+                tracing::info!(session_id = %session_id, exit_ok, "child process exited normally");
+                bus.emit(&session_id, AppEvent::DiagnosisDone {
+                    session_id: session_id.clone(),
+                    conclusion: String::new(),
+                });
+                ("done", crate::knowledge::experience::Outcome::Uncertain)
+            } else {
+                let reason = match &status {
+                    Ok(s) => format!("exit code: {}", s.code().unwrap_or(-1)),
+                    Err(e) => format!("wait error: {}", e),
+                };
+                tracing::info!(session_id = %session_id, "child process crashed");
+                bus.emit(&session_id, AppEvent::AgentCrashed {
+                    session_id: session_id.clone(),
+                    reason,
+                });
+                ("error", crate::knowledge::experience::Outcome::Negative)
+            }
+        }
+        ExitReason::Cancelled => {
+            ("stopped", crate::knowledge::experience::Outcome::Negative)
+        }
+    };
 
-    if exit_ok {
-        bus.emit(&session_id, AppEvent::DiagnosisDone {
-            session_id: session_id.clone(),
-            conclusion: String::new(),
-        });
-    } else {
-        let reason = match &status {
-            Ok(s) => format!("exit code: {}", s.code().unwrap_or(-1)),
-            Err(e) => format!("wait error: {}", e),
-        };
-        bus.emit(&session_id, AppEvent::AgentCrashed {
-            session_id: session_id.clone(),
-            reason,
-        });
-    }
-
-    let final_status = if exit_ok { "done" } else { "error" };
     accumulator.flush_to_db(&pool).await;
     if let Err(e) = crate::app::session::update_message_status(&pool, &agent_message_id, final_status).await {
         tracing::error!(?e, message_id = %agent_message_id, "failed to update message status");
     }
 
-    let mut map = agents.lock().await;
-    map.remove(&session_id);
+    {
+        let mut map = agents.lock().await;
+        map.remove(&session_id);
+    }
+
+    if let (Some(embedding), Some(vec_store)) = (embedding, vec_store) {
+        let pool_clone = pool.clone();
+        let session_id_clone = session_id.clone();
+        tokio::spawn(async move {
+            crate::knowledge::memory::generate_memory(
+                pool_clone,
+                session_id_clone,
+                fallback_outcome,
+                embedding,
+                vec_store,
+            )
+            .await;
+        });
+    } else {
+        tracing::warn!(session_id = %session_id, "memory resources not available, skipping memory generation");
+    }
 }
 
 #[cfg(test)]
