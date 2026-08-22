@@ -18,6 +18,9 @@ pub async fn init(db_path: PathBuf) -> Result<SqlitePool, sqlx::Error> {
     add_column_if_not_exists(&pool, "sessions", "archived_at", "TEXT").await?;
     let schema5 = include_str!("../../migrations/0005_session_messages.sql");
     sqlx::query(schema5).execute(&pool).await?;
+    let schema6 = include_str!("../../migrations/0006_memory.sql");
+    sqlx::query(schema6).execute(&pool).await?;
+    add_column_if_not_exists(&pool, "sessions", "language", "TEXT").await?;
     tracing::info!(?db_path, "SQLite initialized");
     Ok(pool)
 }
@@ -255,6 +258,39 @@ mod tests {
         .await
         .unwrap();
 
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_migration_0006_creates_memory_tables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init(tmp.path().join("friday.db")).await.unwrap();
+
+        // session_summaries table exists
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session_summaries'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+
+        // experiences table exists
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='experiences'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+
+        // sessions.language column exists
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='language'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(count, 1);
     }
 }
