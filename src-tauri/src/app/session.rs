@@ -353,28 +353,42 @@ pub async fn unarchive_session(pool: &SqlitePool, id: &str) -> Result<(), sqlx::
 }
 
 pub async fn delete_session(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
-    // Manual cascade: SQLite doesn't enforce foreign keys by default
-    let message_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM session_messages WHERE session_id = ?")
-        .bind(id)
-        .fetch_all(pool)
-        .await?;
+    let mut tx = pool.begin().await?;
+
+    let message_ids: Vec<(String,)> =
+        sqlx::query_as("SELECT id FROM session_messages WHERE session_id = ?")
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await?;
 
     for (msg_id,) in &message_ids {
         sqlx::query("DELETE FROM session_message_parts WHERE message_id = ?")
             .bind(msg_id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
     }
 
     sqlx::query("DELETE FROM session_messages WHERE session_id = ?")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query("DELETE FROM diagnosis_steps WHERE session_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query("DELETE FROM tool_calls WHERE session_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
         .await?;
 
     sqlx::query("DELETE FROM sessions WHERE id = ?")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+
+    tx.commit().await?;
     Ok(())
 }
 
