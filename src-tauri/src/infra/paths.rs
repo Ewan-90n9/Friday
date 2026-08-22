@@ -33,6 +33,10 @@ impl Paths {
         self.root.join("artifacts")
     }
 
+    pub fn models_dir(&self) -> PathBuf {
+        self.root.join("models")
+    }
+
     pub fn session_artifacts_dir(&self, session_id: &str) -> PathBuf {
         self.artifacts_dir().join(session_id)
     }
@@ -44,6 +48,7 @@ impl Paths {
             self.skills_dir(),
             self.prompts_dir(),
             self.artifacts_dir(),
+            self.models_dir(),
         ] {
             std::fs::create_dir_all(&dir)?;
         }
@@ -107,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_dirs_creates_all_five_subdirs() {
+    fn test_ensure_dirs_creates_all_six_subdirs() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = Paths::new(tmp.path().to_path_buf());
         paths.ensure_dirs().unwrap();
@@ -117,6 +122,14 @@ mod tests {
         assert!(tmp.path().join("skills").is_dir());
         assert!(tmp.path().join("prompts").is_dir());
         assert!(tmp.path().join("artifacts").is_dir());
+        assert!(tmp.path().join("models").is_dir());
+    }
+
+    #[test]
+    fn test_models_dir_returns_root_join_models() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(tmp.path().to_path_buf());
+        assert_eq!(paths.models_dir(), tmp.path().join("models"));
     }
 
     #[test]
