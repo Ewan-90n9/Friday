@@ -15,6 +15,9 @@ pub async fn init(db_path: PathBuf) -> Result<SqlitePool, sqlx::Error> {
     rename_column_if_exists(&pool, "sessions", "opencode_session_id", "agent_session_id").await?;
     add_column_if_not_exists(&pool, "sessions", "agent_session_id", "TEXT").await?;
     add_column_if_not_exists(&pool, "sessions", "title", "TEXT").await?;
+    add_column_if_not_exists(&pool, "sessions", "archived_at", "TEXT").await?;
+    let schema5 = include_str!("../../migrations/0005_session_messages.sql");
+    sqlx::query(schema5).execute(&pool).await?;
     tracing::info!(?db_path, "SQLite initialized");
     Ok(pool)
 }
@@ -207,6 +210,51 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_db_init_creates_message_tables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init(tmp.path().join("friday.db")).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('session_messages', 'session_message_parts')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_db_init_creates_message_indexes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init(tmp.path().join("friday.db")).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('idx_session_messages_session', 'idx_session_message_parts_message')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_db_init_adds_archived_at_column() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init(tmp.path().join("friday.db")).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'archived_at'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
         assert_eq!(count, 1);
     }
 }
