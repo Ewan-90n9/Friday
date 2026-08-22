@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { ChatCircle, Plus, Archive, Trash, ArrowUUpLeft } from "@phosphor-icons/react";
 import { useSessionStore } from "@/store/sessionStore";
 import { DeleteConfirmDialog } from "@/components/chat/DeleteConfirmDialog";
@@ -16,7 +16,24 @@ export function SessionSidebar() {
   const unarchiveSession = useSessionStore((s) => s.unarchiveSession);
   const deleteSession = useSessionStore((s) => s.deleteSession);
 
+  const [contextMenu, setContextMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const handleContextMenu = (e: React.MouseEvent, sessionId: string) => {
+    e.preventDefault();
+    setContextMenu({ sessionId, x: e.clientX, y: e.clientY });
+  };
 
   const handleDeleteConfirm = async () => {
     if (!deleteTarget) return;
@@ -37,6 +54,7 @@ export function SessionSidebar() {
     return (
       <div
         key={s.id}
+        onContextMenu={(e) => handleContextMenu(e, s.id)}
         className={`group relative w-full text-left px-3 py-2 rounded-lg mb-0.5 transition-colors ${
           isActive
             ? "bg-surface-2 border-l-2 border-success pl-[10px]"
@@ -171,6 +189,40 @@ export function SessionSidebar() {
           >
             <Plus size={16} weight="regular" aria-hidden="true" />
             新建会话
+          </button>
+        </div>
+      )}
+
+      {/* Right-click context menu */}
+      {contextMenu && (
+        <div
+          ref={menuRef}
+          className="fixed z-50 bg-surface-2 border border-border-strong rounded-lg py-1 shadow-xl"
+          style={{ left: contextMenu.x, top: contextMenu.y, minWidth: 140 }}
+        >
+          {isArchiveView ? (
+            <button
+              onClick={() => { unarchiveSession(contextMenu.sessionId); setContextMenu(null); }}
+              className="flex items-center gap-2 w-full px-3 py-2 text-sm text-foreground hover:bg-surface-3 transition-colors text-left"
+            >
+              <ArrowUUpLeft size={14} weight="regular" aria-hidden="true" />
+              取消归档
+            </button>
+          ) : (
+            <button
+              onClick={() => { archiveSession(contextMenu.sessionId); setContextMenu(null); }}
+              className="flex items-center gap-2 w-full px-3 py-2 text-sm text-foreground hover:bg-surface-3 transition-colors text-left"
+            >
+              <Archive size={14} weight="regular" aria-hidden="true" />
+              归档会话
+            </button>
+          )}
+          <button
+            onClick={() => { setDeleteTarget(contextMenu.sessionId); setContextMenu(null); }}
+            className="flex items-center gap-2 w-full px-3 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors text-left"
+          >
+            <Trash size={14} weight="regular" aria-hidden="true" />
+            删除会话
           </button>
         </div>
       )}
