@@ -6,8 +6,8 @@ export async function sendMessage(sessionId: string | null, message: string): Pr
   return invoke<string>("send_message_cmd", { sessionId: sessionId, message: message });
 }
 
-export async function listSessions(): Promise<SessionRow[]> {
-  return invoke<SessionRow[]>("list_sessions_cmd");
+export async function listSessions(includeArchived: boolean = false): Promise<SessionRow[]> {
+  return invoke<SessionRow[]>("list_sessions_cmd", { includeArchived });
 }
 
 export async function stopAgent(sessionId: string): Promise<void> {

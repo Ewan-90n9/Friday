@@ -103,6 +103,32 @@ pub async fn send_message_cmd(
         }
     }
 
+    let user_seq = session::next_message_seq(&pool, &friday_session_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "failed to get next message seq");
+            e.to_string()
+        })?;
+    session::insert_message(&pool, &friday_session_id, "user", Some(&message), Some("done"), user_seq)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "failed to persist user message");
+            e.to_string()
+        })?;
+
+    let agent_seq = session::next_message_seq(&pool, &friday_session_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let agent_message_id = session::insert_message(
+        &pool, &friday_session_id, "agent", None, Some("streaming"), agent_seq,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "failed to create agent message record");
+        e.to_string()
+    })?;
+    tracing::info!(agent_message_id = %agent_message_id, "created agent message record");
+
     // Get prompt override path and spawn agent
     let prompt_override_path = state.paths.prompts_dir().join("friday.md");
     tracing::info!(
@@ -142,13 +168,14 @@ pub async fn send_message_cmd(
     let bus_clone = bus.clone();
     let pool_clone = pool.clone();
     let agents_clone = agents.clone();
+    let agent_message_id_clone = agent_message_id.clone();
 
     let handle = tokio::spawn(async move {
         stream::consume_stream(
             agent_process,
             bus_clone,
             session_id_clone,
-            String::new(),
+            agent_message_id_clone,
             pool_clone,
             agents_clone,
             cancel_for_task,
@@ -205,9 +232,10 @@ pub async fn close_session_cmd(
 #[tauri::command]
 pub async fn list_sessions_cmd(
     state: State<'_, crate::AppState>,
+    include_archived: bool,
 ) -> Result<Vec<session::SessionRow>, String> {
-    tracing::info!("list_sessions_cmd called");
-    session::list_sessions(&state.db, false)
+    tracing::info!(include_archived, "list_sessions_cmd called");
+    session::list_sessions(&state.db, include_archived)
         .await
         .map_err(|e| e.to_string())
 }
@@ -230,6 +258,65 @@ pub async fn set_log_level_cmd(
     crate::infra::logging::set_level(&state.filter_handle, &level)
 }
 
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn get_session_messages_cmd(
+    state: State<'_, crate::AppState>,
+    session_id: String,
+) -> Result<Vec<session::MessageRow>, String> {
+    tracing::info!(session_id = %session_id, "get_session_messages_cmd called");
+    session::get_session_messages(&state.db, &session_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn archive_session_cmd(
+    state: State<'_, crate::AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    tracing::info!(session_id = %session_id, "archive_session_cmd called");
+    session::archive_session(&state.db, &session_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn unarchive_session_cmd(
+    state: State<'_, crate::AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    tracing::info!(session_id = %session_id, "unarchive_session_cmd called");
+    session::unarchive_session(&state.db, &session_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn delete_session_cmd(
+    state: State<'_, crate::AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    tracing::info!(session_id = %session_id, "delete_session_cmd called");
+    stop_agent_for_session(&state.agents, &session_id).await?;
+
+    session::delete_session(&state.db, &session_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    state.bus.emit(
+        &session_id,
+        AppEvent::SessionDeleted {
+            session_id: session_id.clone(),
+        },
+    );
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +337,33 @@ mod tests {
         let s = session::create_session(&pool, "test").await.unwrap();
         session::close_session(&pool, &s.id.0).await.unwrap();
 
+        let row = session::get_session(&pool, &s.id.0).await.unwrap().unwrap();
+        assert_eq!(row.status, "closed");
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_removes_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
+        let s = session::create_session(&pool, "to delete").await.unwrap();
+
+        session::delete_session(&pool, &s.id.0).await.unwrap();
+
+        let row = session::get_session(&pool, &s.id.0).await.unwrap();
+        assert!(row.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_archive_then_unarchive_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
+        let s = session::create_session(&pool, "test").await.unwrap();
+
+        session::archive_session(&pool, &s.id.0).await.unwrap();
+        let row = session::get_session(&pool, &s.id.0).await.unwrap().unwrap();
+        assert_eq!(row.status, "archived");
+
+        session::unarchive_session(&pool, &s.id.0).await.unwrap();
         let row = session::get_session(&pool, &s.id.0).await.unwrap().unwrap();
         assert_eq!(row.status, "closed");
     }
