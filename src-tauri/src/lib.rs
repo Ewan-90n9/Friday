@@ -40,8 +40,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let pool = tauri::async_runtime::block_on(infra::db::init(paths.db_path()))?;
             tauri::async_runtime::block_on(app::agents::detect_and_persist(&pool))?;
 
+            let resource_dir = handle.path().resource_dir().ok();
+
             let embedding = match crate::knowledge::embedding::EmbeddingService::new(
                 paths.models_dir(),
+                resource_dir,
             ) {
                 Ok(e) => {
                     tracing::info!("embedding model loaded");

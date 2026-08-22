@@ -39,6 +39,26 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Download embedding model
+        shell: pwsh
+        run: |
+          $model_dir = "src-tauri/resources/model"
+          New-Item -ItemType Directory -Path "$model_dir/onnx" -Force
+          $files = @(
+            @{path="onnx/model.onnx"; url="https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main/onnx/model.onnx"},
+            @{path="tokenizer.json"; url="https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main/tokenizer.json"},
+            @{path="config.json"; url="https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main/config.json"},
+            @{path="special_tokens_map.json"; url="https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main/special_tokens_map.json"},
+            @{path="tokenizer_config.json"; url="https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main/tokenizer_config.json"}
+          )
+          foreach ($f in $files) {
+            $dest = "$model_dir/$($f.path)"
+            Write-Host "Downloading $($f.url) -> $dest"
+            Invoke-WebRequest -Uri $f.url -OutFile $dest -UseBasicParsing
+          }
+          Write-Host "Model files downloaded:"
+          Get-ChildItem -Recurse $model_dir | ForEach-Object { Write-Host "  $($_.FullName) ($($_.Length) bytes)" }
+
       - name: Inject version from tag
         shell: pwsh
         run: ./scripts/set-version.ps1 -Version ${{ github.ref_name }}

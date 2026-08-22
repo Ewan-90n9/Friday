@@ -23,16 +23,36 @@ pub struct EmbeddingService {
 }
 
 impl EmbeddingService {
-    pub fn new(models_dir: PathBuf) -> Result<Self, String> {
+    pub fn new(models_dir: PathBuf, resource_dir: Option<PathBuf>) -> Result<Self, String> {
         let model_dir = models_dir.join("bge-small-zh-v1.5");
 
-        let need_download = !MODEL_FILES
-            .iter()
-            .all(|f| model_dir.join(f).exists());
+        if !MODEL_FILES.iter().all(|f| model_dir.join(f).exists()) {
+            if let Some(ref res_dir) = resource_dir {
+                let res_model_dir = res_dir.join("model");
+                tracing::info!(
+                    res_dir = %res_model_dir.display(),
+                    "checking bundled model resources"
+                );
+                if MODEL_FILES.iter().all(|f| res_model_dir.join(f).exists()) {
+                    std::fs::create_dir_all(model_dir.join("onnx"))
+                        .map_err(|e| format!("create model dir: {e}"))?;
+                    for f in &MODEL_FILES {
+                        let src = res_model_dir.join(f);
+                        let dst = model_dir.join(f);
+                        if !dst.exists() {
+                            tracing::info!(file = f, "copying from resources");
+                            std::fs::copy(&src, &dst)
+                                .map_err(|e| format!("copy {f}: {e}"))?;
+                        }
+                    }
+                    tracing::info!("model files copied from bundled resources");
+                }
+            }
 
-        if need_download {
-            tracing::info!("model files missing, downloading...");
-            Self::download_model(&model_dir)?;
+            if !MODEL_FILES.iter().all(|f| model_dir.join(f).exists()) {
+                tracing::info!("model files missing, downloading...");
+                Self::download_model(&model_dir)?;
+            }
         }
 
         Self::load_from_dir(&model_dir)
@@ -103,24 +123,16 @@ impl EmbeddingService {
         Ok(())
     }
 
-    #[cfg(windows)]
     fn download_file(url: &str, dest: &PathBuf) -> Result<(), String> {
         let dest_str = dest.to_string_lossy();
         let output = std::process::Command::new("curl.exe")
             .args([
-                "-L",
-                "-o",
-                &dest_str,
-                "--connect-timeout",
-                "30",
-                "--max-time",
-                "300",
-                "--retry",
-                "2",
-                "-s",
-                "-S",
-                "-w",
-                "%{http_code}",
+                "-L", "-o", &dest_str,
+                "--connect-timeout", "30",
+                "--max-time", "300",
+                "--retry", "2",
+                "-s", "-S",
+                "-w", "%{http_code}",
                 url,
             ])
             .output()
@@ -139,30 +151,6 @@ impl EmbeddingService {
         if !http_code.starts_with('2') {
             return Err(format!("HTTP {}", http_code));
         }
-
-        Ok(())
-    }
-
-    #[cfg(not(windows))]
-    fn download_file(url: &str, dest: &PathBuf) -> Result<(), String> {
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(120))
-            .build();
-
-        let response = agent
-            .get(url)
-            .call()
-            .map_err(|e| format!("HTTP request failed: {e}"))?;
-
-        use std::io::Read;
-        let mut reader = response.into_reader();
-        let mut buf = Vec::new();
-        reader
-            .read_to_end(&mut buf)
-            .map_err(|e| format!("read response body: {e}"))?;
-
-        std::fs::write(dest, &buf)
-            .map_err(|e| format!("write file: {e}"))?;
 
         Ok(())
     }
