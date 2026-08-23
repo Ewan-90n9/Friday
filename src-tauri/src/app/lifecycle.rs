@@ -143,6 +143,12 @@ pub async fn send_message_cmd(
         Vec::new()
     };
 
+    // Enqueue session_id for MCP session mapping
+    {
+        let mut mapper = state.session_mapper.lock().await;
+        mapper.enqueue(friday_session_id.clone());
+    }
+
     // Get prompt override path and spawn agent
     let prompt_override_path = state.paths.prompts_dir().join("friday.md");
     tracing::info!(
