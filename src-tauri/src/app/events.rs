@@ -26,6 +26,7 @@ pub enum AppEvent {
     },
     ConfirmRequired {
         session_id: String,
+        confirm_id: String,
         tool: String,
         args: serde_json::Value,
         risk_level: RiskLevel,
@@ -111,6 +112,7 @@ mod tests {
     fn test_confirm_required_serialization() {
         let event = AppEvent::ConfirmRequired {
             session_id: "s1".to_string(),
+            confirm_id: "c1".to_string(),
             tool: "arthas trace".to_string(),
             args: serde_json::json!({"class": "com.example.Foo"}),
             risk_level: RiskLevel::Low,
@@ -118,6 +120,7 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("confirm_required"));
         assert!(json.contains("low"));
+        assert!(json.contains("c1"));
     }
 
     #[test]
