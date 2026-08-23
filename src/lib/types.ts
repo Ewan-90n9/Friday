@@ -92,3 +92,9 @@ export interface MessageRow {
   seq: number;
   parts: MessagePartRow[];
 }
+
+export interface ToolInfo {
+  name: string;
+  description: string;
+  risk_level: RiskLevel;
+}

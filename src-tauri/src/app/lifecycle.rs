@@ -233,6 +233,15 @@ pub async fn stop_agent_cmd(
     state: State<'_, crate::AppState>,
     session_id: String,
 ) -> Result<(), String> {
+    // Cancel any pending tool confirmations for this session
+    {
+        let mut registry = state.confirm_registry.lock().await;
+        let count = registry.cancel_for_session(&session_id);
+        if count > 0 {
+            tracing::info!(session_id = %session_id, count, "cancelled pending confirms");
+        }
+    }
+
     stop_agent_for_session(&state.agents, &session_id).await
 }
 
@@ -244,6 +253,18 @@ pub async fn close_session_cmd(
 ) -> Result<(), String> {
     // Stop agent if running
     stop_agent_for_session(&state.agents, &session_id).await?;
+
+    // Cancel pending confirms
+    {
+        let mut registry = state.confirm_registry.lock().await;
+        registry.cancel_for_session(&session_id);
+    }
+
+    // Disconnect exec channel
+    {
+        let mut exec_pool = state.exec_pool.lock().await;
+        exec_pool.disconnect(&session_id).await;
+    }
 
     // Mark session as closed
     session::close_session(&state.db, &session_id)
@@ -273,13 +294,48 @@ pub async fn list_sessions_cmd(
 }
 
 #[tauri::command]
+#[tracing::instrument(skip(state))]
 pub async fn confirm_tool_cmd(
-    _state: State<'_, crate::AppState>,
-    session_id: String,
-    tool: String,
+    state: State<'_, crate::AppState>,
+    confirm_id: String,
+    approved: bool,
 ) -> Result<(), String> {
-    tracing::info!(session_id = %session_id, tool = %tool, "confirm_tool_cmd called");
-    Ok(())
+    tracing::info!(confirm_id = %confirm_id, approved, "confirm_tool_cmd called");
+    let mut registry = state.confirm_registry.lock().await;
+    match registry.resolve(&confirm_id) {
+        Some(tx) => {
+            let result = if approved {
+                crate::tools::confirm::ConfirmResult::Confirmed
+            } else {
+                crate::tools::confirm::ConfirmResult::Cancelled
+            };
+            tx.send(result).ok();
+            Ok(())
+        }
+        None => Err("确认请求不存在或已过期".to_string()),
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ToolInfo {
+    pub name: String,
+    pub description: String,
+    pub risk_level: crate::tools::risk::RiskLevel,
+}
+
+#[tauri::command]
+pub async fn list_tools_cmd(
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<ToolInfo>, String> {
+    let tools = state.tool_registry.list();
+    Ok(tools
+        .into_iter()
+        .map(|def| ToolInfo {
+            name: def.name.clone(),
+            description: def.description.clone(),
+            risk_level: def.risk_level,
+        })
+        .collect())
 }
 
 #[tauri::command]

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { EventPayload, AgentRow, SessionRow, MessageRow } from "@/lib/types";
+import type { EventPayload, AgentRow, SessionRow, MessageRow, ToolInfo } from "@/lib/types";
 
 export async function sendMessage(sessionId: string | null, message: string): Promise<string> {
   return invoke<string>("send_message_cmd", { sessionId: sessionId, message: message });
@@ -34,8 +34,12 @@ export async function deleteSession(sessionId: string): Promise<void> {
   return invoke<void>("delete_session_cmd", { sessionId });
 }
 
-export async function confirmTool(sessionId: string, tool: string): Promise<void> {
-  return invoke<void>("confirm_tool_cmd", { sessionId, tool });
+export async function confirmTool(confirmId: string, approved: boolean): Promise<void> {
+  return invoke<void>("confirm_tool_cmd", { confirmId, approved });
+}
+
+export async function listTools(): Promise<ToolInfo[]> {
+  return invoke<ToolInfo[]>("list_tools_cmd");
 }
 
 export async function onAppEvent(handler: (payload: EventPayload) => void): Promise<() => void> {

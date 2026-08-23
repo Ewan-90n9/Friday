@@ -23,6 +23,11 @@ pub struct AppState {
     pub paths: Paths,
     pub embedding: Option<Arc<crate::knowledge::embedding::EmbeddingService>>,
     pub vec_store: Option<Arc<crate::knowledge::vec_store::VecStore>>,
+    pub tool_registry: Arc<crate::tools::registry::ToolRegistry>,
+    pub exec_pool: Arc<Mutex<crate::exec::pool::ExecChannelPool>>,
+    pub confirm_registry: Arc<Mutex<crate::tools::confirm::ConfirmRegistry>>,
+    pub session_mapper: Arc<Mutex<crate::mcp::session_mapper::SessionMapper>>,
+    pub mcp_server: Option<crate::mcp::transport::McpServerHandle>,
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -70,14 +75,56 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
             };
 
+            // Build tool registry
+            let mut tool_registry = crate::tools::registry::ToolRegistry::new();
+            tool_registry.register(crate::tools::builtin::echo_tool_def());
+            let tool_registry = Arc::new(tool_registry);
+
+            // Create shared state for MCP server
+            let exec_pool = Arc::new(Mutex::new(crate::exec::pool::ExecChannelPool::new()));
+            let confirm_registry = Arc::new(Mutex::new(crate::tools::confirm::ConfirmRegistry::new()));
+            let session_mapper = Arc::new(Mutex::new(crate::mcp::session_mapper::SessionMapper::new()));
+
+            // Start MCP server
+            let mcp_server = match crate::mcp::transport::start_mcp_server(
+                tool_registry.clone(),
+                exec_pool.clone(),
+                confirm_registry.clone(),
+                session_mapper.clone(),
+                EventBus::new(handle.clone()),
+                pool.clone(),
+            ) {
+                Ok(handle) => {
+                    tracing::info!(port = handle.port, "MCP server started");
+
+                    // Merge Friday MCP config into opencode
+                    if let Some(config_path) = crate::mcp::config::default_opencode_config_path() {
+                        if let Err(e) = crate::mcp::config::merge_friday_mcp_config(config_path, handle.port) {
+                            tracing::warn!(?e, "failed to merge opencode config");
+                        }
+                    }
+
+                    Some(handle)
+                }
+                Err(e) => {
+                    tracing::error!(?e, "failed to start MCP server");
+                    None
+                }
+            };
+
             app.manage(AppState {
                 db: pool,
-                bus: EventBus::new(handle),
+                bus: EventBus::new(handle.clone()),
                 agents: Arc::new(Mutex::new(HashMap::new())),
                 filter_handle,
                 paths,
                 embedding,
                 vec_store,
+                tool_registry,
+                exec_pool,
+                confirm_registry,
+                session_mapper,
+                mcp_server,
             });
             app.manage(guard);
 
@@ -95,6 +142,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             app::lifecycle::unarchive_session_cmd,
             app::lifecycle::delete_session_cmd,
             app::lifecycle::get_session_summary_cmd,
+            app::lifecycle::list_tools_cmd,
             app::agents::detect_agents_cmd,
             app::agents::list_agents_cmd,
             app::agents::add_agent_cmd,
