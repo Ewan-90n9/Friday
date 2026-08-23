@@ -16,7 +16,7 @@ pub struct McpServerHandle {
     pub join_handle: tokio::task::JoinHandle<()>,
 }
 
-pub fn start_mcp_server(
+pub async fn start_mcp_server(
     tool_registry: Arc<ToolRegistry>,
     exec_pool: Arc<Mutex<ExecChannelPool>>,
     confirm_registry: Arc<Mutex<ConfirmRegistry>>,

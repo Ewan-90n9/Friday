@@ -86,14 +86,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let session_mapper = Arc::new(Mutex::new(crate::mcp::session_mapper::SessionMapper::new()));
 
             // Start MCP server
-            let mcp_server = match crate::mcp::transport::start_mcp_server(
+            let mcp_server = match tauri::async_runtime::block_on(crate::mcp::transport::start_mcp_server(
                 tool_registry.clone(),
                 exec_pool.clone(),
                 confirm_registry.clone(),
                 session_mapper.clone(),
                 EventBus::new(handle.clone()),
                 pool.clone(),
-            ) {
+            )) {
                 Ok(handle) => {
                     tracing::info!(port = handle.port, "MCP server started");
 
