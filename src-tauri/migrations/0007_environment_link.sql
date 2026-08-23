@@ -1,0 +1,2 @@
+-- Add environment_id to sessions for linking to environments table.
+-- Uses add_column_if_not_exists in db.rs since SQLite ALTER TABLE lacks IF NOT EXISTS.

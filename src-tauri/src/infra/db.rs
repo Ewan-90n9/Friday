@@ -21,6 +21,8 @@ pub async fn init(db_path: PathBuf) -> Result<SqlitePool, sqlx::Error> {
     let schema6 = include_str!("../../migrations/0006_memory.sql");
     sqlx::query(schema6).execute(&pool).await?;
     add_column_if_not_exists(&pool, "sessions", "language", "TEXT").await?;
+    let _schema7 = include_str!("../../migrations/0007_environment_link.sql");
+    add_column_if_not_exists(&pool, "sessions", "environment_id", "TEXT").await?;
     tracing::info!(?db_path, "SQLite initialized");
     Ok(pool)
 }
@@ -253,6 +255,21 @@ mod tests {
 
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'archived_at'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_db_init_adds_environment_id_column() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init(tmp.path().join("friday.db")).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='environment_id'",
         )
         .fetch_one(&pool)
         .await
