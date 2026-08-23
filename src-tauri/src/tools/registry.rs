@@ -12,18 +12,20 @@ pub struct ToolOutput {
     pub raw_stdout: Option<String>,
 }
 
+pub struct ToolContext {
+    pub session_id: String,
+    pub channel: Arc<dyn ExecChannel>,
+}
+
 #[async_trait]
 pub trait ToolHandler: Send + Sync {
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        channel: &dyn ExecChannel,
-    ) -> ToolOutput;
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> ToolOutput;
 }
 
 pub struct ToolDef {
     pub name: String,
-    pub schema: serde_json::Value,
+    pub description: String,
+    pub input_schema: serde_json::Value,
     pub risk_level: RiskLevel,
     pub handler: Arc<dyn ToolHandler>,
 }
@@ -43,19 +45,86 @@ impl ToolRegistry {
         self.tools.insert(def.name.clone(), def);
     }
 
-    pub async fn dispatch(
-        &self,
-        name: &str,
-        args: serde_json::Value,
-        _channel: &dyn ExecChannel,
-    ) -> Option<ToolOutput> {
-        let _def = self.tools.get(name)?;
-        todo!()
+    pub fn get(&self, name: &str) -> Option<&ToolDef> {
+        self.tools.get(name)
+    }
+
+    pub fn list(&self) -> Vec<&ToolDef> {
+        self.tools.values().collect()
     }
 }
 
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct DummyHandler;
+
+    #[async_trait]
+    impl ToolHandler for DummyHandler {
+        async fn execute(&self, _args: serde_json::Value, _ctx: &ToolContext) -> ToolOutput {
+            ToolOutput {
+                success: true,
+                data: serde_json::json!({"result": "ok"}),
+                raw_stdout: None,
+            }
+        }
+    }
+
+    fn make_tool_def(name: &str, risk: RiskLevel) -> ToolDef {
+        ToolDef {
+            name: name.to_string(),
+            description: format!("Test tool {}", name),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string"}
+                }
+            }),
+            risk_level: risk,
+            handler: Arc::new(DummyHandler),
+        }
+    }
+
+    #[test]
+    fn test_register_and_get() {
+        let mut registry = ToolRegistry::new();
+        registry.register(make_tool_def("jstat", RiskLevel::ReadOnly));
+
+        assert!(registry.get("jstat").is_some());
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_list_returns_all_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(make_tool_def("jstat", RiskLevel::ReadOnly));
+        registry.register(make_tool_def("arthas_trace", RiskLevel::Low));
+
+        let list = registry.list();
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn test_list_empty_registry() {
+        let registry = ToolRegistry::new();
+        assert!(registry.list().is_empty());
+    }
+
+    #[test]
+    fn test_register_overwrites_same_name() {
+        let mut registry = ToolRegistry::new();
+        registry.register(make_tool_def("jstat", RiskLevel::ReadOnly));
+        registry.register(make_tool_def("jstat", RiskLevel::High));
+
+        let list = registry.list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(registry.get("jstat").unwrap().risk_level, RiskLevel::High);
     }
 }
