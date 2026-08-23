@@ -10,14 +10,12 @@ pub struct SshTransport {
 #[async_trait]
 impl ExecChannel for SshTransport {
     async fn run(&self, _cmd: &str) -> Result<ExecOutput, Box<dyn std::error::Error + Send + Sync>> {
-        todo!()
+        Err("SSH transport not yet implemented".into())
     }
 
     async fn connect(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        todo!()
+        Err("SSH transport not yet implemented".into())
     }
 
-    async fn disconnect(&self) {
-        todo!()
-    }
+    async fn disconnect(&self) {}
 }
