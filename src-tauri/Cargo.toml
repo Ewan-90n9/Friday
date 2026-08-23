@@ -32,6 +32,13 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 sqlite-vec = "0.1"
 ureq = { version = "2", features = ["proxy-from-env", "native-certs"] }
 winreg = "0.55"
+rmcp = { version = "3", features = ["server", "macros", "transport-streamable-http-server"] }
+hyper = "1"
+hyper-util = { version = "0.1", features = ["server", "http1", "tokio"] }
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+tower-service = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
