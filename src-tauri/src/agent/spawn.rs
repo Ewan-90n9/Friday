@@ -141,12 +141,12 @@ pub async fn spawn_active(
 
     let prompt_text = if let Some(exps) = experiences {
         if !exps.is_empty() {
-            prompt::build_prompt_with_experiences(&message, prompt_override_path.as_deref(), exps)
+            prompt::build_prompt_with_experiences(&message, prompt_override_path.as_deref(), &session_id, exps)
         } else {
-            prompt::build_prompt(&message, prompt_override_path.as_deref())
+            prompt::build_prompt(&message, prompt_override_path.as_deref(), &session_id)
         }
     } else {
-        prompt::build_prompt(&message, prompt_override_path.as_deref())
+        prompt::build_prompt(&message, prompt_override_path.as_deref(), &session_id)
     };
     tracing::info!(prompt_len = prompt_text.len(), "prompt built");
 

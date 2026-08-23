@@ -38,20 +38,25 @@ pub fn build_system_prompt(override_path: Option<&Path>) -> String {
     FRIDAY_SYSTEM_PROMPT.to_string()
 }
 
-pub fn build_prompt(message: &str, override_path: Option<&Path>) -> String {
+pub fn build_prompt(message: &str, override_path: Option<&Path>, session_id: &str) -> String {
     let system = build_system_prompt(override_path);
-    format!("{system}\n\n---\n\n用户消息：{message}")
+    format!(
+        "{system}\n\n---\n\n## 工具使用\n- 调用诊断工具时，必须传入 session_id 参数。\n- 当前会话的 session_id：{session_id}\n\n---\n\n用户消息：{message}"
+    )
 }
 
 pub fn build_prompt_with_experiences(
     message: &str,
     override_path: Option<&Path>,
+    session_id: &str,
     experiences: &[Experience],
 ) -> String {
     let system = build_system_prompt(override_path);
 
     if experiences.is_empty() {
-        return format!("{system}\n\n---\n\n用户消息：{message}");
+        return format!(
+            "{system}\n\n---\n\n## 工具使用\n- 调用诊断工具时，必须传入 session_id 参数。\n- 当前会话的 session_id：{session_id}\n\n---\n\n用户消息：{message}"
+        );
     }
 
     let mut exp_section = String::from("## 历史经验参考\n");
@@ -74,7 +79,9 @@ pub fn build_prompt_with_experiences(
         writeln!(exp_section).ok();
     }
 
-    format!("{system}\n\n---\n\n{exp_section}\n---\n\n用户消息：{message}")
+    format!(
+        "{system}\n\n---\n\n## 工具使用\n- 调用诊断工具时，必须传入 session_id 参数。\n- 当前会话的 session_id：{session_id}\n\n---\n\n{exp_section}\n---\n\n用户消息：{message}"
+    )
 }
 
 #[cfg(test)]
@@ -117,7 +124,7 @@ mod tests {
 
     #[test]
     fn test_build_prompt_includes_system_and_message() {
-        let result = build_prompt("hello world", None);
+        let result = build_prompt("hello world", None, "test-session");
         assert!(result.contains(FRIDAY_SYSTEM_PROMPT));
         assert!(result.contains("hello world"));
     }
@@ -128,7 +135,7 @@ mod tests {
         let path = tmp.path().join("friday.md");
         std::fs::write(&path, "Custom system.").unwrap();
 
-        let result = build_prompt("hello", Some(&path));
+        let result = build_prompt("hello", Some(&path), "test-session");
         assert!(result.contains("Custom system."));
         assert!(!result.contains(FRIDAY_SYSTEM_PROMPT));
         assert!(result.contains("hello"));
@@ -159,7 +166,7 @@ mod tests {
             make_test_experience(Outcome::Positive, Some("ThreadPool leak")),
             make_test_experience(Outcome::Negative, None),
         ];
-        let result = build_prompt_with_experiences("hello", None, &exps);
+        let result = build_prompt_with_experiences("hello", None, "test-session", &exps);
 
         assert!(result.contains("## 历史经验参考"));
         assert!(result.contains("成功"));
@@ -171,9 +178,27 @@ mod tests {
     #[test]
     fn test_build_prompt_with_empty_experiences_no_section() {
         let exps: Vec<Experience> = vec![];
-        let result = build_prompt_with_experiences("hello", None, &exps);
+        let result = build_prompt_with_experiences("hello", None, "test-session", &exps);
 
         assert!(!result.contains("## 历史经验参考"));
         assert!(result.contains("hello"));
+    }
+
+    #[test]
+    fn test_build_prompt_injects_session_id() {
+        let result = build_prompt("hello", None, "session-abc-123");
+        assert!(result.contains("session-abc-123"));
+        assert!(result.contains("工具使用"));
+        assert!(result.contains("hello"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_experiences_injects_session_id() {
+        let exps = vec![make_test_experience(Outcome::Positive, Some("root cause"))];
+        let result = build_prompt_with_experiences("hello", None, "session-xyz", &exps);
+
+        assert!(result.contains("session-xyz"));
+        assert!(result.contains("工具使用"));
+        assert!(result.contains("历史经验参考"));
     }
 }
