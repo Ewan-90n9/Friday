@@ -104,6 +104,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
                     }
 
+                    // Merge Friday MCP config into codeagentcli
+                    if let Some(config_path) = crate::mcp::config::default_codeagentcli_config_path() {
+                        if let Err(e) = crate::mcp::config::merge_codeagentcli_mcp_config(config_path, handle.port) {
+                            tracing::warn!(?e, "failed to merge codeagentcli config");
+                        }
+                    }
+
                     Some(handle)
                 }
                 Err(e) => {
