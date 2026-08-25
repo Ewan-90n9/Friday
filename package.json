@@ -10,20 +10,22 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@phosphor-icons/react": "^2",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-shell": "^2",
-    "@phosphor-icons/react": "^2",
     "react": "^19",
     "react-dom": "^19",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "zustand": "^5"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^4",
     "tailwindcss": "^4",
-    "@tailwindcss/vite": "^4",
     "typescript": "^5",
     "vite": "^6"
   },

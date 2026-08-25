@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { CaretRight, CaretDown } from "@phosphor-icons/react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ChatMessage } from "@/lib/types";
 import { ToolCallCard } from "./ToolCallCard";
 
@@ -61,13 +63,10 @@ export function AgentMessage({ message }: AgentMessageProps) {
       })}
 
       {textParts.length > 0 ? (
-        <div
-          className="text-sm leading-6 text-foreground mb-3"
-          style={{ fontFamily: "var(--font-sans)" }}
-        >
-          {textParts.map((p, i) => (
-            <span key={i}>{p.text}</span>
-          ))}
+        <div className="markdown-body mb-3">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {textParts.map((p) => p.text ?? "").join("")}
+          </ReactMarkdown>
           {isStreaming && (
             <span
               className="inline-block w-[7px] h-[15px] bg-accent ml-0.5 align-text-bottom animate-pulse"
