@@ -60,7 +60,7 @@ fn write_config(path: &PathBuf, config: &Value) -> Result<(), Box<dyn std::error
 }
 
 pub fn default_opencode_config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("opencode").join("opencode.jsonc"))
+    dirs::home_dir().map(|h| h.join(".config").join("opencode").join("opencode.jsonc"))
 }
 
 #[cfg(test)]
