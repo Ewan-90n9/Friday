@@ -91,23 +91,50 @@ pub async fn start_mcp_server(
 
 async fn handle_connection(
     stream: tokio::net::TcpStream,
-    _addr: std::net::SocketAddr,
+    addr: std::net::SocketAddr,
     service: Arc<StreamableHttpService<FridayMcpServer, LocalSessionManager>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tracing::info!(%addr, "MCP connection opened");
     let io = hyper_util::rt::TokioIo::new(stream);
 
     let service_clone = service.clone();
     let svc = hyper::service::service_fn(move |req| {
         let service = service_clone.clone();
         async move {
+            let method = req.method().as_str().to_owned();
+            let path = req.uri().path().to_owned();
+            let user_agent = req
+                .headers()
+                .get(http::header::USER_AGENT)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("-")
+                .to_owned();
+
             let response = service.handle(req).await;
+
+            tracing::info!(
+                method = %method,
+                path = %path,
+                user_agent = %user_agent,
+                status = %response.status().as_u16(),
+                "MCP HTTP request"
+            );
+
             Ok::<_, std::convert::Infallible>(response)
         }
     });
 
-    hyper::server::conn::http1::Builder::new()
+    match hyper::server::conn::http1::Builder::new()
         .serve_connection(io, svc)
-        .await?;
-
-    Ok(())
+        .await
+    {
+        Ok(()) => {
+            tracing::info!(%addr, "MCP connection closed");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!(%addr, ?e, "MCP connection ended with error");
+            Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        }
+    }
 }
