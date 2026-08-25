@@ -21,7 +21,9 @@ impl ToolHandler for EchoHandler {
 
 pub fn echo_tool_def() -> ToolDef {
     ToolDef {
-        name: "friday_echo".to_string(),
+        // Registered as "echo"; opencode prefixes MCP tools with the server
+        // name ("friday_"), so the agent sees "friday_echo" — not a double prefix.
+        name: "echo".to_string(),
         description: "Echo test tool. Returns the arguments and session_id. Used for verifying tool system connectivity.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
@@ -82,7 +84,7 @@ mod tests {
     fn test_echo_tool_def_has_correct_metadata() {
         let def = echo_tool_def();
 
-        assert_eq!(def.name, "friday_echo");
+        assert_eq!(def.name, "echo");
         assert_eq!(def.risk_level, RiskLevel::ReadOnly);
         assert!(def.description.to_lowercase().contains("echo"));
     }
