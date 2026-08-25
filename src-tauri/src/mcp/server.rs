@@ -221,11 +221,11 @@ impl ServerHandler for FridayMcpServer {
                 }
             }
 
-            // Get or create exec channel
-            let channel = {
+            // Get or create exec channel (only for tools that need one)
+            let channel = if tool_def.needs_channel {
                 let mut exec_pool = self.exec_pool.lock().await;
                 match exec_pool.get_or_create(&session_id, &self.pool).await {
-                    Ok(ch) => ch,
+                    Ok(ch) => Some(ch),
                     Err(e) => {
                         tracing::error!(session_id = %session_id, tool = %tool_name, error = %e, "failed to get exec channel");
                         return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
@@ -235,6 +235,8 @@ impl ServerHandler for FridayMcpServer {
                         .into());
                     }
                 }
+            } else {
+                None
             };
 
             // Emit ToolExecuting event

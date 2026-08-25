@@ -14,7 +14,8 @@ pub struct ToolOutput {
 
 pub struct ToolContext {
     pub session_id: String,
-    pub channel: Arc<dyn ExecChannel>,
+    /// None for tools with `needs_channel: false` (echo, get_playbook, etc.)
+    pub channel: Option<Arc<dyn ExecChannel>>,
 }
 
 #[async_trait]
@@ -27,6 +28,9 @@ pub struct ToolDef {
     pub description: String,
     pub input_schema: serde_json::Value,
     pub risk_level: RiskLevel,
+    /// Whether the tool requires a remote ExecChannel. Local tools (echo,
+    /// get_playbook) set this to false and run without an environment.
+    pub needs_channel: bool,
     pub handler: Arc<dyn ToolHandler>,
 }
 
@@ -88,6 +92,7 @@ mod tests {
                 }
             }),
             risk_level: risk,
+            needs_channel: true,
             handler: Arc::new(DummyHandler),
         }
     }

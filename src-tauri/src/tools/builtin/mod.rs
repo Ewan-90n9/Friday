@@ -36,6 +36,7 @@ pub fn echo_tool_def() -> ToolDef {
             "required": ["message"]
         }),
         risk_level: RiskLevel::ReadOnly,
+        needs_channel: false,
         handler: Arc::new(EchoHandler),
     }
 }
@@ -43,33 +44,13 @@ pub fn echo_tool_def() -> ToolDef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exec::channel::{ExecChannel, ExecOutput};
-    use async_trait::async_trait;
-
-    struct MockChannel;
-
-    #[async_trait]
-    impl ExecChannel for MockChannel {
-        async fn run(&self, _cmd: &str) -> Result<ExecOutput, Box<dyn std::error::Error + Send + Sync>> {
-            Ok(ExecOutput {
-                stdout: String::new(),
-                stderr: String::new(),
-                exit_code: 0,
-            })
-        }
-        async fn connect(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            Ok(())
-        }
-        async fn disconnect(&self) {}
-    }
 
     #[tokio::test]
     async fn test_echo_handler_returns_args_and_session_id() {
         let handler = EchoHandler;
-        let channel: Arc<dyn ExecChannel> = Arc::new(MockChannel);
         let ctx = ToolContext {
             session_id: "test-session-123".to_string(),
-            channel,
+            channel: None,
         };
         let args = serde_json::json!({"message": "hello", "session_id": "test-session-123"});
 
@@ -86,6 +67,7 @@ mod tests {
 
         assert_eq!(def.name, "echo");
         assert_eq!(def.risk_level, RiskLevel::ReadOnly);
+        assert!(!def.needs_channel);
         assert!(def.description.to_lowercase().contains("echo"));
     }
 }

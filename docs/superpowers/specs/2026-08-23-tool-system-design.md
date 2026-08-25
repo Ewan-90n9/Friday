@@ -179,18 +179,21 @@ match def.risk_level {
 7. `ConfirmResult::Cancelled` → `CallToolResult::error("用户取消了工具执行")`
 8. `ConfirmResult::Confirmed` → 继续
 
-### 步骤 4：获取/创建 ExecChannel
+### 步骤 4：获取/创建 ExecChannel（仅 needs_channel 工具）
 
 ```
-channel = exec_pool.get_or_create(session_id, &pool)
-  ├─ 已有连接 → Arc clone 返回
-  ├─ 无连接 → 从 DB 查 session 关联的 environment
-  │   ├─ session 无 environment_id → ToolOutput { success: false, data: {"error": "no_environment"} }
-  │   ├─ environment 记录不存在 → ToolOutput { success: false, data: {"error": "environment_not_found"} }
-  │   ├─ 创建 SshTransport / K8sTransport
-  │   ├─ connect() → Err("SSH transport not yet implemented")  // 占位
-  │   └─ 存入 pool，返回 Arc clone
-  └─ 连接失败 → ToolOutput { success: false, data: {"error": "connection_error"} }
+if def.needs_channel:
+  channel = exec_pool.get_or_create(session_id, &pool)
+    ├─ 已有连接 → Arc clone 返回
+    ├─ 无连接 → 从 DB 查 session 关联的 environment
+    │   ├─ session 无 environment_id → ToolOutput { success: false, data: {"error": "no_environment"} }
+    │   ├─ environment 记录不存在 → ToolOutput { success: false, data: {"error": "environment_not_found"} }
+    │   ├─ 创建 SshTransport / K8sTransport
+    │   ├─ connect() → Err("SSH transport not yet implemented")  // 占位
+    │   └─ 存入 pool，返回 Arc clone
+    └─ 连接失败 → ToolOutput { success: false, data: {"error": "connection_error"} }
+else:
+  channel = None  // 本地工具（echo、get_playbook）不需要远程环境
 ```
 
 ### 步骤 5：执行工具
@@ -231,6 +234,7 @@ pub struct ToolDef {
     pub description: String,
     pub input_schema: serde_json::Value,  // JSON Schema，不含 session_id
     pub risk_level: RiskLevel,
+    pub needs_channel: bool,              // 本地工具（echo、get_playbook）为 false，跳过 ExecChannel 获取
     pub handler: Arc<dyn ToolHandler>,
 }
 ```
@@ -240,7 +244,7 @@ pub struct ToolDef {
 ```rust
 pub struct ToolContext {
     pub session_id: String,
-    pub channel: Arc<dyn ExecChannel>,
+    pub channel: Option<Arc<dyn ExecChannel>>,  // needs_channel=false 时为 None
 }
 
 #[async_trait]
@@ -282,7 +286,7 @@ impl ToolRegistry {
 pub struct EchoHandler;
 
 // schema: { "message": {"type": "string"} }  (不含 session_id，由 Server 注入)
-// risk_level: ReadOnly
+// risk_level: ReadOnly, needs_channel: false
 // 执行: 返回 { echo: args, session_id: ctx.session_id }
 ```
 
