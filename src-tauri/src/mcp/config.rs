@@ -90,7 +90,9 @@ fn inject_friday_entry_codeagentcli(mut config: Value, url: &str) -> Value {
     }
 
     let friday = mcp.get_mut("friday").unwrap();
-    friday["type"] = Value::String("sse".to_string());
+    // Streamable HTTP transport (Claude Code convention: "http" = streamable,
+    // "sse" = legacy HTTP+SSE). Friday's MCP server is rmcp StreamableHttpService.
+    friday["type"] = Value::String("http".to_string());
     friday["url"] = Value::String(url.to_string());
     friday["enabled"] = Value::Bool(true);
 
@@ -195,7 +197,7 @@ mod tests {
         let config = Value::Object(serde_json::Map::new());
         let result = inject_friday_entry_codeagentcli(config, "http://127.0.0.1:12345/mcp");
 
-        assert_eq!(result["mcpServers"]["friday"]["type"], "sse");
+        assert_eq!(result["mcpServers"]["friday"]["type"], "http");
         assert_eq!(result["mcpServers"]["friday"]["url"], "http://127.0.0.1:12345/mcp");
         assert_eq!(result["mcpServers"]["friday"]["enabled"], true);
     }
@@ -222,7 +224,7 @@ mod tests {
         let config = serde_json::json!({
             "mcpServers": {
                 "friday": {
-                    "type": "sse",
+                    "type": "http",
                     "url": "http://127.0.0.1:OLD/mcp"
                 }
             }
