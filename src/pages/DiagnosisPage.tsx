@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { TopBar } from "@/components/layout/TopBar";
 import { SessionSidebar } from "@/components/layout/SessionSidebar";
 import { MainDiagnosisArea } from "@/components/layout/MainDiagnosisArea";
+import { ToolsPanel } from "@/components/tools/ToolsPanel";
 import { useAgentStore } from "@/store/agentStore";
 import { useSessionStore } from "@/store/sessionStore";
 
@@ -24,6 +25,7 @@ export function DiagnosisPage() {
       <div className="flex flex-1 min-h-0">
         <SessionSidebar />
         <MainDiagnosisArea />
+        <ToolsPanel />
       </div>
     </div>
   );

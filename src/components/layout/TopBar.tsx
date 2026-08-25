@@ -1,9 +1,8 @@
 import { useState, useRef } from "react";
-import { GearSix, Wrench } from "@phosphor-icons/react";
+import { GearSix } from "@phosphor-icons/react";
 import { FridayMark } from "@/components/FridayMark";
 import { useAgentStore } from "@/store/agentStore";
 import { AgentSettingsDialog } from "@/components/agents/AgentSettingsDialog";
-import { ToolsDialog } from "@/components/tools/ToolsDialog";
 import type { AgentRow } from "@/lib/types";
 
 function computeStatus(
@@ -32,7 +31,6 @@ function computeStatus(
 
 export function TopBar() {
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [toolsOpen, setToolsOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const activeAgent = useAgentStore((s) => s.activeAgent);
   const loading = useAgentStore((s) => s.loading);
@@ -84,13 +82,6 @@ export function TopBar() {
           <span className="text-muted-foreground text-xs">{label}</span>
         </button>
         <button
-          onClick={() => setToolsOpen(true)}
-          className="flex items-center justify-center w-8 h-8 rounded-md text-muted-foreground hover:text-foreground hover:bg-surface-3 transition-colors cursor-pointer"
-          aria-label="诊断工具"
-        >
-          <Wrench size={18} weight="regular" />
-        </button>
-        <button
           onClick={() => setSettingsOpen(true)}
           className="flex items-center justify-center w-8 h-8 rounded-md text-muted-foreground hover:text-foreground hover:bg-surface-3 transition-colors cursor-pointer"
           aria-label="Agent 设置"
@@ -100,7 +91,6 @@ export function TopBar() {
       </div>
 
       <AgentSettingsDialog open={settingsOpen} onClose={handleClose} />
-      <ToolsDialog open={toolsOpen} onClose={() => setToolsOpen(false)} />
     </header>
   );
 }
