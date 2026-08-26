@@ -17,7 +17,7 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 russh = "0.45"
-keyring = "3"
+keyring = { version = "3", features = ["windows-native"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 async-trait = "0.1"
 dirs = "5"
