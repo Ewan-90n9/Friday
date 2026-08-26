@@ -76,7 +76,9 @@ pub fn default_opencode_config_path() -> Option<PathBuf> {
 }
 
 pub fn default_codeagentcli_config_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".cac").join("settings.json"))
+    // codeagentcli reads MCP server config from ~/.cac.json at runtime
+    // (NOT ~/.cac/settings.json — entries there are silently ignored).
+    dirs::home_dir().map(|h| h.join(".cac.json"))
 }
 
 fn inject_friday_entry_codeagentcli(mut config: Value, url: &str) -> Value {

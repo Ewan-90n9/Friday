@@ -480,7 +480,9 @@ impl SessionMapper {
 
 ### 仅处理 opencode
 
-codeagentcli 的 MCP 配置如果格式不同，后续 spec 处理。
+codeagentcli 的 MCP 配置注入目标文件为 `~/.cac.json`（`mcpServers.friday`，含 `type: "http"`、`url`、`enabled: true`）。
+
+> **历史教训（issue #3）**：codeagentcli 运行时只读 `~/.cac.json`。曾误写到 `~/.cac/settings.json`，该文件中的 mcpServers 条目会被 codeagentcli 静默忽略——init 事件的 `mcp_servers` 列表完全不出现，也无需任何连接请求。
 
 ## System Prompt 注入 session_id
 
