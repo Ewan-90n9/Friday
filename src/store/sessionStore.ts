@@ -1,6 +1,6 @@
 import { create } from "zustand";
-import { sendMessage as ipcSendMessage, stopAgent, listSessions, onAppEvent, getSessionMessages, archiveSession as ipcArchiveSession, unarchiveSession as ipcUnarchiveSession, deleteSession as ipcDeleteSession } from "@/lib/ipc";
-import type { SessionRow, ChatMessage, ChatPart, AppEvent, MessageRow } from "@/lib/types";
+import { sendMessage as ipcSendMessage, stopAgent, listSessions, onAppEvent, getSessionMessages, archiveSession as ipcArchiveSession, unarchiveSession as ipcUnarchiveSession, deleteSession as ipcDeleteSession, confirmTool } from "@/lib/ipc";
+import type { SessionRow, ChatMessage, ChatPart, AppEvent, MessageRow, ConfirmRequest } from "@/lib/types";
 
 interface SessionStore {
   sessions: SessionRow[];
@@ -8,6 +8,7 @@ interface SessionStore {
   currentSessionId: string | null;
   messagesBySession: Record<string, ChatMessage[]>;
   agentRunning: Record<string, boolean>;
+  pendingConfirms: Record<string, ConfirmRequest[]>;
   inputText: string;
   sidebarView: "sessions" | "archived";
   eventUnlisten: (() => void) | null | string;
@@ -25,6 +26,7 @@ interface SessionStore {
   archiveSession: (id: string) => Promise<void>;
   unarchiveSession: (id: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
+  confirmToolAction: (confirmId: string, approved: boolean) => Promise<void>;
 }
 
 function errMsg(e: unknown): string {
@@ -74,6 +76,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   currentSessionId: null,
   messagesBySession: {},
   agentRunning: {},
+  pendingConfirms: {},
   inputText: "",
   sidebarView: "sessions",
   eventUnlisten: null,
@@ -239,6 +242,25 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     }
   },
 
+  confirmToolAction: async (confirmId, approved) => {
+    set((state) => {
+      const updated: Record<string, ConfirmRequest[]> = {};
+      for (const [sid, list] of Object.entries(state.pendingConfirms)) {
+        updated[sid] = list.map((c) =>
+          c.confirm_id === confirmId
+            ? { ...c, resolved: approved ? ("approved" as const) : ("rejected" as const) }
+            : c,
+        );
+      }
+      return { pendingConfirms: updated };
+    });
+    try {
+      await confirmTool(confirmId, approved);
+    } catch (e) {
+      console.error("Failed to confirm tool:", errMsg(e));
+    }
+  },
+
   initEventListener: async () => {
     const { eventUnlisten } = get();
     if (eventUnlisten) return;
@@ -316,6 +338,25 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         messagesBySession: {
           ...state.messagesBySession,
           [session_id]: updatedMessages,
+        },
+      });
+      return;
+    }
+
+    if (event.type === "confirm_required") {
+      const req: ConfirmRequest = {
+        confirm_id: event.confirm_id,
+        session_id: session_id,
+        tool: event.tool,
+        args: event.args,
+        risk_level: event.risk_level,
+        resolved: "pending",
+      };
+      const existing = state.pendingConfirms[session_id] ?? [];
+      set({
+        pendingConfirms: {
+          ...state.pendingConfirms,
+          [session_id]: [...existing, req],
         },
       });
       return;
@@ -403,6 +444,19 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const newRunning = { ...state.agentRunning };
       delete newRunning[session_id];
       set({ agentRunning: newRunning });
+
+      // Visual closure for unresolved confirms; backend 120s timeout is the real backstop
+      const pending = state.pendingConfirms[session_id] ?? [];
+      if (pending.some((c) => c.resolved === "pending")) {
+        set({
+          pendingConfirms: {
+            ...state.pendingConfirms,
+            [session_id]: pending.map((c) =>
+              c.resolved === "pending" ? { ...c, resolved: "timeout" as const } : c,
+            ),
+          },
+        });
+      }
 
       const messages = state.messagesBySession[session_id] ?? [];
       if (messages.length > 0) {
