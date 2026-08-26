@@ -43,13 +43,13 @@ impl ExecChannelPool {
                 .ok_or_else(|| PoolError::TransportNotImplemented(format!(
                     "invalid auth config for environment {env_id}"
                 )))?;
-                Arc::new(super::ssh::SshTransport {
-                    env_id: env_id.clone(),
-                    host: env.host.clone().unwrap_or_default(),
-                    port: env.port.unwrap_or(22),
-                    user: env.user.clone().unwrap_or_default(),
+                Arc::new(super::ssh::SshTransport::new(
+                    &env_id,
+                    env.host.as_deref().unwrap_or_default(),
+                    env.port.unwrap_or(22),
+                    env.user.as_deref().unwrap_or_default(),
                     auth,
-                })
+                ))
             }
             "k8s" => Arc::new(super::k8s::K8sTransport {
                 namespace: env.k8s_namespace.unwrap_or_default(),
