@@ -86,6 +86,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 exec_pool.clone(),
                 paths.artifacts_dir(),
             ));
+            tool_registry.register(crate::tools::builtin::list_environments::list_environments_tool_def(
+                pool.clone(),
+            ));
             let tool_registry = Arc::new(tool_registry);
 
             // SSH 连接池空闲清理巡检：每 60s 清理空闲超 10min 的连接。

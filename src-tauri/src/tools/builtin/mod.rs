@@ -1,3 +1,4 @@
+pub mod list_environments;
 pub mod run_command;
 
 use crate::tools::registry::{ToolContext, ToolDef, ToolHandler, ToolOutput};
