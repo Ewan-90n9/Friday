@@ -23,6 +23,9 @@ pub async fn init(db_path: PathBuf) -> Result<SqlitePool, sqlx::Error> {
     add_column_if_not_exists(&pool, "sessions", "language", "TEXT").await?;
     let _schema7 = include_str!("../../migrations/0007_environment_link.sql");
     add_column_if_not_exists(&pool, "sessions", "environment_id", "TEXT").await?;
+    // Migration (phase 1): environments auth columns
+    add_column_if_not_exists(&pool, "environments", "auth_type", "TEXT NOT NULL DEFAULT 'private_key'").await?;
+    add_column_if_not_exists(&pool, "environments", "private_key_path", "TEXT").await?;
     tracing::info!(?db_path, "SQLite initialized");
     Ok(pool)
 }
@@ -276,6 +279,42 @@ mod tests {
         .unwrap();
 
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_db_init_adds_environment_auth_columns() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init(tmp.path().join("friday.db")).await.unwrap();
+
+        // 列存在性直接验证
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('environments') WHERE name = 'auth_type'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('environments') WHERE name = 'private_key_path'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+
+        // 新建环境默认 auth_type = 'private_key'
+        sqlx::query(
+            "INSERT INTO environments (id, name, transport_type, created_at) VALUES ('e1', 'test', 'ssh', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let auth_type: String = sqlx::query_scalar("SELECT auth_type FROM environments WHERE id = 'e1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(auth_type, "private_key");
     }
 
     #[tokio::test]
