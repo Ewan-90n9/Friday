@@ -16,7 +16,7 @@ export type AppEvent =
   | { type: "tool_executing"; session_id: string; tool: string; args: unknown }
   | { type: "tool_result"; session_id: string; tool: string; output: unknown; elapsed_ms: number }
   | { type: "llm_thinking"; session_id: string; token: string }
-  | { type: "confirm_required"; session_id: string; tool: string; args: unknown; risk_level: RiskLevel }
+  | { type: "confirm_required"; session_id: string; confirm_id: string; tool: string; args: unknown; risk_level: RiskLevel }
   | { type: "agent_stopped"; session_id: string }
   | { type: "agent_crashed"; session_id: string; reason: string }
   | { type: "diagnosis_done"; session_id: string; conclusion: string }
@@ -97,4 +97,32 @@ export interface ToolInfo {
   name: string;
   description: string;
   risk_level: RiskLevel;
+}
+
+export type EnvironmentAuthType = "private_key" | "password";
+
+export interface EnvironmentRow {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  user: string;
+  auth_type: EnvironmentAuthType;
+  private_key_path: string | null;
+  created_at: string;
+}
+
+export interface TestConnectionResult {
+  ok: boolean;
+  latency_ms: number;
+  error: string | null;
+}
+
+export interface ConfirmRequest {
+  confirm_id: string;
+  session_id: string;
+  tool: string;
+  args: unknown;
+  risk_level: RiskLevel;
+  resolved: "pending" | "approved" | "rejected" | "timeout";
 }
