@@ -32,14 +32,25 @@ impl ExecChannelPool {
             return Ok(channel.clone());
         }
 
-        let env = fetch_environment(pool, session_id).await?;
+        let (env_id, env) = fetch_environment(pool, session_id).await?;
 
         let channel: Arc<dyn ExecChannel> = match env.transport_type.as_str() {
-            "ssh" => Arc::new(super::ssh::SshTransport {
-                host: env.host.unwrap_or_default(),
-                port: env.port.unwrap_or(22),
-                user: env.user.unwrap_or_default(),
-            }),
+            "ssh" => {
+                let auth = super::ssh::SshAuth::from_row(
+                    env.auth_type.as_deref().unwrap_or("private_key"),
+                    env.private_key_path.as_deref(),
+                )
+                .ok_or_else(|| PoolError::TransportNotImplemented(format!(
+                    "invalid auth config for environment {env_id}"
+                )))?;
+                Arc::new(super::ssh::SshTransport {
+                    env_id: env_id.clone(),
+                    host: env.host.clone().unwrap_or_default(),
+                    port: env.port.unwrap_or(22),
+                    user: env.user.clone().unwrap_or_default(),
+                    auth,
+                })
+            }
             "k8s" => Arc::new(super::k8s::K8sTransport {
                 namespace: env.k8s_namespace.unwrap_or_default(),
                 pod: env.k8s_pod.unwrap_or_default(),
@@ -88,12 +99,14 @@ struct EnvironmentInfo {
     user: Option<String>,
     k8s_namespace: Option<String>,
     k8s_pod: Option<String>,
+    auth_type: Option<String>,
+    private_key_path: Option<String>,
 }
 
 async fn fetch_environment(
     pool: &sqlx::SqlitePool,
     session_id: &str,
-) -> Result<EnvironmentInfo, PoolError> {
+) -> Result<(String, EnvironmentInfo), PoolError> {
     let row: Option<(Option<String>,)> =
         sqlx::query_as("SELECT environment_id FROM sessions WHERE id = ?")
             .bind(session_id)
@@ -107,9 +120,9 @@ async fn fetch_environment(
             session_id: session_id.to_string(),
         })?;
 
-    let env_row: Option<(Option<String>, Option<i64>, Option<String>, String, Option<String>, Option<String>)> =
+    let env_row: Option<(Option<String>, Option<i64>, Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>)> =
         sqlx::query_as(
-            "SELECT host, port, user, transport_type, k8s_namespace, k8s_pod \
+            "SELECT host, port, user, transport_type, k8s_namespace, k8s_pod, auth_type, private_key_path \
              FROM environments WHERE id = ?",
         )
         .bind(&env_id)
@@ -117,16 +130,23 @@ async fn fetch_environment(
         .await
         .map_err(|e| PoolError::TransportNotImplemented(e.to_string()))?;
 
-    let env_row = env_row.ok_or(PoolError::EnvironmentNotFound { env_id })?;
+    let env_row = env_row.ok_or_else(|| PoolError::EnvironmentNotFound {
+        env_id: env_id.clone(),
+    })?;
 
-    Ok(EnvironmentInfo {
-        transport_type: env_row.3,
-        host: env_row.0,
-        port: env_row.1.map(|p| p as u16),
-        user: env_row.2,
-        k8s_namespace: env_row.4,
-        k8s_pod: env_row.5,
-    })
+    Ok((
+        env_id,
+        EnvironmentInfo {
+            transport_type: env_row.3,
+            host: env_row.0,
+            port: env_row.1.map(|p| p as u16),
+            user: env_row.2,
+            k8s_namespace: env_row.4,
+            k8s_pod: env_row.5,
+            auth_type: env_row.6,
+            private_key_path: env_row.7,
+        },
+    ))
 }
 
 #[cfg(test)]
