@@ -201,7 +201,7 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
               type="password"
               value={form.password}
               onChange={(e) => setForm({ ...form, password: e.target.value })}
-              placeholder={editing ? "留空表示不修改" : ""}
+              placeholder={editing ? (form.authType !== editing.auth_type ? "切换认证方式将清除已存密钥" : "留空表示不修改") : ""}
               className={inputCls}
             />
             <p className="text-xs text-muted-foreground mt-1">

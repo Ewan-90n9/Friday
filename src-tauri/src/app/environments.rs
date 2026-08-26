@@ -138,6 +138,12 @@ pub async fn list_environments(pool: &SqlitePool) -> Result<Vec<EnvironmentRow>,
     Ok(rows.iter().map(row_to_env).collect())
 }
 
+/// 编辑环境时是否需要清除密钥链条目：
+/// 认证方式切换且未提供新密钥 → true（旧密钥不能跨认证模式残留）
+pub fn should_clear_secret_on_update(old_auth_type: &str, new_auth_type: &str, new_secret_provided: bool) -> bool {
+    old_auth_type != new_auth_type && !new_secret_provided
+}
+
 pub async fn update_environment(
     pool: &SqlitePool,
     id: &str,
@@ -149,6 +155,15 @@ pub async fn update_environment(
     private_key_path: Option<&str>,
     password: Option<&str>,
 ) -> Result<(), EnvironmentError> {
+    // 读取旧行以检测认证方式切换（切认证方式且未提供新密钥时，清除旧密钥，避免跨认证模式残留）
+    let old = get_environment(pool, id).await?.ok_or(EnvironmentError::NotFound(id.to_string()))?;
+    let new_secret_provided = password.map(|p| !p.is_empty()).unwrap_or(false);
+    if should_clear_secret_on_update(&old.auth_type, auth_type, new_secret_provided) {
+        tracing::info!(env_id = %id, "auth_type switched without new secret, clearing keychain entry");
+        crate::app::credentials::delete_secret(id).await
+            .map_err(|e| EnvironmentError::Keychain(e.to_string()))?;
+    }
+
     let result = sqlx::query(
         "UPDATE environments SET name = ?, host = ?, port = ?, user = ?, auth_type = ?, private_key_path = ? \
          WHERE id = ?",
@@ -409,6 +424,24 @@ mod tests {
         let (_tmp, pool) = setup().await;
         let env = add_environment(&pool, "prod", "10.0.0.1", 22, "root", "password", None, None).await.unwrap();
         validate_environment(&pool, "prod", "10.0.0.2", "root", "password", None, Some(&env.id)).await.unwrap();
+    }
+
+    #[test]
+    fn test_should_clear_secret_when_auth_type_switches_without_new_secret() {
+        assert!(should_clear_secret_on_update("password", "private_key", false));
+        assert!(should_clear_secret_on_update("private_key", "password", false));
+    }
+
+    #[test]
+    fn test_should_not_clear_secret_when_same_auth_type() {
+        assert!(!should_clear_secret_on_update("password", "password", false));
+        assert!(!should_clear_secret_on_update("private_key", "private_key", false));
+    }
+
+    #[test]
+    fn test_should_not_clear_secret_when_new_secret_provided() {
+        assert!(!should_clear_secret_on_update("password", "private_key", true));
+        assert!(!should_clear_secret_on_update("private_key", "password", true));
     }
 
     #[tokio::test]
