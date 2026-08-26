@@ -18,6 +18,17 @@ struct PooledConnection {
     last_used: Instant,
 }
 
+/// 后台执行 disconnect（fire-and-forget）。
+/// disconnect 可能等待 transport 内部连接锁（长命令持有时无界阻塞），
+/// 绝不能在持有 pool 锁的路径上 await。TCP 连接短暂残留可接受（russh Drop 也会清理）。
+fn spawn_disconnect(env_id: String, channel: Arc<dyn ExecChannel>) {
+    tokio::spawn(async move {
+        tracing::debug!(env_id = %env_id, "disconnecting ssh connection in background");
+        channel.disconnect().await;
+        tracing::debug!(env_id = %env_id, "ssh connection disconnected");
+    });
+}
+
 pub struct ExecChannelPool {
     connections: HashMap<String, PooledConnection>,
 }
@@ -60,6 +71,8 @@ impl ExecChannelPool {
     }
 
     /// 清理空闲超时连接。返回清理数量。
+    /// disconnect 在后台 task 中执行（fire-and-forget）：transport 内部锁可能被长命令持有，
+    /// 若在持有 pool 锁时 await disconnect，会阻塞所有环境的连接获取。
     pub async fn cleanup_idle(&mut self, idle_timeout: Duration) -> usize {
         let stale: Vec<String> = self
             .connections
@@ -70,7 +83,7 @@ impl ExecChannelPool {
         for env_id in &stale {
             if let Some(conn) = self.connections.remove(env_id) {
                 tracing::info!(env_id = %env_id, idle_secs = conn.last_used.elapsed().as_secs(), "closing idle ssh connection");
-                conn.channel.disconnect().await;
+                spawn_disconnect(env_id.clone(), conn.channel);
             }
         }
         stale.len()
@@ -78,14 +91,13 @@ impl ExecChannelPool {
 
     pub async fn disconnect(&mut self, environment_id: &str) {
         if let Some(conn) = self.connections.remove(environment_id) {
-            conn.channel.disconnect().await;
+            spawn_disconnect(environment_id.to_string(), conn.channel);
         }
     }
 
     pub async fn disconnect_all(&mut self) {
-        let conns: Vec<_> = self.connections.drain().collect();
-        for (_, conn) in conns {
-            conn.channel.disconnect().await;
+        for (env_id, conn) in self.connections.drain() {
+            spawn_disconnect(env_id, conn.channel);
         }
     }
 
@@ -252,6 +264,35 @@ mod tests {
         let mut pool = ExecChannelPool::new();
         let result = pool.get_or_create("no-such-env", &db_pool).await;
         assert!(matches!(result, Err(PoolError::EnvironmentNotFound { .. })));
+    }
+
+    struct SlowDisconnectChannel;
+
+    #[async_trait]
+    impl ExecChannel for SlowDisconnectChannel {
+        async fn run(&self, _cmd: &str) -> Result<ExecOutput, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(ExecOutput { stdout: String::new(), stderr: String::new(), exit_code: 0 })
+        }
+        async fn connect(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> { Ok(()) }
+        async fn disconnect(&self) {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+        async fn is_alive(&self) -> bool { true }
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_idle_returns_promptly_when_disconnect_blocks() {
+        let mut pool = ExecChannelPool::new();
+        pool.insert_channel("env-slow".to_string(), Arc::new(SlowDisconnectChannel) as Arc<dyn ExecChannel>).await;
+        pool.mark_last_used_for_test("env-slow", std::time::Instant::now() - std::time::Duration::from_secs(660));
+
+        let start = std::time::Instant::now();
+        let removed = pool.cleanup_idle(std::time::Duration::from_secs(600)).await;
+        assert_eq!(removed, 1);
+        // cleanup must return well before the 3s disconnect completes
+        assert!(start.elapsed() < std::time::Duration::from_secs(1), "cleanup_idle blocked on disconnect: {:?}", start.elapsed());
+        // entry must be gone from the pool immediately
+        assert_eq!(pool.connection_count(), 0);
     }
 
     #[tokio::test]
