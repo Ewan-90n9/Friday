@@ -164,6 +164,7 @@ mod tests {
         }
         async fn connect(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> { Ok(()) }
         async fn disconnect(&self) {}
+        async fn is_alive(&self) -> bool { true }
     }
 
     #[tokio::test]
@@ -190,6 +191,12 @@ mod tests {
 
         pool.disconnect_all().await;
         assert_eq!(pool.connection_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_channel_trait_exposes_is_alive() {
+        let ch: Arc<dyn ExecChannel> = Arc::new(MockChannel);
+        assert!(ch.is_alive().await);
     }
 
     #[tokio::test]

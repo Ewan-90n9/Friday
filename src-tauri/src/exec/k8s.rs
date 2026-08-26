@@ -18,4 +18,8 @@ impl ExecChannel for K8sTransport {
     }
 
     async fn disconnect(&self) {}
+
+    async fn is_alive(&self) -> bool {
+        false
+    }
 }

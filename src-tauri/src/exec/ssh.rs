@@ -105,11 +105,6 @@ impl SshTransport {
         }
     }
 
-    /// Task 4 会把 is_alive 提升为 ExecChannel trait 方法。
-    pub async fn is_alive(&self) -> bool {
-        self.conn.lock().await.is_some()
-    }
-
     /// 建连 + 认证（不含重试）。每次调用新建一条连接。
     async fn connect_once(
         &self,
@@ -210,6 +205,10 @@ async fn exec_on_handle(
 
 #[async_trait]
 impl ExecChannel for SshTransport {
+    async fn is_alive(&self) -> bool {
+        self.conn.lock().await.is_some()
+    }
+
     async fn run(&self, cmd: &str) -> Result<ExecOutput, Box<dyn std::error::Error + Send + Sync>> {
         let wrapped = SshAuth::wrap_login_shell(cmd);
         let mut retried = false;
