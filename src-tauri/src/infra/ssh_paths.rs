@@ -1,7 +1,13 @@
 use std::path::PathBuf;
 
-/// 展开 `~` 前缀路径（Windows 上 ~ = %USERPROFILE%）
+/// 展开 `~` 前缀路径（Windows 上 ~ = %USERPROFILE%）。裸 `~` 也返回 home；home 不可得时原样返回。
 pub fn expand_tilde(path: &str) -> PathBuf {
+    if path == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+        return PathBuf::from(path);
+    }
     if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest);
@@ -17,8 +23,19 @@ mod tests {
     #[test]
     fn test_expand_tilde_home_prefix() {
         let p = expand_tilde("~/.ssh/id_ed25519");
-        assert!(p.components().count() > 1);
+        if let Some(home) = dirs::home_dir() {
+            assert!(p.starts_with(home));
+        }
         assert!(!p.starts_with("~"));
+    }
+
+    #[test]
+    fn test_expand_tilde_bare_returns_home() {
+        let p = expand_tilde("~");
+        match dirs::home_dir() {
+            Some(home) => assert_eq!(p, home),
+            None => assert_eq!(p, PathBuf::from("~")),
+        }
     }
 
     #[test]

@@ -122,8 +122,9 @@ impl SshTransport {
             env_id: self.env_id.clone(),
             host: self.host.clone(),
         };
-        let mut handle =
-            russh::client::connect(config, (self.host.as_str(), self.port), handler).await?;
+        let mut handle = russh::client::connect(config, (self.host.as_str(), self.port), handler)
+            .await
+            .map_err(|e| format!("ssh connect to {}:{} failed: {e}", self.host, self.port))?;
 
         let authed = match &self.auth {
             SshAuth::PrivateKey { key_path } => {
@@ -147,10 +148,18 @@ impl SshTransport {
     }
 }
 
-/// 在已有 handle 上开 channel 执行命令，收集 stdout/stderr/exit_code
+/// exec 结果是否触发重连重试：exec 报错，或 channel 未返回退出码就关闭（exit_code == -1，连接可能已死）。
+/// 注意 exit_status 255 是合法退出码；-1 只是"未拿到退出码"的哨兵值。
+fn should_reconnect(exit_code: i32, exec_err: Option<&str>) -> bool {
+    exec_err.is_some() || exit_code == -1
+}
+
+/// 在已有 handle 上开 channel 执行命令，收集 stdout/stderr/exit_code。env_id/label 仅用于日志上下文（label 为用户原始命令）。
 async fn exec_on_handle(
     handle: &russh::client::Handle<SshHandler>,
     wrapped_cmd: &str,
+    env_id: &str,
+    label: &str,
 ) -> Result<ExecOutput, Box<dyn std::error::Error + Send + Sync>> {
     let mut channel = handle.channel_open_session().await?;
     channel.exec(true, wrapped_cmd).await?;
@@ -168,9 +177,28 @@ async fn exec_on_handle(
                 exit_code = exit_status as i32;
                 let _ = channel.eof().await;
             }
+            russh::ChannelMsg::ExitSignal { signal_name, core_dumped, error_message, .. } => {
+                tracing::warn!(
+                    env_id = %env_id,
+                    command = %label,
+                    signal = ?signal_name,
+                    core_dumped,
+                    error_message = %error_message,
+                    "ssh process killed by signal"
+                );
+                break;
+            }
             russh::ChannelMsg::Eof | russh::ChannelMsg::Close => {}
             _ => {}
         }
+    }
+
+    if exit_code == -1 {
+        tracing::warn!(
+            env_id = %env_id,
+            command = %label,
+            "ssh channel closed without exit status"
+        );
     }
 
     Ok(ExecOutput {
@@ -189,38 +217,67 @@ impl ExecChannel for SshTransport {
             let result = {
                 let mut conn = self.conn.lock().await;
                 match conn.as_mut() {
-                    Some(c) => exec_on_handle(&c.handle, &wrapped).await,
+                    Some(c) => exec_on_handle(&c.handle, &wrapped, &self.env_id, cmd).await,
                     None => return Err("ssh not connected (call connect first)".into()),
                 }
             };
-            match result {
-                Ok(output) => {
-                    tracing::info!(
-                        env_id = %self.env_id,
-                        command = %cmd,
-                        exit_code = output.exit_code,
-                        "ssh command executed"
-                    );
-                    return Ok(output);
+            let exit_code = match &result {
+                Ok(output) => output.exit_code,
+                Err(_) => -1,
+            };
+            let exec_err = result.as_ref().err().map(|e| e.to_string());
+            if !should_reconnect(exit_code, exec_err.as_deref()) {
+                let Ok(output) = result else { unreachable!() };
+                tracing::info!(
+                    env_id = %self.env_id,
+                    command = %cmd,
+                    exit_code = output.exit_code,
+                    "ssh command executed"
+                );
+                return Ok(output);
+            }
+            if retried {
+                return match result {
+                    Ok(_) => {
+                        tracing::warn!(
+                            env_id = %self.env_id,
+                            command = %cmd,
+                            "ssh channel closed without exit status after reconnect"
+                        );
+                        Err("ssh channel closed without exit status (connection dropped)".into())
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            env_id = %self.env_id,
+                            command = %cmd,
+                            error = %e,
+                            "ssh command failed after reconnect"
+                        );
+                        Err(format!("ssh command failed after reconnect: {e}").into())
+                    }
+                };
+            }
+            retried = true;
+            tracing::warn!(
+                env_id = %self.env_id,
+                command = %cmd,
+                error = exec_err.as_deref().unwrap_or("channel closed without exit status"),
+                "ssh channel broke, reconnecting once"
+            );
+            match self.connect_once().await {
+                Ok(new_handle) => {
+                    *self.conn.lock().await = Some(SshConn { handle: new_handle });
                 }
-                Err(e) if !retried => {
+                Err(reconnect_err) => {
                     tracing::warn!(
                         env_id = %self.env_id,
-                        error = %e,
-                        "ssh channel broke, reconnecting once"
+                        host = %self.host,
+                        error = %reconnect_err,
+                        "ssh reconnect failed"
                     );
-                    retried = true;
-                    match self.connect_once().await {
-                        Ok(new_handle) => {
-                            *self.conn.lock().await = Some(SshConn { handle: new_handle });
-                        }
-                        Err(reconnect_err) => {
-                            *self.conn.lock().await = None;
-                            return Err(format!("ssh reconnect failed: {reconnect_err}").into());
-                        }
-                    }
+                    *self.conn.lock().await = None;
+                    return Err(format!("ssh reconnect failed: {reconnect_err}").into());
                 }
-                Err(e) => return Err(format!("ssh command failed after reconnect: {e}").into()),
             }
         }
     }
@@ -355,5 +412,32 @@ mod tests {
         let t = SshTransport::new("env1", "h", 22, "u", SshAuth::Password);
         t.disconnect().await;
         assert!(!t.is_alive().await);
+    }
+
+    #[test]
+    fn test_should_reconnect_on_exec_error() {
+        assert!(should_reconnect(-1, Some("channel open failed")));
+        assert!(should_reconnect(0, Some("channel broke")));
+    }
+
+    #[test]
+    fn test_should_reconnect_on_missing_exit_status() {
+        assert!(should_reconnect(-1, None));
+    }
+
+    #[test]
+    fn test_no_reconnect_on_zero_exit() {
+        assert!(!should_reconnect(0, None));
+    }
+
+    #[test]
+    fn test_no_reconnect_on_nonzero_exit() {
+        assert!(!should_reconnect(1, None));
+        assert!(!should_reconnect(127, None));
+    }
+
+    #[test]
+    fn test_no_reconnect_on_exit_255() {
+        assert!(!should_reconnect(255, None));
     }
 }
