@@ -8,6 +8,8 @@ use crate::exec::channel::ExecChannel;
 pub enum EnvironmentError {
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
+    #[error("validation error: {0}")]
+    Validation(String),
     #[error("keychain error: {0}")]
     Keychain(String),
     #[error("environment not found: {0}")]
@@ -97,6 +99,39 @@ pub async fn find_by_name(pool: &SqlitePool, name: &str) -> Result<Option<Enviro
     Ok(row.map(|r| row_to_env(&r)))
 }
 
+/// 校验环境参数。update 时 exclude_id 用于排除自身（重命名场景）。
+pub async fn validate_environment(
+    pool: &SqlitePool,
+    name: &str,
+    host: &str,
+    user: &str,
+    auth_type: &str,
+    private_key_path: Option<&str>,
+    exclude_id: Option<&str>,
+) -> Result<(), EnvironmentError> {
+    if name.trim().is_empty() || host.trim().is_empty() || user.trim().is_empty() {
+        return Err(EnvironmentError::Validation("name/host/user 不能为空".to_string()));
+    }
+    if !matches!(auth_type, "private_key" | "password") {
+        return Err(EnvironmentError::Validation("auth_type 必须是 private_key 或 password".to_string()));
+    }
+    if auth_type == "private_key" && private_key_path.map(str::trim).filter(|p| !p.is_empty()).is_none() {
+        return Err(EnvironmentError::Validation("私钥认证需要填写私钥路径".to_string()));
+    }
+    let dup = if let Some(exclude) = exclude_id {
+        sqlx::query_as::<_, (String,)>("SELECT id FROM environments WHERE name = ? AND id != ?")
+            .bind(name.trim()).bind(exclude)
+            .fetch_optional(pool).await?
+            .is_some()
+    } else {
+        find_by_name(pool, name.trim()).await?.is_some()
+    };
+    if dup {
+        return Err(EnvironmentError::Validation("同名环境已存在".to_string()));
+    }
+    Ok(())
+}
+
 pub async fn list_environments(pool: &SqlitePool) -> Result<Vec<EnvironmentRow>, EnvironmentError> {
     let rows = sqlx::query(&format!("SELECT {ENV_COLUMNS} FROM environments ORDER BY created_at"))
         .fetch_all(pool).await?;
@@ -135,7 +170,10 @@ pub async fn update_environment(
 }
 
 pub async fn delete_environment(pool: &SqlitePool, id: &str) -> Result<(), EnvironmentError> {
-    sqlx::query("DELETE FROM environments WHERE id = ?").bind(id).execute(pool).await?;
+    let result = sqlx::query("DELETE FROM environments WHERE id = ?").bind(id).execute(pool).await?;
+    if result.rows_affected() == 0 {
+        return Err(EnvironmentError::NotFound(id.to_string()));
+    }
     Ok(())
 }
 
@@ -159,16 +197,10 @@ pub async fn add_environment_cmd(
     private_key_path: Option<String>,
     password: Option<String>,
 ) -> Result<EnvironmentRow, String> {
-    if name.trim().is_empty() || host.trim().is_empty() || user.trim().is_empty() {
-        return Err("name/host/user 不能为空".to_string());
-    }
-    if !matches!(auth_type.as_str(), "private_key" | "password") {
-        return Err("auth_type 必须是 private_key 或 password".to_string());
-    }
-    let existing = find_by_name(&state.db, name.trim()).await.map_err(|e| e.to_string())?;
-    if existing.is_some() {
-        return Err("同名环境已存在".to_string());
-    }
+    validate_environment(
+        &state.db, name.trim(), host.trim(), user.trim(), &auth_type,
+        private_key_path.as_deref(), None,
+    ).await.map_err(|e| e.to_string())?;
     add_environment(
         &state.db, name.trim(), host.trim(), port.unwrap_or(22), user.trim(),
         &auth_type, private_key_path.as_deref(), password.as_deref(),
@@ -188,6 +220,10 @@ pub async fn update_environment_cmd(
     private_key_path: Option<String>,
     password: Option<String>,
 ) -> Result<(), String> {
+    validate_environment(
+        &state.db, name.trim(), host.trim(), user.trim(), &auth_type,
+        private_key_path.as_deref(), Some(&id),
+    ).await.map_err(|e| e.to_string())?;
     update_environment(
         &state.db, &id, name.trim(), host.trim(), port.unwrap_or(22), user.trim(),
         &auth_type, private_key_path.as_deref(), password.as_deref(),
@@ -234,13 +270,19 @@ pub async fn test_connection_cmd(
 
     let transport = crate::exec::ssh::SshTransport::new(&env.id, &env.host, env.port as u16, &env.user, auth);
     let start = std::time::Instant::now();
-    let result = match transport.connect().await {
-        Ok(()) => match transport.run("echo friday-ok").await {
-            Ok(output) if output.stdout.trim() == "friday-ok" => Ok(()),
-            Ok(output) => Err(format!("unexpected echo output: {}", output.stdout.trim())),
+    let test_future = async {
+        match transport.connect().await {
+            Ok(()) => match transport.run("echo friday-ok").await {
+                Ok(output) if output.stdout.trim() == "friday-ok" => Ok(()),
+                Ok(output) => Err(format!("unexpected echo output: {}", output.stdout.trim())),
+                Err(e) => Err(e.to_string()),
+            },
             Err(e) => Err(e.to_string()),
-        },
-        Err(e) => Err(e.to_string()),
+        }
+    };
+    let result = match tokio::time::timeout(std::time::Duration::from_secs(30), test_future).await {
+        Ok(r) => r,
+        Err(_) => Err("connection test timed out after 30s".to_string()),
     };
     transport.disconnect().await;
 
@@ -312,5 +354,69 @@ mod tests {
         delete_environment(&pool, &env.id).await.unwrap();
         let gone = get_environment(&pool, &env.id).await.unwrap();
         assert!(gone.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_returns_not_found() {
+        let (_tmp, pool) = setup().await;
+        let err = delete_environment(&pool, "no-such-id").await.unwrap_err();
+        assert!(matches!(err, EnvironmentError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn test_validate_environment_valid_password() {
+        let (_tmp, pool) = setup().await;
+        validate_environment(&pool, "prod", "10.0.0.1", "root", "password", None, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_validate_environment_empty_name_fails() {
+        let (_tmp, pool) = setup().await;
+        let err = validate_environment(&pool, "  ", "10.0.0.1", "root", "password", None, None).await.unwrap_err();
+        assert!(matches!(err, EnvironmentError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn test_validate_environment_bad_auth_type_fails() {
+        let (_tmp, pool) = setup().await;
+        let err = validate_environment(&pool, "prod", "10.0.0.1", "root", "telnet", None, None).await.unwrap_err();
+        assert!(matches!(err, EnvironmentError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn test_validate_environment_private_key_without_path_fails() {
+        let (_tmp, pool) = setup().await;
+        let err = validate_environment(&pool, "prod", "10.0.0.1", "root", "private_key", None, None).await.unwrap_err();
+        assert!(matches!(err, EnvironmentError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn test_validate_environment_private_key_with_path_passes() {
+        let (_tmp, pool) = setup().await;
+        validate_environment(&pool, "prod", "10.0.0.1", "root", "private_key", Some("~/.ssh/id_ed25519"), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_validate_environment_duplicate_name_fails() {
+        let (_tmp, pool) = setup().await;
+        add_environment(&pool, "prod", "10.0.0.1", 22, "root", "password", None, None).await.unwrap();
+        let err = validate_environment(&pool, "prod", "10.0.0.2", "root", "password", None, None).await.unwrap_err();
+        assert!(matches!(err, EnvironmentError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn test_validate_environment_rename_to_own_name_passes() {
+        let (_tmp, pool) = setup().await;
+        let env = add_environment(&pool, "prod", "10.0.0.1", 22, "root", "password", None, None).await.unwrap();
+        validate_environment(&pool, "prod", "10.0.0.2", "root", "password", None, Some(&env.id)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_validate_environment_rename_to_other_env_name_fails() {
+        let (_tmp, pool) = setup().await;
+        let a = add_environment(&pool, "a", "10.0.0.1", 22, "root", "password", None, None).await.unwrap();
+        add_environment(&pool, "b", "10.0.0.2", 22, "root", "password", None, None).await.unwrap();
+        let err = validate_environment(&pool, "b", "10.0.0.1", "root", "password", None, Some(&a.id)).await.unwrap_err();
+        assert!(matches!(err, EnvironmentError::Validation(_)));
     }
 }
