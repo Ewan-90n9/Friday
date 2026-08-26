@@ -28,6 +28,6 @@
 
 关闭会话顺序：
 1. 停 agent（同上）
-2. 关闭 SSH/kubectl 连接
+2. 关闭 SSH 连接
 3. 会话标记 closed
 4. 推 event: `session_closed`

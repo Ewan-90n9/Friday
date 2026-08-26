@@ -12,10 +12,11 @@
 
 ```
 <app_data>/
-├── friday.db                        # SQLite: sessions/agents/diagnosis_steps/tool_calls/environments
+├── friday.db                        # SQLite: sessions/agents/tool_calls/environments/
+│                                    #   experiences(+vec)/playbooks(+vec) 等业务数据
 ├── logs/
 │   └── friday.log.{date}            # tracing 每日轮转, 7 天自动清理
-├── playbooks/                       # agent 运行时生成的诊断知识 (YAML), 用户可编辑
+├── tools/                           # 脚本工具 (manifest.toml + 脚本, 热插拔) — 阶段 4
 ├── skills/                          # Friday 自有 skill (agent 生成, 能力包)
 ├── prompts/                         # 预留: 未来 GUI 编辑人格 prompt 的覆盖层
 │                                    #   v1 为空 — 代码内 const 作默认; 有 friday.md 则覆盖
