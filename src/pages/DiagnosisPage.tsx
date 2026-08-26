@@ -3,6 +3,7 @@ import { TopBar } from "@/components/layout/TopBar";
 import { SessionSidebar } from "@/components/layout/SessionSidebar";
 import { MainDiagnosisArea } from "@/components/layout/MainDiagnosisArea";
 import { ToolsPanel } from "@/components/tools/ToolsPanel";
+import { EnvironmentsPanel } from "@/components/environments/EnvironmentsPanel";
 import { useAgentStore } from "@/store/agentStore";
 import { useSessionStore } from "@/store/sessionStore";
 
@@ -25,7 +26,10 @@ export function DiagnosisPage() {
       <div className="flex flex-1 min-h-0">
         <SessionSidebar />
         <MainDiagnosisArea />
-        <ToolsPanel />
+        <aside className="w-64 shrink-0 border-l border-border bg-surface-1 flex flex-col min-h-0">
+          <EnvironmentsPanel />
+          <ToolsPanel />
+        </aside>
       </div>
     </div>
   );

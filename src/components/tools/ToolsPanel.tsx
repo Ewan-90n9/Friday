@@ -20,7 +20,7 @@ export function ToolsPanel() {
   }, []);
 
   return (
-    <aside className="w-64 shrink-0 border-l border-border bg-surface-1 flex flex-col">
+    <section className="flex-1 flex flex-col min-h-0">
       {/* Header */}
       <div className="flex items-center gap-2 h-10 px-4 border-b border-border shrink-0">
         <Wrench size={14} weight="regular" className="text-muted-foreground" aria-hidden="true" />
@@ -91,6 +91,6 @@ export function ToolsPanel() {
           </ul>
         )}
       </div>
-    </aside>
+    </section>
   );
 }
