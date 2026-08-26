@@ -221,9 +221,52 @@ impl ServerHandler for FridayMcpServer {
                 }
             }
 
-            // Channel acquisition by `environment` arg lands in Task 11.
-            // Phase-1 tools (run_command) acquire their own channel inside the handler.
-            let channel: Option<Arc<dyn crate::exec::channel::ExecChannel>> = None;
+            // Get or create exec channel (only for tools that need one).
+            // Phase-1 tools (run_command) acquire their own channel by
+            // `environment` arg inside the handler; needs_channel stays for
+            // future script tools (phase 4).
+            let channel = if tool_def.needs_channel {
+                let Some(name) = args_value
+                    .get("environment")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                else {
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        "this tool requires an `environment` parameter (see list_environments)",
+                    )])
+                    .into());
+                };
+                let env_row =
+                    match crate::app::environments::find_by_name(&self.pool, &name).await {
+                        Ok(Some(row)) => row,
+                        Ok(None) => {
+                            return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                                "环境「{name}」不存在。请先调用 list_environments 查看可用环境；若无匹配，请让用户在右侧「环境」面板添加。"
+                            ))])
+                            .into());
+                        }
+                        Err(e) => {
+                            tracing::error!(session_id = %session_id, tool = %tool_name, error = %e, "environment lookup failed");
+                            return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                                "environment lookup failed: {e}"
+                            ))])
+                            .into());
+                        }
+                    };
+                let mut exec_pool = self.exec_pool.lock().await;
+                match exec_pool.get_or_create(&env_row.id, &self.pool).await {
+                    Ok(ch) => Some(ch),
+                    Err(e) => {
+                        tracing::error!(session_id = %session_id, tool = %tool_name, error = %e, "failed to get exec channel");
+                        return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                            "failed to establish execution channel: {e}"
+                        ))])
+                        .into());
+                    }
+                }
+            } else {
+                None
+            };
 
             // Emit ToolExecuting event
             self.bus.emit(
