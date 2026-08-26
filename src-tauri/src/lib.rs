@@ -82,6 +82,23 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             // Create shared state for MCP server
             let exec_pool = Arc::new(Mutex::new(crate::exec::pool::ExecChannelPool::new()));
+
+            // SSH 连接池空闲清理巡检：每 60s 清理空闲超 10min 的连接
+            {
+                let exec_pool_for_cleanup = exec_pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                    loop {
+                        interval.tick().await;
+                        let mut pool = exec_pool_for_cleanup.lock().await;
+                        let removed = pool.cleanup_idle(std::time::Duration::from_secs(600)).await;
+                        if removed > 0 {
+                            tracing::info!(removed, "idle ssh connections cleaned");
+                        }
+                    }
+                });
+            }
+
             let confirm_registry = Arc::new(Mutex::new(crate::tools::confirm::ConfirmRegistry::new()));
             let session_mapper = Arc::new(Mutex::new(crate::mcp::session_mapper::SessionMapper::new()));
 

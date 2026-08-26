@@ -266,12 +266,6 @@ pub async fn close_session_cmd(
         registry.cancel_for_session(&session_id);
     }
 
-    // Disconnect exec channel
-    {
-        let mut exec_pool = state.exec_pool.lock().await;
-        exec_pool.disconnect(&session_id).await;
-    }
-
     // Mark session as closed
     session::close_session(&state.db, &session_id)
         .await

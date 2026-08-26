@@ -221,23 +221,9 @@ impl ServerHandler for FridayMcpServer {
                 }
             }
 
-            // Get or create exec channel (only for tools that need one)
-            let channel = if tool_def.needs_channel {
-                let mut exec_pool = self.exec_pool.lock().await;
-                match exec_pool.get_or_create(&session_id, &self.pool).await {
-                    Ok(ch) => Some(ch),
-                    Err(e) => {
-                        tracing::error!(session_id = %session_id, tool = %tool_name, error = %e, "failed to get exec channel");
-                        return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                            "failed to establish execution channel: {}",
-                            e
-                        ))])
-                        .into());
-                    }
-                }
-            } else {
-                None
-            };
+            // Channel acquisition by `environment` arg lands in Task 11.
+            // Phase-1 tools (run_command) acquire their own channel inside the handler.
+            let channel: Option<Arc<dyn crate::exec::channel::ExecChannel>> = None;
 
             // Emit ToolExecuting event
             self.bus.emit(
