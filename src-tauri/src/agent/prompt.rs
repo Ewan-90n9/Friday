@@ -27,6 +27,12 @@ const FRIDAY_SYSTEM_PROMPT: &str = r#"你是 Friday，一个面向软件开发�
 - 不确定的事情先说不确定，不要瞎猜。
 "#;
 
+const TOOL_GUIDANCE: &str = "## 工具使用
+- 调用诊断工具时，必须传入 session_id 参数。
+- 远程命令一律通过 run_command 工具执行，并用 environment 参数指定目标环境（name 来自 list_environments）。
+- 优先使用结构化诊断工具，run_command 是兜底。
+- 用户提到的环境先与 list_environments 的结果匹配；没有匹配时引导用户在右侧「环境」面板添加，不要瞎猜 host。";
+
 pub fn build_system_prompt(override_path: Option<&Path>) -> String {
     if let Some(path) = override_path {
         if let Ok(content) = std::fs::read_to_string(path) {
@@ -41,7 +47,7 @@ pub fn build_system_prompt(override_path: Option<&Path>) -> String {
 pub fn build_prompt(message: &str, override_path: Option<&Path>, session_id: &str) -> String {
     let system = build_system_prompt(override_path);
     format!(
-        "{system}\n\n---\n\n## 工具使用\n- 调用诊断工具时，必须传入 session_id 参数。\n- 当前会话的 session_id：{session_id}\n\n---\n\n用户消息：{message}"
+        "{system}\n\n---\n\n{TOOL_GUIDANCE}\n- 当前会话的 session_id：{session_id}\n\n---\n\n用户消息：{message}"
     )
 }
 
@@ -55,7 +61,7 @@ pub fn build_prompt_with_experiences(
 
     if experiences.is_empty() {
         return format!(
-            "{system}\n\n---\n\n## 工具使用\n- 调用诊断工具时，必须传入 session_id 参数。\n- 当前会话的 session_id：{session_id}\n\n---\n\n用户消息：{message}"
+            "{system}\n\n---\n\n{TOOL_GUIDANCE}\n- 当前会话的 session_id：{session_id}\n\n---\n\n用户消息：{message}"
         );
     }
 
@@ -80,7 +86,7 @@ pub fn build_prompt_with_experiences(
     }
 
     format!(
-        "{system}\n\n---\n\n## 工具使用\n- 调用诊断工具时，必须传入 session_id 参数。\n- 当前会话的 session_id：{session_id}\n\n---\n\n{exp_section}\n---\n\n用户消息：{message}"
+        "{system}\n\n---\n\n{TOOL_GUIDANCE}\n- 当前会话的 session_id：{session_id}\n\n---\n\n{exp_section}\n---\n\n用户消息：{message}"
     )
 }
 
@@ -182,6 +188,14 @@ mod tests {
 
         assert!(!result.contains("## 历史经验参考"));
         assert!(result.contains("hello"));
+    }
+
+    #[test]
+    fn test_build_prompt_contains_environment_guidance() {
+        let result = build_prompt("hello", None, "s1");
+        assert!(result.contains("run_command"));
+        assert!(result.contains("list_environments"));
+        assert!(result.contains("environment"));
     }
 
     #[test]
