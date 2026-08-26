@@ -1,3 +1,5 @@
+pub mod run_command;
+
 use crate::tools::registry::{ToolContext, ToolDef, ToolHandler, ToolOutput};
 use crate::tools::risk::RiskLevel;
 use async_trait::async_trait;

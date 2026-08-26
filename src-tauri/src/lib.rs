@@ -75,13 +75,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
             };
 
+            // Create shared state for MCP server
+            let exec_pool = Arc::new(Mutex::new(crate::exec::pool::ExecChannelPool::new()));
+
             // Build tool registry
             let mut tool_registry = crate::tools::registry::ToolRegistry::new();
             tool_registry.register(crate::tools::builtin::echo_tool_def());
+            tool_registry.register(crate::tools::builtin::run_command::run_command_tool_def(
+                pool.clone(),
+                exec_pool.clone(),
+                paths.artifacts_dir(),
+            ));
             let tool_registry = Arc::new(tool_registry);
-
-            // Create shared state for MCP server
-            let exec_pool = Arc::new(Mutex::new(crate::exec::pool::ExecChannelPool::new()));
 
             // SSH 连接池空闲清理巡检：每 60s 清理空闲超 10min 的连接。
             // 每轮清理单独 spawn：panic 只杀掉当轮任务，巡检循环继续存活。
