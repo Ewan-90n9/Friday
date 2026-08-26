@@ -27,6 +27,17 @@ pub fn truncate_output(s: &str) -> (String, bool) {
     (s[..end].to_string(), true)
 }
 
+/// artifacts 目录解析：session_id 必须是 UUID，否则落到 `_invalid_session`（防路径穿越/绝对路径逃逸）
+pub fn artifact_dir_for(base: &std::path::Path, session_id: &str) -> std::path::PathBuf {
+    match uuid::Uuid::parse_str(session_id) {
+        Ok(_) => base.join(session_id),
+        Err(_) => {
+            tracing::warn!(session_id = %session_id, "invalid session_id for artifact path, using fallback");
+            base.join("_invalid_session")
+        }
+    }
+}
+
 pub struct RunCommandHandler {
     pub db: sqlx::SqlitePool,
     pub exec_pool: Arc<tokio::sync::Mutex<crate::exec::pool::ExecChannelPool>>,
@@ -37,10 +48,10 @@ pub struct RunCommandHandler {
 impl ToolHandler for RunCommandHandler {
     async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> ToolOutput {
         let Some(environment) = args.get("environment").and_then(|v| v.as_str()) else {
-            return error_output("missing required parameter: environment");
+            return error_output("invalid_params", "missing required parameter: environment");
         };
         let Some(command) = args.get("command").and_then(|v| v.as_str()) else {
-            return error_output("missing required parameter: command");
+            return error_output("invalid_params", "missing required parameter: command");
         };
         let timeout_secs = clamp_timeout(args.get("timeout_secs").and_then(|v| v.as_i64()));
 
@@ -48,11 +59,14 @@ impl ToolHandler for RunCommandHandler {
         let env = match crate::app::environments::find_by_name(&self.db, environment).await {
             Ok(Some(env)) => env,
             Ok(None) => {
-                return error_output(&format!(
-                    "环境「{environment}」不存在。请先调用 list_environments 查看可用环境；若无匹配，请让用户在右侧「环境」面板添加。"
-                ));
+                return error_output(
+                    "environment_not_found",
+                    &format!(
+                        "环境「{environment}」不存在。请先调用 list_environments 查看可用环境；若无匹配，请让用户在右侧「环境」面板添加。"
+                    ),
+                );
             }
-            Err(e) => return error_output(&format!("查询环境失败: {e}")),
+            Err(e) => return error_output("lookup_failed", &format!("查询环境失败: {e}")),
         };
 
         // 获取或建连
@@ -62,7 +76,7 @@ impl ToolHandler for RunCommandHandler {
                 Ok(ch) => ch,
                 Err(e) => {
                     tracing::error!(session_id = %ctx.session_id, env_id = %env.id, error = %e, "run_command: failed to get exec channel");
-                    return error_output(&format!("connection_error: {e} (host: {})", env.host));
+                    return error_output("connection_error", &format!("{e} (host: {})", env.host));
                 }
             }
         };
@@ -78,12 +92,17 @@ impl ToolHandler for RunCommandHandler {
 
         match result {
             Err(_) => {
-                tracing::warn!(session_id = %ctx.session_id, env_id = %env.id, timeout_secs, "run_command timed out");
+                tracing::warn!(session_id = %ctx.session_id, env_id = %env.id, timeout_secs, "run_command timed out, dropping ssh connection to terminate remote process");
+                // 断开连接以终止远端进程（russh channel 无 Drop impl，仅取消 future 不会杀远端进程）
+                {
+                    let mut pool = self.exec_pool.lock().await;
+                    pool.disconnect(&env.id).await;
+                }
                 ToolOutput {
                     success: false,
                     data: serde_json::json!({
                         "error": "timeout_error",
-                        "message": format!("command timed out after {timeout_secs}s and the remote process was terminated"),
+                        "message": format!("command timed out after {timeout_secs}s; ssh connection was closed to terminate the remote process"),
                         "elapsed_ms": elapsed_ms,
                     }),
                     raw_stdout: None,
@@ -106,28 +125,40 @@ impl ToolHandler for RunCommandHandler {
                 let (stderr, stderr_truncated) = truncate_output(&output.stderr);
                 let truncated = stdout_truncated || stderr_truncated;
 
-                // 完整输出落 artifacts（失败仅告警）
-                let artifact_path = self
-                    .artifacts_dir
-                    .join(&ctx.session_id)
-                    .join(format!("{}.log", uuid::Uuid::new_v4()));
+                // 完整输出落 artifacts（失败仅告警）；只有写入成功才在截断注记中带路径
+                let session_dir = artifact_dir_for(&self.artifacts_dir, &ctx.session_id);
+                let artifact_path = session_dir.join(format!("{}.log", uuid::Uuid::new_v4()));
                 let full = format!(
                     "--- stdout ---\n{}\n--- stderr ---\n{}\n--- exit_code: {} ---\n",
                     output.stdout, output.stderr, output.exit_code
                 );
-                if let Err(e) = std::fs::create_dir_all(artifact_path.parent().unwrap())
-                    .and_then(|_| std::fs::write(&artifact_path, &full))
-                {
-                    tracing::warn!(session_id = %ctx.session_id, error = %e, "failed to persist full tool output");
-                }
+                let persisted: Option<std::path::PathBuf> = match tokio::fs::create_dir_all(&session_dir).await {
+                    Err(e) => {
+                        tracing::warn!(session_id = %ctx.session_id, error = %e, "failed to persist full tool output");
+                        None
+                    }
+                    Ok(_) => match tokio::fs::write(&artifact_path, &full).await {
+                        Err(e) => {
+                            tracing::warn!(session_id = %ctx.session_id, error = %e, "failed to persist full tool output");
+                            None
+                        }
+                        Ok(_) => Some(artifact_path),
+                    },
+                };
 
                 let stdout_field = if stdout_truncated {
-                    format!("{stdout}\n[truncated, full output: {}]", artifact_path.display())
+                    match &persisted {
+                        Some(path) => format!("{stdout}\n[truncated, full output: {}]", path.display()),
+                        None => format!("{stdout}\n[truncated]"),
+                    }
                 } else {
                     stdout
                 };
                 let stderr_field = if stderr_truncated {
-                    format!("{stderr}\n[truncated, full output: {}]", artifact_path.display())
+                    match &persisted {
+                        Some(path) => format!("{stderr}\n[truncated, full output: {}]", path.display()),
+                        None => format!("{stderr}\n[truncated]"),
+                    }
                 } else {
                     stderr
                 };
@@ -150,10 +181,10 @@ impl ToolHandler for RunCommandHandler {
     }
 }
 
-fn error_output(message: &str) -> ToolOutput {
+fn error_output(error: &str, message: &str) -> ToolOutput {
     ToolOutput {
         success: false,
-        data: serde_json::json!({ "error": message }),
+        data: serde_json::json!({ "error": error, "message": message }),
         raw_stdout: None,
     }
 }
@@ -274,7 +305,8 @@ mod tests {
         let ctx = ToolContext { session_id: "s1".into(), channel: None };
         let out = handler.execute(serde_json::json!({"command": "ls"}), &ctx).await;
         assert!(!out.success);
-        assert!(out.data["error"].as_str().unwrap().contains("environment"));
+        assert_eq!(out.data["error"], "invalid_params");
+        assert!(out.data["message"].as_str().unwrap().contains("environment"));
         drop(tmp);
     }
 
@@ -285,7 +317,8 @@ mod tests {
         let ctx = ToolContext { session_id: "s1".into(), channel: None };
         let out = handler.execute(serde_json::json!({"environment": "nope", "command": "ls", "session_id": "s1"}), &ctx).await;
         assert!(!out.success);
-        let msg = out.data["error"].as_str().unwrap();
+        assert_eq!(out.data["error"], "environment_not_found");
+        let msg = out.data["message"].as_str().unwrap();
         assert!(msg.contains("list_environments"), "error should guide agent to list_environments: {msg}");
         drop(tmp);
     }
@@ -305,6 +338,113 @@ mod tests {
         assert!(out.success);
         assert_eq!(out.data["stdout"], "friday-ok");
         assert_eq!(out.data["exit_code"], 0);
+        drop(tmp);
+    }
+
+    #[test]
+    fn test_artifact_dir_for_valid_uuid() {
+        let base = std::path::Path::new("/tmp/artifacts");
+        let sid = "123e4567-e89b-12d3-a456-426614174000";
+        assert_eq!(artifact_dir_for(base, sid), base.join(sid));
+    }
+
+    #[test]
+    fn test_artifact_dir_for_rejects_traversal() {
+        let base = std::path::Path::new("/tmp/artifacts");
+        assert_eq!(artifact_dir_for(base, "../evil"), base.join("_invalid_session"));
+    }
+
+    #[test]
+    fn test_artifact_dir_for_rejects_absolute_path() {
+        let base = std::path::Path::new("/tmp/artifacts");
+        assert_eq!(artifact_dir_for(base, "C:\\evil"), base.join("_invalid_session"));
+    }
+
+    #[test]
+    fn test_artifact_dir_for_rejects_empty() {
+        let base = std::path::Path::new("/tmp/artifacts");
+        assert_eq!(artifact_dir_for(base, ""), base.join("_invalid_session"));
+    }
+
+    struct SlowChannel;
+
+    #[async_trait]
+    impl ExecChannel for SlowChannel {
+        async fn run(&self, _cmd: &str) -> Result<ExecOutput, Box<dyn std::error::Error + Send + Sync>> {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            Ok(ExecOutput { stdout: String::new(), stderr: String::new(), exit_code: 0 })
+        }
+        async fn connect(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> { Ok(()) }
+        async fn disconnect(&self) {}
+        async fn is_alive(&self) -> bool { true }
+    }
+
+    #[tokio::test]
+    async fn test_handler_timeout_removes_connection_from_pool() {
+        let (tmp, db, exec_pool, artifacts) = setup_with_env().await;
+        let env_id = crate::app::environments::find_by_name(&db, "prod").await.unwrap().unwrap().id;
+        exec_pool.lock().await.insert_channel(
+            env_id,
+            Arc::new(SlowChannel) as Arc<dyn ExecChannel>,
+        ).await;
+        let handler = RunCommandHandler { db, exec_pool: exec_pool.clone(), artifacts_dir: artifacts };
+        let ctx = ToolContext { session_id: "s1".into(), channel: None };
+        let out = handler.execute(
+            serde_json::json!({"environment": "prod", "command": "sleep 2", "timeout_secs": 1}),
+            &ctx,
+        ).await;
+        assert!(!out.success);
+        assert_eq!(out.data["error"], "timeout_error");
+        assert_eq!(
+            exec_pool.lock().await.connection_count(),
+            0,
+            "timeout must drop the pooled connection so the remote process is terminated"
+        );
+        drop(tmp);
+    }
+
+    #[tokio::test]
+    async fn test_handler_truncated_output_annotates_with_artifact_path_when_persisted() {
+        let (tmp, db, exec_pool, artifacts) = setup_with_env().await;
+        let env_id = crate::app::environments::find_by_name(&db, "prod").await.unwrap().unwrap().id;
+        exec_pool.lock().await.insert_channel(
+            env_id,
+            Arc::new(MockChannel { stdout: "x".repeat(MAX_OUTPUT_BYTES + 100), exit_code: 0 }) as Arc<dyn ExecChannel>,
+        ).await;
+        let handler = RunCommandHandler { db, exec_pool, artifacts_dir: artifacts.clone() };
+        let session_id = "123e4567-e89b-12d3-a456-426614174000";
+        let ctx = ToolContext { session_id: session_id.into(), channel: None };
+        let out = handler.execute(serde_json::json!({"environment": "prod", "command": "cat big"}), &ctx).await;
+        assert!(out.success);
+        let stdout = out.data["stdout"].as_str().unwrap();
+        assert!(stdout.contains("[truncated, full output: "), "should annotate with artifact path: {}...", &stdout[stdout.len() - 200..]);
+        let session_dir = artifacts.join(session_id);
+        let mut entries = std::fs::read_dir(&session_dir).unwrap();
+        let log_file = entries.next().unwrap().unwrap();
+        let content = std::fs::read_to_string(log_file.path()).unwrap();
+        assert!(content.contains("--- stdout ---"));
+        assert!(content.contains("x".repeat(100).as_str()));
+        drop(tmp);
+    }
+
+    #[tokio::test]
+    async fn test_handler_truncated_output_no_artifact_path_when_persist_fails() {
+        let (tmp, db, exec_pool, _artifacts) = setup_with_env().await;
+        // artifacts_dir 是普通文件 → create_dir_all 必败
+        let artifacts_file = tmp.path().join("artifacts_is_file");
+        std::fs::write(&artifacts_file, "not a dir").unwrap();
+        let env_id = crate::app::environments::find_by_name(&db, "prod").await.unwrap().unwrap().id;
+        exec_pool.lock().await.insert_channel(
+            env_id,
+            Arc::new(MockChannel { stdout: "x".repeat(MAX_OUTPUT_BYTES + 100), exit_code: 0 }) as Arc<dyn ExecChannel>,
+        ).await;
+        let handler = RunCommandHandler { db, exec_pool, artifacts_dir: artifacts_file };
+        let ctx = ToolContext { session_id: "123e4567-e89b-12d3-a456-426614174000".into(), channel: None };
+        let out = handler.execute(serde_json::json!({"environment": "prod", "command": "cat big"}), &ctx).await;
+        assert!(out.success);
+        let stdout = out.data["stdout"].as_str().unwrap();
+        assert!(stdout.contains("[truncated]"), "should still annotate truncation");
+        assert!(!stdout.contains("full output"), "must not reference artifact path when persist failed");
         drop(tmp);
     }
 }
