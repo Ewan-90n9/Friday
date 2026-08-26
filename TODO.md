@@ -4,12 +4,14 @@
 
 ## 阶段 1：SSH 通道 + run_command（从演示品变产品）
 
-- [ ] SSH Transport 真实现（russh 替换 `exec/ssh.rs` 占位）
-- [ ] 删除 `exec/k8s.rs`（K8s 场景经 SSH 执行 kubectl，不做 K8s API transport）
-- [ ] run_command 工具：`{ command, timeout_secs? }`，风险级 High，走现有确认拦截
-- [ ] SSH 凭证接入现有 credential 模块（私钥引用 `~/.ssh/`，密码走 OS 密钥链）
-- [ ] 连接失败重试 2 次 / 中断重连 1 次（overview.md 既有约定）
-- [ ] Environment 管理 UI/CRUD（session 关联目标环境，`environment_id` 列已就位）
+- [x] SSH Transport 真实现（russh 替换 `exec/ssh.rs` 占位）
+- [x] 删除 `exec/k8s.rs`（K8s 场景经 SSH 执行 kubectl，不做 K8s API transport）
+- [x] run_command 工具：`{ command, timeout_secs? }`，风险级 High，走现有确认拦截
+- [x] SSH 凭证接入现有 credential 模块（私钥引用 `~/.ssh/`，密码走 OS 密钥链）
+- [x] 连接失败重试 2 次 / 中断重连 1 次（overview.md 既有约定）
+- [x] Environment 管理 UI/CRUD（session 关联目标环境，`environment_id` 列已就位）
+
+> 实现备注（与原条目的偏差，见 [阶段 1 spec](docs/superpowers/specs/2026-08-26-phase1-ssh-run-command-design.md)）：环境与会话解耦——连接按 environment_id 池化而非 session 关联；agent 通过 `list_environments` 工具自主发现环境，`run_command` 以 environment 参数指定目标。
 
 ## 阶段 2：Playbook 存储 + 注入（知识库卖点上线）
 

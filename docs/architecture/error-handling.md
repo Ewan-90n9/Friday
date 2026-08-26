@@ -6,10 +6,11 @@
 |---------|--------|------|
 | SSH 连接建立失败 | Friday | 重试 2 次（间隔递增），仍失败返回 connection_error |
 | SSH 连接中途断开 | Friday | 自动重连 1 次，仍失败返回 connection_error |
-| 工具命令超时 | Friday | 不重试，返回 timeout_error 给 agent |
+| 工具命令超时 | Friday | 不重试，断开该环境 SSH 连接以终止远端进程，返回 timeout_error |
 | 工具输出解析失败 | Friday | 不重试，返回原始 stdout 给 agent |
 | arthas attach 失败 | Friday | 不重试，返回 error 给 agent |
 | Agent CLI 崩溃 | Friday | 不重启，推 event: `agent_crashed` 给前端 |
+| 环境名不存在（run_command / needs_channel 工具） | Friday | 返回错误信息引导 agent 调 list_environments 或让用户在环境面板添加 |
 
 ## 安全边界（工具风险分级）
 

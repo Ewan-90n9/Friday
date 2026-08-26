@@ -21,7 +21,7 @@
 | 15 | Agent 驱动 | v1 支持 opencode，命令行传 prompt，临时 MCP config，流式 JSON |
 | 16 | 知识注入 | 首次 spawn 语义检索注入摘要 + get_playbook(id) 按需获取全文 |
 | 17a | 并发模型 | MCP Server 单实例共享，按 session_id 路由 |
-| 17b | 取消模型 | 停 agent 保留 SSH 连接；关会话才断开连接 |
+| 17b | 取消模型 | 停 agent / 关会话不断开 SSH 连接（连接按环境池化，空闲 10min 自动断开；环境删除立即断开） |
 | 17c | 错误处理 | 基础设施错误 Friday 重试；业务错误返回 agent 决策；agent 崩溃不自动重启 |
 | 17d | 日志 | tracing + 文件轮转，运行日志与诊断数据分离 |
 | 18 | 裸 shell | 无自由任意执行；run_command 工具 High 级确认兜底 |
@@ -93,8 +93,9 @@
 │ - ExecChannel trait：统一接口，run(cmd) → stdout/stderr    │
 │ - SSH Transport（russh 实现，唯一通道；                    │
 │   K8s 场景也经 SSH 执行 kubectl）                          │
-│ - 连接池：按 session 复用连接，停 agent 保留，              │
-│   关会话才断开                                            │
+│ - 连接池：按 environment_id 复用连接（跨会话共享），         │
+│   空闲 10min 自动断开；会话与环境解耦，agent 经              │
+│   list_environments 发现环境、run_command 指定目标          │
 └──────────────────┬──────────────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────────────┐
