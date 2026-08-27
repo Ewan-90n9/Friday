@@ -44,10 +44,12 @@ src-tauri/src/provision/
 #[async_trait]
 pub trait ToolPackage: Send + Sync {
     fn name(&self) -> &str;                    // "jdk"
+    async fn probe(&self, ctx: &ProvisionContext) -> Result<ProbeInfo, ProvisionError>;
     async fn ensure(&self, ctx: &ProvisionContext) -> Result<ProvisionResult, ProvisionError>;
 }
 
 // ProvisionContext: exec channel + 本地缓存路径 + 阶段超时配置 + EventBus（进度事件）
+// ProbeInfo: { java_version, bisheng_version, arch }（探测结果，ensure 内部也复用）
 // ProvisionResult: { tool_home, bins: HashMap<String, String>, cached: bool, elapsed_ms }
 ```
 
@@ -68,7 +70,8 @@ pub trait ToolPackage: Send + Sync {
 3. 解析   版本串 → Artifactory 下载 URL（规则见 §5）
 4. 下载   通道A：目标环境上 curl/wget 自拉（优先）
           通道B：失败 → Friday 本地下载（本地缓存）→ SFTP 推送
-5. 落地   tar -xzf 解压到 /tmp/friday-tools/ → 删 tar 包
+5. 落地   tar -xzf 解压到 /tmp/friday-tools/ → 顶层目录 mv 规范化为 jdk-{openjdk_version}
+          （BiSheng 包内顶层目录名可能与规范名不同，统一后缓存检查才有确定路径）→ 删 tar 包
 6. 验证   test -x bin/jcmd && test -x bin/jstat
 7. 返回   tool_home + 各工具二进制完整路径（agent 后续 run_command 直接用全路径）
 ```
@@ -242,8 +245,8 @@ schema：{
 | 模块 | 变更 |
 |---|---|
 | `src-tauri/src/provision/`（新增） | package.rs / jdk.rs / transfer.rs |
-| `src-tauri/src/exec/channel.rs` | ExecChannel trait 新增 `upload()` 方法（现有实现补默认或各自实现） |
-| `src-tauri/src/exec/ssh.rs` | SshTransport 实现 upload（russh SFTP） |
+| `src-tauri/src/exec/channel.rs` | ExecChannel trait 新增 `upload()` 方法 |
+| `src-tauri/src/exec/ssh.rs` | SshTransport 实现 upload（russh SFTP）；测试 Mock 实现按需返回 |
 | `src-tauri/src/tools/builtin/ensure_tool.rs`（新增） | MCP 工具 handler，注册进 lib.rs |
 | `src-tauri/src/agent/prompt.rs` | 工具使用 section 新增 ensure_tool 引导 |
 | `src-tauri/src/infra/paths.rs` | 新增 `cache_dir()` + ensure_dirs 覆盖 |
