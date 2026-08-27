@@ -26,6 +26,9 @@ pub async fn init(db_path: PathBuf) -> Result<SqlitePool, sqlx::Error> {
     // Migration (phase 1): environments auth columns
     add_column_if_not_exists(&pool, "environments", "auth_type", "TEXT NOT NULL DEFAULT 'private_key'").await?;
     add_column_if_not_exists(&pool, "environments", "private_key_path", "TEXT").await?;
+    // Migration (provisioning): global app settings (key-value)
+    let schema8 = include_str!("../../migrations/0008_app_settings.sql");
+    sqlx::query(schema8).execute(&pool).await?;
     tracing::info!(?db_path, "SQLite initialized");
     Ok(pool)
 }
