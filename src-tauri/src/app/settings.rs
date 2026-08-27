@@ -1,4 +1,5 @@
 use sqlx::SqlitePool;
+use tauri::State;
 
 pub const KEY_ARTIFACTORY_BASE_URL: &str = "artifactory_base_url";
 pub const DEFAULT_ARTIFACTORY_BASE_URL: &str =
@@ -32,6 +33,40 @@ pub async fn artifactory_base_url(pool: &SqlitePool) -> Result<String, sqlx::Err
     Ok(get_setting(pool, KEY_ARTIFACTORY_BASE_URL)
         .await?
         .unwrap_or_else(|| DEFAULT_ARTIFACTORY_BASE_URL.to_string()))
+}
+
+/// 校验并规范化 base URL：去首尾空白、去尾部斜杠；返回错误信息或规范化后的值
+pub fn normalize_base_url(input: &str) -> Result<String, String> {
+    let url = input.trim().trim_end_matches('/');
+    if url.is_empty() {
+        return Err("base url cannot be empty".to_string());
+    }
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("base url must start with http:// or https://".to_string());
+    }
+    Ok(url.to_string())
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn get_artifactory_base_url_cmd(state: State<'_, crate::AppState>) -> Result<String, String> {
+    tracing::info!("get_artifactory_base_url_cmd called");
+    artifactory_base_url(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn set_artifactory_base_url_cmd(
+    state: State<'_, crate::AppState>,
+    url: String,
+) -> Result<(), String> {
+    tracing::info!(url = %url, "set_artifactory_base_url_cmd called");
+    let normalized = normalize_base_url(&url)?;
+    set_setting(&state.db, KEY_ARTIFACTORY_BASE_URL, &normalized)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -77,6 +112,35 @@ mod tests {
         assert_eq!(
             artifactory_base_url(&pool).await.unwrap(),
             "https://example.com/artifactory"
+        );
+    }
+
+    #[test]
+    fn test_normalize_base_url_trims_and_strips_trailing_slash() {
+        assert_eq!(normalize_base_url("  https://example.com/artifactory/  ").unwrap(), "https://example.com/artifactory");
+        assert_eq!(normalize_base_url("https://example.com/a///").unwrap(), "https://example.com/a");
+    }
+
+    #[test]
+    fn test_normalize_base_url_rejects_empty() {
+        assert!(normalize_base_url("   ").is_err());
+        assert!(normalize_base_url("").is_err());
+    }
+
+    #[test]
+    fn test_normalize_base_url_rejects_non_http() {
+        assert!(normalize_base_url("ftp://example.com/x").is_err());
+        assert!(normalize_base_url("example.com/x").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_artifactory_base_url_roundtrip_normalized() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
+        set_setting(&pool, KEY_ARTIFACTORY_BASE_URL, "https://example.com/artifactory/").await.unwrap();
+        assert_eq!(
+            artifactory_base_url(&pool).await.unwrap(),
+            "https://example.com/artifactory/"
         );
     }
 }

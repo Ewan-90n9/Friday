@@ -142,3 +142,11 @@ export async function testConnection(params: {
     password: params.password ?? null,
   });
 }
+
+export async function getArtifactoryBaseUrl(): Promise<string> {
+  return invoke<string>("get_artifactory_base_url_cmd");
+}
+
+export async function setArtifactoryBaseUrl(url: string): Promise<void> {
+  return invoke<void>("set_artifactory_base_url_cmd", { url });
+}

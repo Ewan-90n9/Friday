@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { X, CircleNotch, Robot, CaretDown } from "@phosphor-icons/react";
 import { useAgentStore } from "@/store/agentStore";
+import { useSettingsStore } from "@/store/settingsStore";
 import { AgentListItem } from "@/components/agents/AgentListItem";
 
 interface AgentSettingsDialogProps {
@@ -24,6 +25,33 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
   const [provider, setProvider] = useState("opencode");
   const [path, setPath] = useState("");
   const [adding, setAdding] = useState(false);
+
+  const artifactoryBaseUrl = useSettingsStore((s) => s.artifactoryBaseUrl);
+  const settingsError = useSettingsStore((s) => s.error);
+  const saveBaseUrl = useSettingsStore((s) => s.saveBaseUrl);
+  const loadSettings = useSettingsStore((s) => s.load);
+
+  const [urlDraft, setUrlDraft] = useState("");
+  const [savingUrl, setSavingUrl] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      loadSettings().then(() => {
+        setUrlDraft(useSettingsStore.getState().artifactoryBaseUrl);
+      });
+    }
+  }, [open, loadSettings]);
+
+  const handleSaveUrl = async () => {
+    const trimmed = urlDraft.trim();
+    if (!trimmed || savingUrl) return;
+    setSavingUrl(true);
+    try {
+      await saveBaseUrl(trimmed);
+    } finally {
+      setSavingUrl(false);
+    }
+  };
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -118,6 +146,39 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
               ))}
             </div>
           )}
+        </div>
+
+        {/* Artifactory base URL (JDK provisioning) */}
+        <div className="border-t border-border shrink-0">
+          <div className="px-5 py-3 space-y-2">
+            <label htmlFor="artifactory-url" className="text-sm text-foreground">
+              Artifactory 仓库地址
+            </label>
+            <p className="text-xs text-muted-foreground">
+              用于 ensure_tool 下载 JDK 诊断工具包到目标环境（/tmp/friday-tools）
+            </p>
+            <div className="flex items-center gap-2">
+              <input
+                id="artifactory-url"
+                type="text"
+                value={urlDraft}
+                onChange={(e) => setUrlDraft(e.target.value)}
+                placeholder="https://…/artifactory/cmc-software-release"
+                className="flex-1 bg-muted border border-border rounded-md text-sm text-foreground px-3 py-1.5 placeholder:text-muted-foreground/50 outline-none"
+                style={{ fontFamily: "var(--font-mono)" }}
+              />
+              <button
+                onClick={handleSaveUrl}
+                disabled={savingUrl || urlDraft.trim() === artifactoryBaseUrl}
+                className="px-3 py-1.5 rounded-md bg-accent text-accent-foreground text-xs hover:bg-accent/80 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+              >
+                {savingUrl ? "保存中..." : "保存"}
+              </button>
+            </div>
+            {settingsError && (
+              <p className="text-xs text-destructive break-words">{settingsError}</p>
+            )}
+          </div>
         </div>
 
         {/* Manual add (collapsible) */}
