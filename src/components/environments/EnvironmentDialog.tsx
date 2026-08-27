@@ -34,7 +34,6 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestConnectionResult | null>(null);
-  const [savedEnvId, setSavedEnvId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -55,7 +54,6 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
           : { ...EMPTY_FORM, privateKeyPath: guessDefaultKeyPath() },
       );
       setTestResult(null);
-      setSavedEnvId(editing?.id ?? null);
       setFormError(null);
       if (!dialog.open) dialog.showModal();
     } else if (dialog.open) {
@@ -100,14 +98,25 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
   };
 
   const handleTest = async () => {
-    if (!savedEnvId) {
-      setFormError("请先保存环境再测试连接");
+    if (!form.host.trim() || !form.user.trim()) {
+      setFormError("主机 / 用户名不能为空");
       return;
     }
     setTesting(true);
     setTestResult(null);
+    setFormError(null);
     try {
-      setTestResult(await test(savedEnvId));
+      setTestResult(
+        await test({
+          environmentId: editing?.id ?? null,
+          host: form.host.trim(),
+          port: parseInt(form.port, 10) || 22,
+          user: form.user.trim(),
+          authType: form.authType,
+          privateKeyPath: form.authType === "private_key" ? form.privateKeyPath.trim() : null,
+          password: form.password ? form.password : null,
+        }),
+      );
     } finally {
       setTesting(false);
     }

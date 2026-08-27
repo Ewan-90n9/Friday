@@ -123,6 +123,22 @@ export async function deleteEnvironment(id: string): Promise<void> {
   return invoke<void>("delete_environment_cmd", { id });
 }
 
-export async function testConnection(id: string): Promise<TestConnectionResult> {
-  return invoke<TestConnectionResult>("test_connection_cmd", { id });
+export async function testConnection(params: {
+  environmentId?: string | null;
+  host: string;
+  port?: number;
+  user: string;
+  authType: string;
+  privateKeyPath?: string | null;
+  password?: string | null;
+}): Promise<TestConnectionResult> {
+  return invoke<TestConnectionResult>("test_connection_params_cmd", {
+    environmentId: params.environmentId ?? null,
+    host: params.host,
+    port: params.port ?? null,
+    user: params.user,
+    authType: params.authType,
+    privateKeyPath: params.privateKeyPath ?? null,
+    password: params.password ?? null,
+  });
 }

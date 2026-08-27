@@ -16,7 +16,7 @@ interface EnvStore {
   add: (params: Parameters<typeof ipcAdd>[0]) => Promise<boolean>;
   update: (params: Parameters<typeof ipcUpdate>[0]) => Promise<boolean>;
   remove: (id: string) => Promise<boolean>;
-  test: (id: string) => Promise<TestConnectionResult | null>;
+  test: (params: Parameters<typeof ipcTest>[0]) => Promise<TestConnectionResult | null>;
 }
 
 function errMsg(e: unknown): string {
@@ -76,9 +76,9 @@ export const useEnvStore = create<EnvStore>((set, get) => ({
     }
   },
 
-  test: async (id) => {
+  test: async (params) => {
     try {
-      return await ipcTest(id);
+      return await ipcTest(params);
     } catch (e) {
       set({ error: errMsg(e) });
       return null;

@@ -44,12 +44,22 @@ pub struct SshTransport {
     pub port: u16,
     pub user: String,
     pub auth: SshAuth,
+    /// 密钥直供（测试连接等未落库场景）；None 时从 OS 密钥链按 env_id 读取
+    secret_override: Option<String>,
     /// interior mutability: ExecChannel trait 方法都是 &self
     conn: Mutex<Option<SshConn>>,
 }
 
 struct SshConn {
     handle: russh::client::Handle<SshHandler>,
+}
+
+/// 解析实际使用的密钥：非空 override 优先，否则回退密钥链结果
+fn effective_secret(secret_override: &Option<String>, keychain: Option<String>) -> Option<String> {
+    match secret_override {
+        Some(s) if !s.is_empty() => Some(s.clone()),
+        _ => keychain,
+    }
 }
 
 /// 加载私钥；passphrase 为 None 或空串时按无密码私钥加载
@@ -101,7 +111,23 @@ impl SshTransport {
             port,
             user: user.to_string(),
             auth,
+            secret_override: None,
             conn: Mutex::new(None),
+        }
+    }
+
+    /// 带直供密钥的构造器（测试连接未保存的环境时使用，不读密钥链）
+    pub fn with_secret(
+        env_id: &str,
+        host: &str,
+        port: u16,
+        user: &str,
+        auth: SshAuth,
+        secret: Option<String>,
+    ) -> Self {
+        Self {
+            secret_override: secret,
+            ..Self::new(env_id, host, port, user, auth)
         }
     }
 
@@ -123,15 +149,16 @@ impl SshTransport {
 
         let authed = match &self.auth {
             SshAuth::PrivateKey { key_path } => {
-                let passphrase = crate::app::credentials::load_secret(&self.env_id).await?;
+                let keychain = crate::app::credentials::load_secret(&self.env_id).await?;
+                let passphrase = effective_secret(&self.secret_override, keychain);
                 let key_pair = load_key_pair(key_path, passphrase.as_deref())?;
                 handle
                     .authenticate_publickey(self.user.clone(), Arc::new(key_pair))
                     .await?
             }
             SshAuth::Password => {
-                let secret = crate::app::credentials::load_secret(&self.env_id)
-                    .await?
+                let keychain = crate::app::credentials::load_secret(&self.env_id).await?;
+                let secret = effective_secret(&self.secret_override, keychain)
                     .ok_or("password not found in keychain")?;
                 handle.authenticate_password(self.user.clone(), secret).await?
             }
@@ -417,6 +444,31 @@ mod tests {
     fn test_should_reconnect_on_exec_error() {
         assert!(should_reconnect(-1, Some("channel open failed")));
         assert!(should_reconnect(0, Some("channel broke")));
+    }
+
+    #[test]
+    fn test_effective_secret_override_wins() {
+        assert_eq!(
+            effective_secret(&Some("form-pass".to_string()), Some("keychain-pass".to_string())),
+            Some("form-pass".to_string())
+        );
+    }
+
+    #[test]
+    fn test_effective_secret_empty_override_falls_back_to_keychain() {
+        assert_eq!(
+            effective_secret(&Some(String::new()), Some("keychain-pass".to_string())),
+            Some("keychain-pass".to_string())
+        );
+    }
+
+    #[test]
+    fn test_effective_secret_no_override_uses_keychain() {
+        assert_eq!(
+            effective_secret(&None, Some("keychain-pass".to_string())),
+            Some("keychain-pass".to_string())
+        );
+        assert_eq!(effective_secret(&None, None), None);
     }
 
     #[test]

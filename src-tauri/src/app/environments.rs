@@ -270,20 +270,83 @@ pub struct TestConnectionResult {
     pub error: Option<String>,
 }
 
+/// 测试连接时的密钥来源决策
+#[derive(Debug, PartialEq)]
+pub enum TestSecret {
+    /// 使用表单提供的密钥（None = 无密钥，适用于无口令私钥）
+    Provided(Option<String>),
+    /// 编辑已有环境且未填新密钥 → 从密钥链按环境 id 读取
+    FromKeychain(String),
+}
+
+pub fn resolve_test_secret(environment_id: Option<&str>, password: Option<&str>) -> TestSecret {
+    match password {
+        Some(p) if !p.trim().is_empty() => TestSecret::Provided(Some(p.to_string())),
+        _ => match environment_id {
+            Some(id) => TestSecret::FromKeychain(id.to_string()),
+            None => TestSecret::Provided(None),
+        },
+    }
+}
+
+/// 按表单参数测试连接（无需先保存环境）。
+/// 编辑已有环境且密码留空时回退读取密钥链中已存的密钥。
 #[tauri::command]
 #[tracing::instrument(skip(state))]
-pub async fn test_connection_cmd(
+pub async fn test_connection_params_cmd(
     state: State<'_, crate::AppState>,
-    id: String,
+    environment_id: Option<String>,
+    host: String,
+    port: Option<u16>,
+    user: String,
+    auth_type: String,
+    private_key_path: Option<String>,
+    password: Option<String>,
 ) -> Result<TestConnectionResult, String> {
-    let env = get_environment(&state.db, &id)
-        .await.map_err(|e| e.to_string())?
-        .ok_or("环境不存在".to_string())?;
+    if host.trim().is_empty() || user.trim().is_empty() {
+        return Err("主机 / 用户名不能为空".to_string());
+    }
+    let auth = crate::exec::ssh::SshAuth::from_row(&auth_type, private_key_path.as_deref())
+        .ok_or("认证配置无效（私钥认证需要私钥路径）".to_string())?;
 
-    let auth = crate::exec::ssh::SshAuth::from_row(&env.auth_type, env.private_key_path.as_deref())
-        .ok_or("认证配置无效".to_string())?;
+    let secret_override = match resolve_test_secret(environment_id.as_deref(), password.as_deref())
+    {
+        TestSecret::Provided(s) => s,
+        TestSecret::FromKeychain(env_id) => {
+            get_environment(&state.db, &env_id)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or("环境不存在".to_string())?;
+            crate::app::credentials::load_secret(&env_id)
+                .await
+                .map_err(|e| e.to_string())?
+        }
+    };
 
-    let transport = crate::exec::ssh::SshTransport::new(&env.id, &env.host, env.port as u16, &env.user, auth);
+    // 密码认证但没有任何可用密钥 → 不发起连接，直接给出明确错误
+    if matches!(auth, crate::exec::ssh::SshAuth::Password)
+        && secret_override
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_none()
+    {
+        return Ok(TestConnectionResult {
+            ok: false,
+            latency_ms: 0,
+            error: Some("密码认证需要填写密码".to_string()),
+        });
+    }
+
+    let log_env_id = environment_id.clone().unwrap_or_else(|| "test-connection".to_string());
+    let transport = crate::exec::ssh::SshTransport::with_secret(
+        &log_env_id,
+        host.trim(),
+        port.unwrap_or(22),
+        user.trim(),
+        auth,
+        secret_override.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+    );
     let start = std::time::Instant::now();
     let test_future = async {
         match transport.connect().await {
@@ -316,6 +379,36 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
         (tmp, pool)
+    }
+
+    #[test]
+    fn test_resolve_test_secret_uses_form_password_when_provided() {
+        assert_eq!(
+            resolve_test_secret(None, Some("form-pass")),
+            TestSecret::Provided(Some("form-pass".to_string()))
+        );
+        assert_eq!(
+            resolve_test_secret(Some("env-1"), Some("form-pass")),
+            TestSecret::Provided(Some("form-pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_resolve_test_secret_edit_blank_password_falls_back_to_keychain() {
+        assert_eq!(
+            resolve_test_secret(Some("env-1"), None),
+            TestSecret::FromKeychain("env-1".to_string())
+        );
+        assert_eq!(
+            resolve_test_secret(Some("env-1"), Some("  ")),
+            TestSecret::FromKeychain("env-1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_test_secret_new_blank_password_is_none() {
+        assert_eq!(resolve_test_secret(None, None), TestSecret::Provided(None));
+        assert_eq!(resolve_test_secret(None, Some("")), TestSecret::Provided(None));
     }
 
     #[tokio::test]

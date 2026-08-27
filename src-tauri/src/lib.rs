@@ -187,7 +187,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             app::environments::add_environment_cmd,
             app::environments::update_environment_cmd,
             app::environments::delete_environment_cmd,
-            app::environments::test_connection_cmd,
+            app::environments::test_connection_params_cmd,
         ])
         .run(tauri::generate_context!())?;
     Ok(())
