@@ -351,6 +351,45 @@ impl ExecChannel for SshTransport {
             }
         }
     }
+
+    async fn upload(&self, local: &std::path::Path, remote_path: &str)
+        -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut conn = self.conn.lock().await;
+        let Some(c) = conn.as_mut() else {
+            return Err("ssh not connected (call connect first)".into());
+        };
+
+        let channel = c.handle.channel_open_session().await?;
+        let sftp = russh_sftp::client::SftpSession::new(channel.into_stream()).await?;
+
+        let file = tokio::fs::File::open(local).await?;
+        let mut reader = tokio::io::BufReader::with_capacity(256 * 1024, file);
+        let mut remote_file = sftp.create(remote_path).await?;
+
+        let mut buf = vec![0u8; 32 * 1024];
+        let mut total: u64 = 0;
+        loop {
+            let n = reader.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            remote_file.write_all(&buf[..n]).await?;
+            total += n as u64;
+        }
+        remote_file.shutdown().await?;
+        sftp.close().await?;
+
+        tracing::info!(
+            env_id = %self.env_id,
+            local = %local.display(),
+            remote_path,
+            bytes = total,
+            "sftp upload complete"
+        );
+        Ok(())
+    }
 }
 
 #[cfg(test)]
