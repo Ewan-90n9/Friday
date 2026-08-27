@@ -20,7 +20,7 @@
 | 9 | 中途断开 | 自动重连 1 次并重试当前命令；再失败 `connection_error` |
 | 10 | 凭证存储 | 私钥路径/host/user 明文 SQLite；密码与私钥 passphrase 存 OS 密钥链（keyring，key=`friday/env/{env_id}/secret`） |
 | 11 | run_command 风险级 | High——走现有确认拦截（120s 超时自动拒绝） |
-| 12 | 确认卡片 UI | 消息流内联卡片（同 ToolCallCard 形态），解决后转终态保留作审计 |
+| 12 | 确认卡片 UI | 消息流内联卡片（agent 消息的 confirm part，按请求位置渲染）；批准后由执行卡片原位接管，拒绝/超时卡片留在原位作记录（2026-08-27 修订：不再固定渲染在消息列表尾部） |
 | 13 | 环境 UI | 右侧面板上下分区：上「环境」下「工具」；卡片列表 + 弹窗编辑（沿用 AgentSettingsDialog 模式） |
 | 14 | K8s | 删除 `exec/k8s.rs`；K8s 场景 = SSH 到宿主机跑 kubectl（playbook 内容，阶段 2） |
 

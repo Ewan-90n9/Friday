@@ -1,9 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { ChatMessage } from "@/lib/types";
-import { useSessionStore } from "@/store/sessionStore";
 import { UserMessage } from "./UserMessage";
 import { AgentMessage } from "./AgentMessage";
-import { ConfirmCard } from "./ConfirmCard";
 
 interface MessageListProps {
   messages: ChatMessage[];
@@ -13,9 +11,6 @@ export function MessageList({ messages }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
-  const currentSessionId = useSessionStore((s) => s.currentSessionId);
-  const pendingConfirms = useSessionStore((s) => s.pendingConfirms);
-  const confirms = currentSessionId ? (pendingConfirms[currentSessionId] ?? []) : [];
 
   useEffect(() => {
     const container = containerRef.current;
@@ -49,9 +44,6 @@ export function MessageList({ messages }: MessageListProps) {
           <AgentMessage key={msg.id} message={msg} />
         ),
       )}
-      {confirms.map((c) => (
-        <ConfirmCard key={c.confirm_id} request={c} />
-      ))}
       <div ref={bottomRef} />
     </div>
   );

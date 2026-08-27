@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage } from "@/lib/types";
 import { ToolCallCard } from "./ToolCallCard";
+import { ConfirmCard } from "./ConfirmCard";
 
 interface AgentMessageProps {
   message: ChatMessage;
@@ -15,6 +16,7 @@ export function AgentMessage({ message }: AgentMessageProps) {
   const reasoningParts = message.parts.filter((p) => p.type === "reasoning");
   const textParts = message.parts.filter((p) => p.type === "text");
   const toolParts = message.parts.filter((p) => p.type === "tool");
+  const confirmParts = message.parts.filter((p) => p.type === "confirm");
 
   const isStreaming = message.status === "streaming";
 
@@ -59,6 +61,9 @@ export function AgentMessage({ message }: AgentMessageProps) {
         if (part.type === "tool" && part.tool) {
           return <ToolCallCard key={i} tool={part.tool} />;
         }
+        if (part.type === "confirm" && part.confirm) {
+          return <ConfirmCard key={i} request={part.confirm} />;
+        }
         return null;
       })}
 
@@ -74,7 +79,7 @@ export function AgentMessage({ message }: AgentMessageProps) {
             />
           )}
         </div>
-      ) : isStreaming && toolParts.length === 0 ? (
+      ) : isStreaming && toolParts.length === 0 && confirmParts.length === 0 ? (
         <div
           className="text-sm text-muted-foreground mb-3"
           style={{ fontFamily: "var(--font-mono)" }}

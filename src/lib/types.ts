@@ -47,7 +47,7 @@ export interface SessionRow {
   archived_at: string | null;
 }
 
-export type ChatPartType = "text" | "reasoning" | "tool";
+export type ChatPartType = "text" | "reasoning" | "tool" | "confirm";
 
 export interface ToolCallInfo {
   name: string;
@@ -61,6 +61,7 @@ export interface ChatPart {
   type: ChatPartType;
   text?: string;
   tool?: ToolCallInfo;
+  confirm?: ConfirmRequest;
 }
 
 export type ChatMessageStatus = "streaming" | "done" | "stopped" | "error";

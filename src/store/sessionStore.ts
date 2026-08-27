@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { sendMessage as ipcSendMessage, stopAgent, listSessions, onAppEvent, getSessionMessages, archiveSession as ipcArchiveSession, unarchiveSession as ipcUnarchiveSession, deleteSession as ipcDeleteSession, confirmTool } from "@/lib/ipc";
-import type { SessionRow, ChatMessage, ChatPart, AppEvent, MessageRow, ConfirmRequest } from "@/lib/types";
+import type { SessionRow, ChatMessage, ChatPart, AppEvent, MessageRow } from "@/lib/types";
 
 interface SessionStore {
   sessions: SessionRow[];
@@ -8,7 +8,6 @@ interface SessionStore {
   currentSessionId: string | null;
   messagesBySession: Record<string, ChatMessage[]>;
   agentRunning: Record<string, boolean>;
-  pendingConfirms: Record<string, ConfirmRequest[]>;
   inputText: string;
   sidebarView: "sessions" | "archived";
   eventUnlisten: (() => void) | null | string;
@@ -76,7 +75,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   currentSessionId: null,
   messagesBySession: {},
   agentRunning: {},
-  pendingConfirms: {},
   inputText: "",
   sidebarView: "sessions",
   eventUnlisten: null,
@@ -244,15 +242,31 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
   confirmToolAction: async (confirmId, approved) => {
     set((state) => {
-      const updated: Record<string, ConfirmRequest[]> = {};
-      for (const [sid, list] of Object.entries(state.pendingConfirms)) {
-        updated[sid] = list.map((c) =>
-          c.confirm_id === confirmId
-            ? { ...c, resolved: approved ? ("approved" as const) : ("rejected" as const) }
-            : c,
-        );
+      const updatedMessages: Record<string, ChatMessage[]> = {};
+      for (const [sid, msgs] of Object.entries(state.messagesBySession)) {
+        updatedMessages[sid] = msgs.map((m) => {
+          if (m.role !== "agent") return m;
+          const hasMatch = m.parts.some(
+            (p) => p.type === "confirm" && p.confirm?.confirm_id === confirmId,
+          );
+          if (!hasMatch) return m;
+          return {
+            ...m,
+            parts: m.parts.map((p) =>
+              p.type === "confirm" && p.confirm?.confirm_id === confirmId
+                ? {
+                    ...p,
+                    confirm: {
+                      ...p.confirm!,
+                      resolved: approved ? ("approved" as const) : ("rejected" as const),
+                    },
+                  }
+                : p,
+            ),
+          };
+        });
       }
-      return { pendingConfirms: updated };
+      return { messagesBySession: updatedMessages };
     });
     try {
       await confirmTool(confirmId, approved);
@@ -344,19 +358,33 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     }
 
     if (event.type === "confirm_required") {
-      const req: ConfirmRequest = {
-        confirm_id: event.confirm_id,
-        session_id: session_id,
-        tool: event.tool,
-        args: event.args,
-        risk_level: event.risk_level,
-        resolved: "pending",
+      const messages = state.messagesBySession[session_id] ?? [];
+      if (messages.length === 0) return;
+      const lastIdx = messages.length - 1;
+      const lastMsg = messages[lastIdx];
+      if (lastMsg.role !== "agent") return;
+
+      const confirmPart: ChatPart = {
+        type: "confirm",
+        confirm: {
+          confirm_id: event.confirm_id,
+          session_id: session_id,
+          tool: event.tool,
+          args: event.args,
+          risk_level: event.risk_level,
+          resolved: "pending",
+        },
       };
-      const existing = state.pendingConfirms[session_id] ?? [];
+
+      const updatedMessages = [...messages];
+      updatedMessages[lastIdx] = {
+        ...lastMsg,
+        parts: [...lastMsg.parts, confirmPart],
+      };
       set({
-        pendingConfirms: {
-          ...state.pendingConfirms,
-          [session_id]: [...existing, req],
+        messagesBySession: {
+          ...state.messagesBySession,
+          [session_id]: updatedMessages,
         },
       });
       return;
@@ -378,10 +406,34 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         },
       };
 
+      // 已批准的确认卡片在其位置被执行卡片接管（按 tool + args 匹配）
+      const argsStr = JSON.stringify(event.args);
+      let replaceAt = -1;
+      for (let i = lastMsg.parts.length - 1; i >= 0; i--) {
+        const p = lastMsg.parts[i];
+        if (
+          p.type === "confirm" &&
+          p.confirm &&
+          p.confirm.resolved === "approved" &&
+          p.confirm.tool === event.tool &&
+          JSON.stringify(p.confirm.args) === argsStr
+        ) {
+          replaceAt = i;
+          break;
+        }
+      }
+
+      const updatedParts = [...lastMsg.parts];
+      if (replaceAt >= 0) {
+        updatedParts[replaceAt] = toolPart;
+      } else {
+        updatedParts.push(toolPart);
+      }
+
       const updatedMessages = [...messages];
       updatedMessages[lastIdx] = {
         ...lastMsg,
-        parts: [...lastMsg.parts, toolPart],
+        parts: updatedParts,
       };
       set({
         messagesBySession: {
@@ -443,42 +495,39 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     ) {
       const newRunning = { ...state.agentRunning };
       delete newRunning[session_id];
-      set({ agentRunning: newRunning });
 
-      // Visual closure for unresolved confirms; backend 120s timeout is the real backstop
-      const pending = state.pendingConfirms[session_id] ?? [];
-      if (pending.some((c) => c.resolved === "pending")) {
-        set({
-          pendingConfirms: {
-            ...state.pendingConfirms,
-            [session_id]: pending.map((c) =>
-              c.resolved === "pending" ? { ...c, resolved: "timeout" as const } : c,
-            ),
-          },
+      // 未决确认卡片翻转为超时（后端 120s 超时是真正兜底），同时终结消息状态——一次 set 避免快照覆盖
+      let messages = state.messagesBySession[session_id] ?? [];
+      if (messages.length > 0) {
+        const finalStatus =
+          event.type === "diagnosis_done"
+            ? "done"
+            : event.type === "agent_stopped"
+              ? "stopped"
+              : "error";
+        messages = messages.map((m, idx) => {
+          let parts = m.parts;
+          if (parts.some((p) => p.type === "confirm" && p.confirm?.resolved === "pending")) {
+            parts = parts.map((p) =>
+              p.type === "confirm" && p.confirm?.resolved === "pending"
+                ? { ...p, confirm: { ...p.confirm!, resolved: "timeout" as const } }
+                : p,
+            );
+          }
+          if (idx === messages.length - 1 && m.role === "agent") {
+            return { ...m, parts, status: finalStatus as ChatMessage["status"] };
+          }
+          return { ...m, parts };
         });
       }
 
-      const messages = state.messagesBySession[session_id] ?? [];
-      if (messages.length > 0) {
-        const lastIdx = messages.length - 1;
-        const lastMsg = messages[lastIdx];
-        if (lastMsg.role === "agent") {
-          const status =
-            event.type === "diagnosis_done"
-              ? "done"
-              : event.type === "agent_stopped"
-                ? "stopped"
-                : "error";
-          const updatedMessages = [...messages];
-          updatedMessages[lastIdx] = { ...lastMsg, status };
-          set({
-            messagesBySession: {
-              ...state.messagesBySession,
-              [session_id]: updatedMessages,
-            },
-          });
-        }
-      }
+      set({
+        agentRunning: newRunning,
+        messagesBySession: {
+          ...state.messagesBySession,
+          [session_id]: messages,
+        },
+      });
       return;
     }
 
