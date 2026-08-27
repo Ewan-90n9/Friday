@@ -45,6 +45,12 @@ pub enum AppEvent {
     SessionClosed {
         session_id: String,
     },
+    ProvisionProgress {
+        session_id: String,
+        tool: String,
+        stage: String,
+        detail: String,
+    },
     SessionDeleted {
         session_id: String,
     },
@@ -56,14 +62,19 @@ pub struct EventPayload {
     pub event: AppEvent,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct EventBus {
-    handle: AppHandle,
+    handle: Option<AppHandle>,
 }
 
 impl EventBus {
     pub fn new(handle: AppHandle) -> Self {
-        Self { handle }
+        Self { handle: Some(handle) }
+    }
+
+    /// 无 AppHandle 的 EventBus（测试用）：emit 只走 tracing 日志
+    pub fn disabled() -> Self {
+        Self { handle: None }
     }
 
     pub fn emit(&self, session_id: &str, event: AppEvent) {
@@ -72,11 +83,15 @@ impl EventBus {
             event_type = ?std::mem::discriminant(&event),
             "emitting event"
         );
+        let Some(handle) = &self.handle else {
+            tracing::debug!(session_id, "event bus disabled, event not emitted to frontend");
+            return;
+        };
         let payload = EventPayload {
             session_id: session_id.to_string(),
             event,
         };
-        if let Err(e) = self.handle.emit("app_event", payload) {
+        if let Err(e) = handle.emit("app_event", payload) {
             tracing::error!(?e, "failed to emit event");
         }
     }
@@ -121,6 +136,29 @@ mod tests {
         assert!(json.contains("confirm_required"));
         assert!(json.contains("low"));
         assert!(json.contains("c1"));
+    }
+
+    #[test]
+    fn test_event_bus_disabled_does_not_panic() {
+        let bus = EventBus::disabled();
+        bus.emit(
+            "s1",
+            AppEvent::AgentStopped { session_id: "s1".to_string() },
+        );
+    }
+
+    #[test]
+    fn test_provision_progress_serialization() {
+        let event = AppEvent::ProvisionProgress {
+            session_id: "s1".to_string(),
+            tool: "jdk".to_string(),
+            stage: "download".to_string(),
+            detail: "channel B".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("provision_progress"));
+        assert!(json.contains("jdk"));
+        assert!(json.contains("download"));
     }
 
     #[test]

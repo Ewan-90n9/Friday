@@ -21,6 +21,7 @@ export type AppEvent =
   | { type: "agent_crashed"; session_id: string; reason: string }
   | { type: "diagnosis_done"; session_id: string; conclusion: string }
   | { type: "session_closed"; session_id: string }
+  | { type: "provision_progress"; session_id: string; tool: string; stage: string; detail: string }
   | { type: "session_deleted"; session_id: string };
 
 export interface EventPayload {
