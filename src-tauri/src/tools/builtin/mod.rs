@@ -1,3 +1,4 @@
+pub mod ensure_tool;
 pub mod list_environments;
 pub mod run_command;
 
