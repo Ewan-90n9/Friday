@@ -61,16 +61,15 @@ pub fn parse_probe_output(stdout: &str, stderr: &str) -> Result<JvmProbe, String
         ));
     }
 
-    let bisheng_version = combined
-        .lines()
-        .map(str::trim)
-        .find(|l| l.starts_with("BiSheng") && parse_bisheng_version(l).is_ok())
-        .ok_or_else(|| {
-            format!(
+    let bisheng_version = match extract_bisheng_version(&combined) {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            return Err(format!(
                 "unsupported_vendor: no BiSheng version string found (only BiSheng is supported in this version). stdout: {stdout:?} stderr: {stderr:?}"
-            )
-        })?
-        .to_string();
+            ))
+        }
+        Err(e) => return Err(e),
+    };
 
     let arch_raw = stdout
         .split("---")
@@ -118,6 +117,44 @@ pub fn parse_bisheng_version(s: &str) -> Result<BishengVersion, String> {
         major_dir: format!("{product} {major}"),
         full_dir: s.to_string(),
     })
+}
+
+/// 从 java -version 的合并输出中提取 BiSheng 版本串。
+/// 两种布局都支持（issue #4 真实环境为第二种）：
+/// 1. 独立成行：`BiSheng_JDK_Enterprise_205.2.0.110.B001`
+/// 2. 行中间：`OpenJDK Runtime Environment BiSheng_JDK_Enterprise_205.2.0.110.B001 (build ...)`
+/// 完全没有 BiSheng 字样时返回 None（unsupported_vendor）；
+/// 有 BiSheng 字样但无任何可识别版本串时返回 None 但调用方错误消息需要区分——
+/// 因此本函数返回 Result<Option<String>, String>：Err = 有 BiSheng 字样但格式不认识。
+fn extract_bisheng_version(combined: &str) -> Result<Option<String>, String> {
+    let mut saw_bisheng_word = false;
+    for line in combined.lines() {
+        if !line.contains("BiSheng") {
+            continue;
+        }
+        saw_bisheng_word = true;
+        // 行内所有 BiSheng 开头的候选 token
+        let re = regex::Regex::new(r"BiSheng[A-Za-z0-9_.]*").unwrap();
+        for m in re.find_iter(line) {
+            if parse_bisheng_version(m.as_str()).is_ok() {
+                return Ok(Some(m.as_str().to_string()));
+            }
+        }
+    }
+    if saw_bisheng_word {
+        // 有 BiSheng 字样但格式全部不认识——这不是"非 BiSheng 环境"，
+        // 不能误报 unsupported_vendor（issue #4 的错误消息 bug）
+        let sample = combined
+            .lines()
+            .find(|l| l.contains("BiSheng"))
+            .unwrap_or_default()
+            .trim();
+        return Err(format!(
+            "parse_failed: found BiSheng line but no recognizable version string: {sample:?}. \
+             请把完整 java -version 输出报给 Friday 维护者以扩展解析规则"
+        ));
+    }
+    Ok(None)
 }
 
 /// 拼下载 URL。目录段 URL encode（空格 → %20，_ 等非保留字符不动），文件名不 encode。
@@ -383,6 +420,40 @@ mod tests {
 
     const PROBE_STDOUT: &str = "BiSheng_JDK_Enterprise_205.2.0.110.B001\n---\nx86_64\n";
     const PROBE_STDERR: &str = "openjdk version \"21.0.11\" 2025-04-15\nOpenJDK Runtime Environment (build 21.0.11+9-LTS)\nOpenJDK 64-Bit Server VM (build 21.0.11+9-LTS, mixed mode)\n";
+
+    /// issue #4 的真实输出：BiSheng 串出现在行中间（Runtime Environment / Server VM 行内），
+    /// 而非独立行。旧解析器要求 BiSheng 行首匹配 → 误报 unsupported_vendor。
+    const ISSUE4_STDERR: &str = "openjdk version \"21.0.11\" 2026-04-21\nOpenJDK Runtime Environment BiSheng_JDK_Enterprise_205.2.0.110.B001 (build 21.0.11+10)\nOpenJDK 64-Bit Server VM BiSheng_JDK_Enterprise_205.2.0.110.B001 (build 21.0.11+10, mixed mode, sharing)\n";
+
+    #[test]
+    fn test_parse_probe_output_issue4_bisheng_inline() {
+        // java -version 走 2>&1 合并进 stdout 的真实场景
+        let stdout = &format!("{ISSUE4_STDERR}---\nx86_64\n");
+        let probe = parse_probe_output(stdout, "").unwrap();
+        assert_eq!(probe.openjdk_version, "21.0.11");
+        assert_eq!(probe.bisheng_version, "BiSheng_JDK_Enterprise_205.2.0.110.B001");
+        assert_eq!(probe.arch, "x64");
+    }
+
+    #[test]
+    fn test_parse_probe_output_issue4_bisheng_inline_on_stderr() {
+        // 分立输出场景：BiSheng 串在 stderr 的行中间
+        let stdout = "---\nx86_64\n";
+        let probe = parse_probe_output(stdout, ISSUE4_STDERR).unwrap();
+        assert_eq!(probe.bisheng_version, "BiSheng_JDK_Enterprise_205.2.0.110.B001");
+        assert_eq!(probe.openjdk_version, "21.0.11");
+    }
+
+    #[test]
+    fn test_parse_probe_output_unrecognized_bisheng_line_reports_parse_failed_not_vendor() {
+        // 输出里有 BiSheng 字样但格式不认识 → 报 parse_failed（带原始行），
+        // 而非误导性的 unsupported_vendor（issue #4 的错误消息问题）
+        let stdout = "---\nx86_64\n";
+        let stderr = "openjdk version \"21.0.11\" 2025-04-15\nBiSheng_Some_Unknown_Format\n";
+        let err = parse_probe_output(stdout, stderr).unwrap_err();
+        assert!(err.contains("parse_failed"), "unrecognized BiSheng line must be parse_failed, err: {err}");
+        assert!(err.contains("BiSheng_Some_Unknown_Format"), "err should carry the raw line, err: {err}");
+    }
 
     #[test]
     fn test_parse_probe_output_standard() {
