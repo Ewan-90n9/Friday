@@ -37,6 +37,10 @@ impl Paths {
         self.root.join("models")
     }
 
+    pub fn cache_dir(&self) -> PathBuf {
+        self.root.join("cache")
+    }
+
     pub fn session_artifacts_dir(&self, session_id: &str) -> PathBuf {
         self.artifacts_dir().join(session_id)
     }
@@ -49,6 +53,7 @@ impl Paths {
             self.prompts_dir(),
             self.artifacts_dir(),
             self.models_dir(),
+            self.cache_dir(),
         ] {
             std::fs::create_dir_all(&dir)?;
         }
@@ -112,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_dirs_creates_all_six_subdirs() {
+    fn test_ensure_dirs_creates_all_seven_subdirs() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = Paths::new(tmp.path().to_path_buf());
         paths.ensure_dirs().unwrap();
@@ -123,6 +128,7 @@ mod tests {
         assert!(tmp.path().join("prompts").is_dir());
         assert!(tmp.path().join("artifacts").is_dir());
         assert!(tmp.path().join("models").is_dir());
+        assert!(tmp.path().join("cache").is_dir());
     }
 
     #[test]
@@ -130,6 +136,21 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = Paths::new(tmp.path().to_path_buf());
         assert_eq!(paths.models_dir(), tmp.path().join("models"));
+    }
+
+    #[test]
+    fn test_cache_dir_returns_root_join_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(tmp.path().to_path_buf());
+        assert_eq!(paths.cache_dir(), tmp.path().join("cache"));
+    }
+
+    #[test]
+    fn test_ensure_dirs_creates_cache_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(tmp.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        assert!(tmp.path().join("cache").is_dir());
     }
 
     #[test]
