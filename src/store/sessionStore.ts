@@ -444,6 +444,41 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       return;
     }
 
+    if (event.type === "provision_progress") {
+      // 装备进度：附加到最近一个 running 的同名工具卡片（状态行文本）
+      const messages = state.messagesBySession[session_id] ?? [];
+      if (messages.length === 0) return;
+      const lastIdx = messages.length - 1;
+      const lastMsg = messages[lastIdx];
+      if (lastMsg.role !== "agent") return;
+
+      const updatedParts = [...lastMsg.parts];
+      for (let i = updatedParts.length - 1; i >= 0; i--) {
+        const part = updatedParts[i];
+        if (part.type === "tool" && part.tool && part.tool.name === event.tool && part.tool.status === "running") {
+          updatedParts[i] = {
+            ...part,
+            tool: {
+              ...part.tool,
+              // 复用 output 字段展示当前阶段（tool_result 到达后会被覆盖）
+              output: `${event.stage}: ${event.detail}`,
+            },
+          };
+          break;
+        }
+      }
+
+      const updatedMessages = [...messages];
+      updatedMessages[lastIdx] = { ...lastMsg, parts: updatedParts };
+      set({
+        messagesBySession: {
+          ...state.messagesBySession,
+          [session_id]: updatedMessages,
+        },
+      });
+      return;
+    }
+
     if (event.type === "tool_result") {
       const messages = state.messagesBySession[session_id] ?? [];
       if (messages.length === 0) return;
