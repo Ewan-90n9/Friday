@@ -31,6 +31,7 @@ const TOOL_GUIDANCE: &str = "## 工具使用
 - 调用诊断工具时，必须传入 session_id 参数。
 - 远程命令一律通过 run_command 工具执行，并用 environment 参数指定目标环境（name 来自 list_environments）。
 - 优先使用结构化诊断工具，run_command 是兜底。
+- 诊断 JVM 相关问题（OOM、GC、线程、CPU 飙高等）时，先调用 ensure_tool 装备 JDK，再用返回的 bins 全路径通过 run_command 执行 jstat/jcmd 等工具（目标环境通常只有 JRE，直接执行 jstat 会失败）。
 - 用户提到的环境先与 list_environments 的结果匹配；没有匹配时引导用户在右侧「环境」面板添加，不要瞎猜 host。";
 
 pub fn build_system_prompt(override_path: Option<&Path>) -> String {
@@ -214,5 +215,17 @@ mod tests {
         assert!(result.contains("session-xyz"));
         assert!(result.contains("工具使用"));
         assert!(result.contains("历史经验参考"));
+    }
+
+    #[test]
+    fn test_tool_guidance_mentions_ensure_tool() {
+        assert!(TOOL_GUIDANCE.contains("ensure_tool"));
+        assert!(TOOL_GUIDANCE.contains("jstat"));
+    }
+
+    #[test]
+    fn test_build_prompt_contains_ensure_tool_guidance() {
+        let prompt = build_prompt("帮我看看 OOM", None, "s1");
+        assert!(prompt.contains("ensure_tool"));
     }
 }
