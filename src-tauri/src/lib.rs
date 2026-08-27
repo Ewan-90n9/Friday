@@ -4,6 +4,7 @@ mod exec;
 mod infra;
 mod knowledge;
 mod mcp;
+mod provision;
 mod tools;
 
 use app::events::EventBus;
