@@ -111,6 +111,11 @@ impl ExecChannelPool {
             conn.last_used = at;
         }
     }
+
+    #[cfg(test)]
+    pub async fn get_or_create_unchecked_for_test(&mut self, environment_id: &str) -> Arc<dyn ExecChannel> {
+        self.connections.get(environment_id).map(|c| c.channel.clone()).unwrap()
+    }
 }
 
 impl Default for ExecChannelPool {
