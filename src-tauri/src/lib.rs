@@ -80,6 +80,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let exec_pool = Arc::new(Mutex::new(crate::exec::pool::ExecChannelPool::new()));
 
             // Build tool registry
+            // JVM 语义工具共享内核与 JDK 路径缓存（ensure_tool 与 jvm_* 必须共享同一实例）
+            let jdk_cache = Arc::new(crate::tools::builtin::jvm::jdk_cache::JdkCache::new());
+            let jvm_core = Arc::new(crate::tools::builtin::jvm::core::JvmExecCore {
+                db: pool.clone(),
+                exec_pool: exec_pool.clone(),
+                jdk_cache: jdk_cache.clone(),
+                artifacts_dir: paths.artifacts_dir(),
+            });
+
             let mut tool_registry = crate::tools::registry::ToolRegistry::new();
             tool_registry.register(crate::tools::builtin::echo_tool_def());
             tool_registry.register(crate::tools::builtin::run_command::run_command_tool_def(
@@ -95,8 +104,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 exec_pool.clone(),
                 paths.cache_dir(),
                 EventBus::new(handle.clone()),
-                Arc::new(crate::tools::builtin::jvm::jdk_cache::JdkCache::new()),
+                jdk_cache,
             ));
+            crate::tools::builtin::jvm::register_all(
+                &mut tool_registry,
+                jvm_core,
+                EventBus::new(handle.clone()),
+            );
             let tool_registry = Arc::new(tool_registry);
 
             // SSH 连接池空闲清理巡检：每 60s 清理空闲超 10min 的连接。
