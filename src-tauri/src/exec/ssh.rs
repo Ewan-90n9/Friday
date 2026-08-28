@@ -397,6 +397,53 @@ impl ExecChannel for SshTransport {
         );
         Ok(())
     }
+
+    async fn download(&self, remote_path: &str, local: &std::path::Path)
+        -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut conn = self.conn.lock().await;
+        let Some(c) = conn.as_mut() else {
+            return Err("ssh not connected (call connect first)".into());
+        };
+
+        let channel = c.handle.channel_open_session().await?;
+        // 对齐 upload：慢速链路传 GB 级 dump 时 10s 默认超时不够
+        let sftp_cfg = russh_sftp::client::Config {
+            request_timeout_secs: 600,
+            max_concurrent_writes: 16,
+            ..Default::default()
+        };
+        let sftp = russh_sftp::client::SftpSession::new_with_config(channel.into_stream(), sftp_cfg).await?;
+
+        let mut remote_file = sftp.open(remote_path).await?;
+        if let Some(parent) = local.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let mut local_file = tokio::fs::File::create(local).await?;
+
+        let mut buf = vec![0u8; 32 * 1024];
+        let mut total: u64 = 0;
+        loop {
+            let n = remote_file.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            local_file.write_all(&buf[..n]).await?;
+            total += n as u64;
+        }
+        local_file.flush().await?;
+        sftp.close().await?;
+
+        tracing::info!(
+            env_id = %self.env_id,
+            remote_path,
+            local = %local.display(),
+            bytes = total,
+            "sftp download complete"
+        );
+        Ok(())
+    }
 }
 
 #[cfg(test)]
