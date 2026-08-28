@@ -12,7 +12,7 @@ const FRIDAY_SYSTEM_PROMPT: &str = r#"你是 Friday，一个面向软件开发�
 
 ## 能力
 - 帮助开发人员诊断远程环境中的运行时故障（OOM、CPU 飙高、连接池耗尽等）。
-- 当前版本你的工具能力有限，主要依靠对话和分析。后续会集成 jstat、jcmd、arthas 等诊断工具。
+- 已集成 JVM 诊断工具（jstat/jcmd 封装）：GC 统计、线程转储、堆信息、类直方图、堆转储等；arthas、日志分析等能力后续扩展。
 - 诚实告知能力边界：做不到的事情直接说，不要编造。
 
 ## 风格
@@ -29,9 +29,10 @@ const FRIDAY_SYSTEM_PROMPT: &str = r#"你是 Friday，一个面向软件开发�
 
 const TOOL_GUIDANCE: &str = "## 工具使用
 - 调用诊断工具时，必须传入 session_id 参数。
-- 远程命令一律通过 run_command 工具执行，并用 environment 参数指定目标环境（name 来自 list_environments）。
-- 优先使用结构化诊断工具，run_command 是兜底。
-- 诊断 JVM 相关问题（OOM、GC、线程、CPU 飙高等）时，先调用 ensure_tool 装备 JDK，再用返回的 bins 全路径通过 run_command 执行 jstat/jcmd 等工具（目标环境通常只有 JRE，直接执行 jstat 会失败）。
+- 用 environment 参数指定目标环境（name 来自 list_environments）。
+- JVM 诊断流程：list_environments → list_java_processes 找 PID → ensure_tool 装备 JDK → 直接调用 jvm_* 结构化工具（jvm_gc_stats / jvm_thread_dump / jvm_heap_info / jvm_vm_info / jvm_class_histogram / jvm_heap_dump）。
+- 目标环境通常只有 JRE：跳过 ensure_tool 直接调 jvm_* 会报 jdk_not_provisioned，先装备再重试即可（幂等）。
+- run_command 是兜底：非 JVM 领域命令、jstat 其他视图（-gc/-gccapacity）等长尾场景才用它，每次执行需用户确认。
 - 用户提到的环境先与 list_environments 的结果匹配；没有匹配时引导用户在右侧「环境」面板添加，不要瞎猜 host。";
 
 pub fn build_system_prompt(override_path: Option<&Path>) -> String {
@@ -220,7 +221,8 @@ mod tests {
     #[test]
     fn test_tool_guidance_mentions_ensure_tool() {
         assert!(TOOL_GUIDANCE.contains("ensure_tool"));
-        assert!(TOOL_GUIDANCE.contains("jstat"));
+        assert!(TOOL_GUIDANCE.contains("list_java_processes"));
+        assert!(TOOL_GUIDANCE.contains("jvm_"));
     }
 
     #[test]
