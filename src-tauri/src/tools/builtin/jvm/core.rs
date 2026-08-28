@@ -54,6 +54,14 @@ pub fn require_bins(
     Ok(paths)
 }
 
+/// timeout_secs 参数收敛：缺失/非正数 → default，超过 max 截断到 max
+pub fn clamp_or(v: Option<i64>, default: u64, max: u64) -> u64 {
+    match v {
+        Some(t) if t > 0 => (t as u64).min(max),
+        _ => default,
+    }
+}
+
 /// jstat/jcmd 缓存失效检测：exit 127 或 stderr 提示文件不存在
 pub fn is_jdk_missing(exit_code: i32, stderr: &str) -> bool {
     exit_code == 127 || stderr.contains("No such file or directory")

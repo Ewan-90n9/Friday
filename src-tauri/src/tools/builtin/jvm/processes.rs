@@ -1,4 +1,4 @@
-use crate::tools::builtin::jvm::core::{error_output, resolve_environment, JvmExecCore};
+use crate::tools::builtin::jvm::core::{clamp_or, error_output, resolve_environment, JvmExecCore};
 use crate::tools::registry::{ToolContext, ToolDef, ToolHandler, ToolOutput};
 use crate::tools::risk::RiskLevel;
 use async_trait::async_trait;
@@ -82,13 +82,6 @@ impl ToolHandler for ListJavaProcessesHandler {
                 }
             }
         }
-    }
-}
-
-fn clamp_or(v: Option<i64>, default: u64, max: u64) -> u64 {
-    match v {
-        Some(t) if t > 0 => (t as u64).min(max),
-        _ => default,
     }
 }
 
