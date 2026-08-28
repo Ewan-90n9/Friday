@@ -376,13 +376,15 @@ async fn try_remote_download(ctx: &ProvisionContext, url: &str, tarball: &str) -
         return Err("no curl/wget on target".to_string());
     }
     let has_curl = which.stdout.trim().contains("curl");
+    // -k / --no-check-certificate：目标环境常没装企业 CA 根，curl 验 artifactory 证书链
+    // 会 exit 60（issue #4 第五轮）。内网可信源（spec 决策：不校验 checksum），跳过证书校验
     let cmd = if has_curl {
         format!(
-            "curl -fL --connect-timeout 15 --max-time {t} -o {tarball} {url}",
+            "curl -fkL --connect-timeout 15 --max-time {t} -o {tarball} {url}",
             t = ctx.timeouts.download,
         )
     } else {
-        format!("wget -T 15 -t 2 -O {tarball} {url}")
+        format!("wget --no-check-certificate -T 15 -t 2 -O {tarball} {url}")
     };
     let out = ctx
         .channel
@@ -706,6 +708,12 @@ mod tests {
         assert!(calls.iter().any(|c| c.contains("tar -xzf")), "calls: {calls:?}");
         // I6: mv 分支必须先清掉可能残留的 jdk-{v} 目录，防止重试时 mv 嵌套进旧目录
         assert!(calls.iter().any(|c| c.contains("rm -rf jdk-21.0.11")), "calls: {calls:?}");
+        // issue #4 第五轮：目标环境 curl 验不过 artifactory 证书链（exit 60）——
+        // 内网可信源跳过证书校验（curl -k / wget --no-check-certificate）
+        assert!(
+            calls.iter().any(|c| c.contains("curl -fkL") || c.contains("curl -fLk")),
+            "channel A curl must skip cert verification, calls: {calls:?}"
+        );
     }
 
     #[tokio::test]

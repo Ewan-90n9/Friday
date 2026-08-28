@@ -26,7 +26,7 @@ pub fn download_to_cache(url: &str, cache_dir: &Path) -> Result<PathBuf, String>
     let dest_str = dest.to_string_lossy();
     let output = std::process::Command::new("curl.exe")
         .args([
-            "-L", "-o", &dest_str,
+            "-k", "-L", "-o", &dest_str,
             "--connect-timeout", "30",
             "--max-time", "600",
             "--retry", "2",
