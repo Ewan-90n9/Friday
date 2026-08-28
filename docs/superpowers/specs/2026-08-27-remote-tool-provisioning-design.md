@@ -102,12 +102,12 @@ java_bin -version ; echo "---" ; uname -m
 ```
 BiSheng_JDK_Enterprise_205.2.0.110.B001
      │        │        │
-     │        │        └─ full: 原串原样保留（_ 不动）
+     │        │        └─ full: product + " " + 完整版本号 = "BiSheng JDK Enterprise 205.2.0.110.B001"
      │        └─ major: 205
      └─ product: BiSheng JDK Enterprise（字母段内 _ 替换为空格；分隔数字段的 _ 不动）
 
 URL = {base}/
-      {URL_encode(product)}/{URL_encode(product + " " + major)}/{URL_encode(full)}/
+      {URL_encode(product)}/{URL_encode(product + " " + major)}/{URL_encode(product + " " + 完整版本号)}/
       jdk-{openjdk_version}-linux-{arch}.tar.gz
 ```
 
@@ -115,9 +115,11 @@ URL = {base}/
 
 ```
 https://cmc-szver-artifactory.cmc.tools.huawei.com/artifactory/cmc-software-release/
-  BiSheng%20JDK%20Enterprise/BiSheng%20JDK%20Enterprise%20205/BiSheng_JDK_Enterprise_205.2.0.110.B001/
+  BiSheng%20JDK%20Enterprise/BiSheng%20JDK%20Enterprise%20205/BiSheng%20JDK%20Enterprise%20205.2.0.110.B001/
   jdk-21.0.11-linux-x64.tar.gz
 ```
+
+> **修订（issue #4 实测反馈）**：三段目录**全部**用空格形式（`_` → 空格）。最初设计的"full 段原串保留"是错的；另 BiSheng 版本串在 `java -version` 输出中可出现在行中间（`OpenJDK Runtime Environment BiSheng_JDK_... (build ...)`），解析需扫描行内 token 而非仅行首。
 
 - 正则捕获 BiSheng 版本串：字母段中的 `_` 还原为空格得 product 名，拼 `product + " " + major` 得 major_dir。
 - 解析失败返回明确错误（附原始串），agent 可回退 run_command 人工排查。

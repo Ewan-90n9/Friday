@@ -115,7 +115,9 @@ pub fn parse_bisheng_version(s: &str) -> Result<BishengVersion, String> {
     Ok(BishengVersion {
         product_dir: product.clone(),
         major_dir: format!("{product} {major}"),
-        full_dir: s.to_string(),
+        // Artifactory 三段目录全部用空格形式（issue #4 第二轮反馈）：
+        // 第三段 = product + " " + 完整版本号，而非原串原样保留
+        full_dir: format!("{product} {version}"),
     })
 }
 
@@ -530,7 +532,8 @@ mod tests {
         let v = parse_bisheng_version("BiSheng_JDK_Enterprise_205.2.0.110.B001").unwrap();
         assert_eq!(v.product_dir, "BiSheng JDK Enterprise");
         assert_eq!(v.major_dir, "BiSheng JDK Enterprise 205");
-        assert_eq!(v.full_dir, "BiSheng_JDK_Enterprise_205.2.0.110.B001");
+        // full_dir 也是空格形式：Artifactory 三段目录全部用空格（issue #4 第二轮反馈）
+        assert_eq!(v.full_dir, "BiSheng JDK Enterprise 205.2.0.110.B001");
     }
 
     #[test]
@@ -546,7 +549,23 @@ mod tests {
         let v = parse_bisheng_version("BiSheng_JDK_Compact_105.1.0.B002").unwrap();
         assert_eq!(v.product_dir, "BiSheng JDK Compact");
         assert_eq!(v.major_dir, "BiSheng JDK Compact 105");
-        assert_eq!(v.full_dir, "BiSheng_JDK_Compact_105.1.0.B002");
+        assert_eq!(v.full_dir, "BiSheng JDK Compact 105.1.0.B002");
+    }
+
+    /// issue #4 第二轮反馈：三段目录全部用空格形式（_→空格），
+    /// 第三段是 product + 完整版本号，不是原串原样保留
+    #[test]
+    fn test_build_download_url_real_artifactory_layout() {
+        let probe = parse_probe_output(PROBE_STDOUT, PROBE_STDERR).unwrap();
+        let url = build_download_url(
+            "https://cmc-szver-artifactory.cmc.tools.huawei.com/artifactory/cmc-software-release",
+            &probe,
+        )
+        .unwrap();
+        assert_eq!(
+            url,
+            "https://cmc-szver-artifactory.cmc.tools.huawei.com/artifactory/cmc-software-release/BiSheng%20JDK%20Enterprise/BiSheng%20JDK%20Enterprise%20205/BiSheng%20JDK%20Enterprise%20205.2.0.110.B001/jdk-21.0.11-linux-x64.tar.gz"
+        );
     }
 
     #[test]
@@ -555,7 +574,7 @@ mod tests {
         let url = build_download_url("https://artifactory.example.com/artifactory/release", &probe).unwrap();
         assert_eq!(
             url,
-            "https://artifactory.example.com/artifactory/release/BiSheng%20JDK%20Enterprise/BiSheng%20JDK%20Enterprise%20205/BiSheng_JDK_Enterprise_205.2.0.110.B001/jdk-21.0.11-linux-x64.tar.gz"
+            "https://artifactory.example.com/artifactory/release/BiSheng%20JDK%20Enterprise/BiSheng%20JDK%20Enterprise%20205/BiSheng%20JDK%20Enterprise%20205.2.0.110.B001/jdk-21.0.11-linux-x64.tar.gz"
         );
     }
 
