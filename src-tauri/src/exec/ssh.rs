@@ -362,7 +362,14 @@ impl ExecChannel for SshTransport {
         };
 
         let channel = c.handle.channel_open_session().await?;
-        let sftp = russh_sftp::client::SftpSession::new(channel.into_stream()).await?;
+        // 默认 request_timeout_secs=10：慢速链路传大文件时单个 write 请求超时（issue #4
+        // 第三轮反馈的 "Timeout"）。放宽到 600s 与下载阶段超时对齐，并发写提升到 16 提高吞吐
+        let sftp_cfg = russh_sftp::client::Config {
+            request_timeout_secs: 600,
+            max_concurrent_writes: 16,
+            ..Default::default()
+        };
+        let sftp = russh_sftp::client::SftpSession::new_with_config(channel.into_stream(), sftp_cfg).await?;
 
         let file = tokio::fs::File::open(local).await?;
         let mut reader = tokio::io::BufReader::with_capacity(256 * 1024, file);
