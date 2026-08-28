@@ -172,6 +172,8 @@ impl ToolHandler for HeapDumpHandler {
         match download_result {
             Err(_) => {
                 tracing::warn!(session_id = %ctx.session_id, env_id = %env.id, remote_path, timeout_secs = download_timeout, "dump download timed out; remote file kept");
+                // 下载失败：清理可能残留的截断本地文件（best-effort，失败仅告警）
+                let _ = tokio::fs::remove_file(&local_path).await;
                 return ToolOutput {
                     success: false,
                     data: serde_json::json!({
@@ -186,6 +188,8 @@ impl ToolHandler for HeapDumpHandler {
             }
             Ok(Err(e)) => {
                 tracing::error!(session_id = %ctx.session_id, env_id = %env.id, remote_path, error = %e, "dump download failed; remote file kept");
+                // 下载失败：清理可能残留的截断本地文件（best-effort，失败仅告警）
+                let _ = tokio::fs::remove_file(&local_path).await;
                 return ToolOutput {
                     success: false,
                     data: serde_json::json!({
@@ -323,6 +327,8 @@ mod tests {
             local: &std::path::Path,
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if !self.download_ok {
+                // 模拟半途而废：写部分字节后失败
+                std::fs::write(local, b"partial-dump").map_err(|e| e.to_string())?;
                 return Err("sftp read error".into());
             }
             std::fs::write(local, b"dump-bytes").map_err(|e| e.to_string())?;
@@ -456,6 +462,12 @@ mod tests {
         assert_eq!(out.data["error"], "download_failed");
         assert!(out.data["message"].as_str().unwrap().contains("远端文件保留"));
         assert!(out.data["remote_path"].as_str().unwrap().ends_with(".hprof"));
+        // 截断的本地文件必须被清理
+        let session_dir = tmp.path().join("artifacts").join("123e4567-e89b-12d3-a456-426614174000");
+        let hprof_count = std::fs::read_dir(&session_dir)
+            .map(|entries| entries.filter_map(|e| e.ok()).filter(|e| e.path().extension().map_or(false, |x| x == "hprof")).count())
+            .unwrap_or(0);
+        assert_eq!(hprof_count, 0, "partial local dump must be cleaned up");
         drop(tmp);
     }
 
