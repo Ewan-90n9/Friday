@@ -11,6 +11,8 @@ pub struct EnsureToolHandler {
     pub exec_pool: Arc<Mutex<crate::exec::pool::ExecChannelPool>>,
     pub cache_dir: std::path::PathBuf,
     pub bus: crate::app::events::EventBus,
+    /// jvm_* 工具共享的 JDK 布局缓存：成功后写入
+    pub jdk_cache: Arc<crate::tools::builtin::jvm::jdk_cache::JdkCache>,
     /// (env_id, package) → 串行化锁
     pub inflight: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
@@ -93,6 +95,12 @@ impl ToolHandler for EnsureToolHandler {
         match package.ensure(&pctx, java_bin).await {
             Ok(result) => {
                 tracing::info!(session_id = %ctx.session_id, env_id = %env.id, tool, cached = result.cached, elapsed_ms = result.elapsed_ms, "ensure_tool succeeded");
+                // 成功即写入 JdkCache：jvm_* 工具按 env_id 取路径
+                let layout = crate::tools::builtin::jvm::jdk_cache::JdkLayout {
+                    tool_home: result.tool_home.clone(),
+                    bins: result.bins.clone(),
+                };
+                self.jdk_cache.set(&env.id, layout).await;
                 ToolOutput {
                     success: true,
                     data: serde_json::to_value(&result).unwrap_or_default(),
@@ -120,10 +128,11 @@ pub fn ensure_tool_tool_def(
     exec_pool: Arc<Mutex<crate::exec::pool::ExecChannelPool>>,
     cache_dir: std::path::PathBuf,
     bus: crate::app::events::EventBus,
+    jdk_cache: Arc<crate::tools::builtin::jvm::jdk_cache::JdkCache>,
 ) -> ToolDef {
     ToolDef {
         name: "ensure_tool".to_string(),
-        description: "确保目标环境已装备指定诊断工具包（当前支持 jdk）。生产环境通常只有 JRE，缺少 jstat/jcmd 等诊断工具；本工具探测目标 JVM 版本并下载匹配的 JDK 到 /tmp/friday-tools（不影响系统 Java）。返回 tool_home 及各工具完整路径，后续请用全路径调用（如 /tmp/friday-tools/jdk-21.0.11/bin/jcmd <pid> GC.heap_info）。重复调用安全：已装备时直接返回。在 JVM 诊断前调用一次。".to_string(),
+        description: "确保目标环境已装备指定诊断工具包（当前支持 jdk）。生产环境通常只有 JRE，缺少 jstat/jcmd 等诊断工具；本工具探测目标 JVM 版本并下载匹配的 JDK 到 /tmp/friday-tools（不影响系统 Java）。装备成功后即可直接调用 jvm_gc_stats / jvm_thread_dump / jvm_heap_info / jvm_vm_info / jvm_class_histogram / jvm_heap_dump 等结构化工具。重复调用安全：已装备时直接返回。JVM 诊断流程：list_environments → list_java_processes 找 pid → ensure_tool → jvm_* 工具。".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -140,6 +149,7 @@ pub fn ensure_tool_tool_def(
             exec_pool,
             cache_dir,
             bus,
+            jdk_cache,
             inflight: Arc::new(Mutex::new(HashMap::new())),
         }),
     }
@@ -199,6 +209,7 @@ mod tests {
             exec_pool,
             cache_dir: cache,
             bus,
+            jdk_cache: Arc::new(crate::tools::builtin::jvm::jdk_cache::JdkCache::new()),
             inflight: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -271,9 +282,33 @@ mod tests {
             Arc::new(Mutex::new(crate::exec::pool::ExecChannelPool::new())),
             std::path::PathBuf::from("/tmp/x"),
             crate::app::events::EventBus::disabled(),
+            Arc::new(crate::tools::builtin::jvm::jdk_cache::JdkCache::new()),
         );
         assert_eq!(def.name, "ensure_tool");
         assert_eq!(def.risk_level, RiskLevel::Low);
         assert!(!def.needs_channel);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_success_populates_jdk_cache() {
+        let (tmp, db, exec_pool, cache, bus) = setup().await;
+        let env_id = crate::app::environments::find_by_name(&db, "prod").await.unwrap().unwrap().id;
+        exec_pool.lock().await.insert_channel(env_id.clone(), Arc::new(ProbeOkChannel) as Arc<dyn ExecChannel>).await;
+        let jdk_cache = Arc::new(crate::tools::builtin::jvm::jdk_cache::JdkCache::new());
+        let handler = EnsureToolHandler {
+            db,
+            exec_pool,
+            cache_dir: cache,
+            bus,
+            jdk_cache: jdk_cache.clone(),
+            inflight: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let ctx = ToolContext { session_id: "s1".into(), channel: None };
+        let out = handler.execute(serde_json::json!({"environment": "prod", "tool": "jdk"}), &ctx).await;
+        assert!(out.success, "out: {}", out.data);
+        let layout = jdk_cache.get(&env_id).await.expect("cache must be populated");
+        assert_eq!(layout.tool_home, "/tmp/friday-tools/jdk-21.0.11");
+        assert!(layout.bins.contains_key("jcmd"));
+        drop(tmp);
     }
 }

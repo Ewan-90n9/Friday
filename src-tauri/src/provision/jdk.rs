@@ -775,6 +775,7 @@ mod tests {
             Arc::new(TokioMutex::new(crate::exec::pool::ExecChannelPool::new())),
             std::path::PathBuf::from("/tmp/x"),
             crate::app::events::EventBus::disabled(),
+            Arc::new(crate::tools::builtin::jvm::jdk_cache::JdkCache::new()),
         );
         assert_eq!(
             JDK_TOOL_NAME,

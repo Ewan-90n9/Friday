@@ -95,6 +95,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 exec_pool.clone(),
                 paths.cache_dir(),
                 EventBus::new(handle.clone()),
+                Arc::new(crate::tools::builtin::jvm::jdk_cache::JdkCache::new()),
             ));
             let tool_registry = Arc::new(tool_registry);
 
