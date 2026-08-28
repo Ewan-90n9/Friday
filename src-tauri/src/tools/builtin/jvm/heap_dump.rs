@@ -1,4 +1,3 @@
-use crate::exec::channel::ExecChannel;
 use crate::tools::builtin::jvm::core::{
     clamp_or, error_output, is_jdk_missing, parse_pid, require_bins, resolve_environment,
     JvmExecCore,
