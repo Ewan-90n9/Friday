@@ -60,7 +60,8 @@ fn inject_friday_entry(mut config: Value, url: &str) -> Value {
     friday["type"] = Value::String("remote".to_string());
     friday["url"] = Value::String(url.to_string());
     friday["enabled"] = Value::Bool(true);
-    friday["timeout"] = Value::Number(serde_json::Number::from(10000));
+    // 15 分钟（毫秒）：ensure_tool 全流程最坏 ~13 分钟；同时覆写旧版本写入的 10s
+    friday["timeout"] = Value::Number(serde_json::Number::from(900000));
 
     config
 }
@@ -113,7 +114,27 @@ mod tests {
         assert_eq!(result["mcp"]["friday"]["type"], "remote");
         assert_eq!(result["mcp"]["friday"]["url"], "http://127.0.0.1:12345/mcp");
         assert_eq!(result["mcp"]["friday"]["enabled"], true);
-        assert_eq!(result["mcp"]["friday"]["timeout"], 10000);
+        // opencode 的 mcp timeout 单位是毫秒。ensure_tool 全流程（探测+双通道下载+SFTP 上传+
+        // 解压+验证）最坏 ~13 分钟，10s 会把慢链路下的装备直接掐死（issue #4 第四轮反馈）。
+        // 15 分钟覆盖最坏时长。
+        assert_eq!(result["mcp"]["friday"]["timeout"], 900000);
+    }
+
+    #[test]
+    fn test_inject_friday_entry_overrides_stale_short_timeout() {
+        // 已有配置里是旧版本的 10s timeout —— 升级后必须覆写为新的 15 分钟，
+        // 否则老用户的配置文件永远不会被修复
+        let config = serde_json::json!({
+            "mcp": {
+                "friday": {
+                    "type": "remote",
+                    "url": "http://127.0.0.1:OLD/mcp",
+                    "timeout": 10000
+                }
+            }
+        });
+        let result = inject_friday_entry(config, "http://127.0.0.1:NEW/mcp");
+        assert_eq!(result["mcp"]["friday"]["timeout"], 900000);
     }
 
     #[test]
