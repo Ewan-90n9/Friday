@@ -74,8 +74,10 @@
 │ - 内置工具（Rust handler）+ 脚本工具（manifest+脚本）      │
 │   统一注册，脚本工具热插拔                                │
 │ - run_command 受控兜底（High 级确认）                     │
-│ - 结构化封装（jstat/jcmd/arthas/读日志/读dump，           │
-│   后续批次）→ 结构化输出                                  │
+│ - 结构化封装（首批 JVM 工具已落地：                       │
+│   list_java_processes / jvm_gc_stats / jvm_thread_dump    │
+│   / jvm_heap_info / jvm_vm_info / jvm_class_histogram     │
+│   / jvm_heap_dump；arthas/读日志/读dump 后续批次）        │
 │ - 风险分级拦截：                                          │
 │     只读自主 → 直接执行                                    │
 │     低风险 → 推 confirm_required 事件，等前端确认           │
