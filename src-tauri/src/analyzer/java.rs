@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use tokio::time::{timeout, Duration};
 
 // 字段由 Task 3（analyzer manager）读取
 #[allow(dead_code)]
@@ -12,7 +13,8 @@ pub struct JavaInfo {
 /// - 现代格式 `openjdk version "21.0.3"` → 21
 /// - 旧格式 `java version "1.8.0_391"` → 8（主版本 1 时取次版本）
 pub fn parse_java_version(output: &str) -> Option<u32> {
-    let rest = output.split("version").nth(1)?;
+    let line = output.lines().find(|l| l.contains("version \""))?;
+    let rest = line.split("version").nth(1)?;
     let quoted = rest.split('"').nth(1)?;
     if quoted.is_empty() {
         return None;
@@ -40,7 +42,7 @@ pub fn java_candidates(java_home: Option<&str>) -> Vec<PathBuf> {
             out.push(p);
         }
     }
-    if let Ok(p) = which::which("java") {
+    if let Ok(p) = which::which_global("java") {
         if !out.contains(&p) {
             out.push(p);
         }
@@ -56,24 +58,44 @@ pub async fn detect_java() -> Result<JavaInfo, String> {
     let mut last_err = String::from("未找到 java 可执行文件（已检查 JAVA_HOME 与 PATH）");
     for path in candidates {
         match probe_version(&path).await {
-            Ok(Some(v)) if v >= 21 => return Ok(JavaInfo { path, major: v }),
-            Ok(Some(v)) => last_err = format!("找到 {} 但为 Java {v}，需要 21+", path.display()),
-            Ok(None) => last_err = format!("无法解析 {} 的版本输出", path.display()),
-            Err(e) => last_err = format!("执行 {} -version 失败: {e}", path.display()),
+            Ok(Some(v)) if v >= 21 => {
+                tracing::info!(java = %path.display(), major = v, "java 21+ detected");
+                return Ok(JavaInfo { path, major: v });
+            }
+            Ok(Some(v)) => {
+                let reason = format!("找到 {} 但为 Java {v}，需要 21+", path.display());
+                tracing::warn!(java = %path.display(), reason = %reason, "java candidate rejected");
+                last_err = reason;
+            }
+            Ok(None) => {
+                let reason = format!("无法解析 {} 的版本输出", path.display());
+                tracing::warn!(java = %path.display(), reason = %reason, "java candidate rejected");
+                last_err = reason;
+            }
+            Err(e) => {
+                let reason = format!("执行 {} -version 失败: {e}", path.display());
+                tracing::warn!(java = %path.display(), reason = %reason, "java candidate rejected");
+                last_err = reason;
+            }
         }
     }
     Err(last_err)
 }
 
 async fn probe_version(java_path: &std::path::Path) -> Result<Option<u32>, String> {
-    let out = tokio::process::Command::new(java_path)
-        .arg("-version")
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
+    let out = timeout(
+        Duration::from_secs(5),
+        tokio::process::Command::new(java_path).arg("-version").output(),
+    )
+    .await
+    .map_err(|_| format!("{} -version 执行超时（5s）", java_path.display()))?
+    .map_err(|e| e.to_string())?;
     // `java -version` 惯例输出到 stderr，stdout 兜底
     let mut text = String::from_utf8_lossy(&out.stderr).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stdout));
+    if !out.status.success() || !text.trim().is_empty() {
+        tracing::debug!(java = %java_path.display(), output = %text.trim(), "java -version output");
+    }
     Ok(parse_java_version(&text))
 }
 
@@ -101,6 +123,19 @@ mod tests {
         assert_eq!(parse_java_version(""), None);
         assert_eq!(parse_java_version("xyz"), None);
         assert_eq!(parse_java_version("Runtime Environment (build 25+36)"), None);
+    }
+
+    #[test]
+    fn test_parse_empty_quoted_version_returns_none() {
+        assert_eq!(parse_java_version(r#"openjdk version """#), None);
+    }
+
+    #[test]
+    fn test_parse_multiline_realistic_output() {
+        let output = r#"openjdk version "21.0.3" 2024-04-16
+OpenJDK Runtime Environment (build 21.0.3+9-LTS)
+OpenJDK 64-Bit Server VM (build 21.0.3+9-LTS, mixed mode, sharing)"#;
+        assert_eq!(parse_java_version(output), Some(21));
     }
 
     #[test]
