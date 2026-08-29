@@ -123,6 +123,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 &mut tool_registry,
                 jvm_core,
                 EventBus::new(handle.clone()),
+                transfer_manager.clone(),
             );
             let tool_registry = Arc::new(tool_registry);
 
