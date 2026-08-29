@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import type { ChatMessage } from "@/lib/types";
 import { ToolCallCard } from "./ToolCallCard";
 import { ConfirmCard } from "./ConfirmCard";
+import { TransferProgressCard } from "./TransferProgressCard";
 
 interface AgentMessageProps {
   message: ChatMessage;
@@ -63,6 +64,9 @@ export function AgentMessage({ message }: AgentMessageProps) {
         }
         if (part.type === "confirm" && part.confirm) {
           return <ConfirmCard key={i} request={part.confirm} />;
+        }
+        if (part.type === "transfer" && part.transfer) {
+          return <TransferProgressCard key={i} transfer={part.transfer} />;
         }
         return null;
       })}
