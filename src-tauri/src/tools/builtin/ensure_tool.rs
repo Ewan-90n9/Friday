@@ -132,7 +132,7 @@ pub fn ensure_tool_tool_def(
 ) -> ToolDef {
     ToolDef {
         name: "ensure_tool".to_string(),
-        description: "确保目标环境已装备指定诊断工具包（当前支持 jdk）。生产环境通常只有 JRE，缺少 jstat/jcmd 等诊断工具；本工具探测目标 JVM 版本并下载匹配的 JDK 到 /tmp/friday-tools（不影响系统 Java）。装备成功后即可直接调用 jvm_gc_stats / jvm_thread_dump / jvm_heap_info / jvm_vm_info / jvm_class_histogram / jvm_heap_dump 等结构化工具。重复调用安全：已装备时直接返回。JVM 诊断流程：list_environments → list_java_processes 找 pid → ensure_tool → jvm_* 工具。".to_string(),
+        description: "确保目标环境已装备指定诊断工具包（当前支持 jdk）。生产环境通常只有 JRE，缺少 jstat/jcmd 等诊断工具；本工具探测目标 JVM 版本并下载匹配的 JDK 到 /tmp/friday-tools（不影响系统 Java）。装备成功后即可直接调用 jvm_gc_stats / jvm_thread_dump / jvm_heap_info / jvm_vm_info / jvm_class_histogram / jvm_heap_dump 等结构化工具。重复调用安全：已装备时直接返回。JVM 诊断流程：list_environments → list_processes（keyword=服务名）找 pid → ensure_tool → jvm_* 工具。".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {

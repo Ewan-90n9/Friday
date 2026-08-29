@@ -14,7 +14,7 @@ pub fn register_all(
     bus: EventBus,
     transfer: Arc<crate::transfer::TransferManager>,
 ) {
-    registry.register(processes::list_java_processes_tool_def(core.clone()));
+    registry.register(processes::list_processes_tool_def(core.clone()));
     registry.register(simple::jvm_gc_stats_tool_def(core.clone()));
     registry.register(simple::jvm_thread_dump_tool_def(core.clone()));
     registry.register(simple::jvm_heap_info_tool_def(core.clone()));

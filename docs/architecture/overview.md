@@ -75,7 +75,7 @@
 │   统一注册，脚本工具热插拔                                │
 │ - run_command 受控兜底（High 级确认）                     │
 │ - 结构化封装（首批 JVM 工具已落地：                       │
-│   list_java_processes / jvm_gc_stats / jvm_thread_dump    │
+│   list_processes / jvm_gc_stats / jvm_thread_dump    │
 │   / jvm_heap_info / jvm_vm_info / jvm_class_histogram     │
 │   / jvm_heap_dump；arthas/读日志/读dump 后续批次）        │
 │ - 风险分级拦截：                                          │

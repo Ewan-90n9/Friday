@@ -7,12 +7,12 @@ use std::sync::Arc;
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_TIMEOUT_SECS: u64 = 120;
 
-pub struct ListJavaProcessesHandler {
+pub struct ListProcessesHandler {
     pub core: Arc<JvmExecCore>,
 }
 
 #[async_trait]
-impl ToolHandler for ListJavaProcessesHandler {
+impl ToolHandler for ListProcessesHandler {
     async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> ToolOutput {
         let Some(environment) = args.get("environment").and_then(|v| v.as_str()) else {
             return error_output("invalid_params", "missing required parameter: environment");
@@ -22,6 +22,11 @@ impl ToolHandler for ListJavaProcessesHandler {
             DEFAULT_TIMEOUT_SECS,
             MAX_TIMEOUT_SECS,
         );
+        // keyword 可选：空串视为未传（返回全部进程）
+        let keyword = args
+            .get("keyword")
+            .and_then(|v| v.as_str())
+            .filter(|kw| !kw.is_empty());
 
         let (env, channel) = match resolve_environment(&self.core.db, &self.core.exec_pool, environment).await {
             Ok(Some(pair)) => pair,
@@ -34,21 +39,27 @@ impl ToolHandler for ListJavaProcessesHandler {
             Err(e) => return error_output("connection_error", &e),
         };
 
-        // ps 输出 pid/user/完整命令行；管道在远端 shell 执行
-        let command = "ps -eo pid=,user=,args= | grep -i java | grep -v grep";
-        tracing::info!(session_id = %ctx.session_id, env_id = %env.id, command, "list_java_processes executing");
+        // keyword 插值进远端 shell 命令（注入面），必须单引号转义；无 keyword 时纯 ps 返回全部进程
+        let command = match keyword {
+            Some(kw) => format!(
+                "ps -eo pid=,user=,args= | grep -i {} | grep -v grep",
+                crate::exec::ssh::shell_quote_single(kw)
+            ),
+            None => "ps -eo pid=,user=,args=".to_string(),
+        };
+        tracing::info!(session_id = %ctx.session_id, env_id = %env.id, command = %command, "list_processes executing");
 
         let start = std::time::Instant::now();
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
-            channel.run(command),
+            channel.run(&command),
         )
         .await;
         let elapsed_ms = start.elapsed().as_millis() as u64;
 
         match result {
             Err(_) => {
-                tracing::warn!(session_id = %ctx.session_id, env_id = %env.id, timeout_secs, "list_java_processes timed out, dropping ssh connection");
+                tracing::warn!(session_id = %ctx.session_id, env_id = %env.id, timeout_secs, "list_processes timed out, dropping ssh connection");
                 {
                     let mut pool = self.core.exec_pool.lock().await;
                     pool.disconnect(&env.id).await;
@@ -56,18 +67,22 @@ impl ToolHandler for ListJavaProcessesHandler {
                 error_output("timeout_error", &format!("command timed out after {timeout_secs}s"))
             }
             Ok(Err(e)) => {
-                tracing::error!(session_id = %ctx.session_id, env_id = %env.id, error = %e, "list_java_processes exec failed");
+                tracing::error!(session_id = %ctx.session_id, env_id = %env.id, error = %e, "list_processes exec failed");
                 error_output("connection_error", &e.to_string())
             }
             Ok(Ok(output)) => {
-                // Rust 侧再过滤一次（防御远端 shell 差异）
+                // Rust 侧再过滤一次（防御远端 shell 差异）；无 keyword 时保留全部行
+                let kw_lower = keyword.map(|kw| kw.to_lowercase());
                 let lines: Vec<&str> = output
                     .stdout
                     .lines()
-                    .filter(|l| l.to_lowercase().contains("java"))
+                    .filter(|l| match &kw_lower {
+                        Some(kw) => l.to_lowercase().contains(kw),
+                        None => true,
+                    })
                     .collect();
                 let processes = lines.join("\n");
-                tracing::info!(session_id = %ctx.session_id, env_id = %env.id, found = lines.len(), elapsed_ms, "list_java_processes done");
+                tracing::info!(session_id = %ctx.session_id, env_id = %env.id, found = lines.len(), elapsed_ms, "list_processes done");
                 ToolOutput {
                     success: true,
                     data: serde_json::json!({
@@ -85,21 +100,22 @@ impl ToolHandler for ListJavaProcessesHandler {
     }
 }
 
-pub fn list_java_processes_tool_def(core: Arc<JvmExecCore>) -> ToolDef {
+pub fn list_processes_tool_def(core: Arc<JvmExecCore>) -> ToolDef {
     ToolDef {
-        name: "list_java_processes".to_string(),
-        description: "列出目标环境上所有 Java 进程（PID、用户、完整命令行）。JVM 诊断第一步：先用本工具找到目标服务的 PID，再配合 jvm_* 工具。不依赖 JDK 装备。".to_string(),
+        name: "list_processes".to_string(),
+        description: "列出目标环境上的进程（PID、用户、完整命令行），按 keyword（服务名/关键字，大小写不敏感）过滤；不传 keyword 返回全部进程。诊断第一步：用用户提到的服务名作 keyword 查 PID，再配合 jvm_* 等工具。不依赖 JDK 装备。".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
                 "environment": { "type": "string", "description": "目标环境名称（list_environments 返回的 name）" },
+                "keyword": { "type": "string", "description": "过滤关键字（服务名等，大小写不敏感；缺省返回全部进程）" },
                 "timeout_secs": { "type": "number", "description": "超时秒数，默认 30，上限 120" }
             },
             "required": ["environment"]
         }),
         risk_level: RiskLevel::ReadOnly,
         needs_channel: false,
-        handler: Arc::new(ListJavaProcessesHandler { core }),
+        handler: Arc::new(ListProcessesHandler { core }),
     }
 }
 
@@ -109,11 +125,15 @@ mod tests {
     use crate::exec::channel::{ExecChannel, ExecOutput};
     use async_trait::async_trait;
 
-    struct PsChannel { stdout: &'static str }
+    struct PsChannel {
+        stdout: &'static str,
+        calls: tokio::sync::Mutex<Vec<String>>,
+    }
 
     #[async_trait]
     impl ExecChannel for PsChannel {
-        async fn run(&self, _cmd: &str) -> Result<ExecOutput, Box<dyn std::error::Error + Send + Sync>> {
+        async fn run(&self, cmd: &str) -> Result<ExecOutput, Box<dyn std::error::Error + Send + Sync>> {
+            self.calls.lock().await.push(cmd.to_string());
             Ok(ExecOutput { stdout: self.stdout.to_string(), stderr: String::new(), exit_code: 0 })
         }
         async fn connect(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> { Ok(()) }
@@ -139,29 +159,83 @@ mod tests {
         (tmp, core)
     }
 
-    const PS_OUTPUT: &str = "  1234 root /opt/jdk/bin/java -Xmx4g -jar app.jar\n  5678 root /usr/bin/python3 script.py\n  9999 app java -XX:+UseG1GC Main\n";
+    const PS_OUTPUT: &str = "  1234 root /opt/jdk/bin/java -Xmx4g -jar oomservice.jar\n  5678 root /usr/bin/python3 script.py\n  9999 app nginx: worker process\n";
 
     #[tokio::test]
-    async fn test_returns_java_lines_only() {
-        let (tmp, core) = setup(Arc::new(PsChannel { stdout: PS_OUTPUT })).await;
-        let handler = ListJavaProcessesHandler { core };
+    async fn test_keyword_filters_and_quotes_command() {
+        let ch = Arc::new(PsChannel { stdout: PS_OUTPUT, calls: tokio::sync::Mutex::new(Vec::new()) });
+        let (tmp, core) = setup(ch.clone()).await;
+        let handler = ListProcessesHandler { core };
         let ctx = ToolContext { session_id: "s1".into(), channel: None };
-        let out = handler.execute(serde_json::json!({"environment": "prod"}), &ctx).await;
+        let out = handler
+            .execute(serde_json::json!({"environment": "prod", "keyword": "OOMService"}), &ctx)
+            .await;
         assert!(out.success);
-        assert_eq!(out.data["count"], 2);
-        let processes = out.data["processes"].as_str().unwrap();
-        assert!(processes.contains("1234"));
-        assert!(processes.contains("9999"));
-        assert!(!processes.contains("python"));
+        // Rust 侧大小写不敏感过滤
+        assert_eq!(out.data["count"], 1);
+        assert!(out.data["processes"].as_str().unwrap().contains("1234"));
+        assert!(!out.data["processes"].as_str().unwrap().contains("python"));
+        // 命令构造：keyword 单引号包裹（注入面）
+        let calls = ch.calls.lock().await;
+        assert!(calls[0].contains("grep -i 'OOMService'"), "cmd: {}", calls[0]);
+        assert!(calls[0].contains("grep -v grep"));
         drop(tmp);
     }
 
     #[tokio::test]
-    async fn test_no_java_processes_returns_empty() {
-        let (tmp, core) = setup(Arc::new(PsChannel { stdout: "  1 root /sbin/init\n" })).await;
-        let handler = ListJavaProcessesHandler { core };
+    async fn test_keyword_injection_quoted() {
+        let ch = Arc::new(PsChannel { stdout: "", calls: tokio::sync::Mutex::new(Vec::new()) });
+        let (tmp, core) = setup(ch.clone()).await;
+        let handler = ListProcessesHandler { core };
+        let ctx = ToolContext { session_id: "s1".into(), channel: None };
+        let _ = handler
+            .execute(serde_json::json!({"environment": "prod", "keyword": "x'; rm -rf /; echo '"}), &ctx)
+            .await;
+        let calls = ch.calls.lock().await;
+        // 注入内容被单引号转义，命令仍是单条 grep
+        assert!(calls[0].contains(r"grep -i 'x'\''; rm -rf /; echo '\''"), "cmd: {}", calls[0]);
+        drop(tmp);
+    }
+
+    #[tokio::test]
+    async fn test_no_keyword_returns_all_processes() {
+        let ch = Arc::new(PsChannel { stdout: PS_OUTPUT, calls: tokio::sync::Mutex::new(Vec::new()) });
+        let (tmp, core) = setup(ch.clone()).await;
+        let handler = ListProcessesHandler { core };
         let ctx = ToolContext { session_id: "s1".into(), channel: None };
         let out = handler.execute(serde_json::json!({"environment": "prod"}), &ctx).await;
+        assert!(out.success);
+        assert_eq!(out.data["count"], 3);
+        // 无 keyword：纯 ps，无 grep 管道
+        let calls = ch.calls.lock().await;
+        assert_eq!(calls[0], "ps -eo pid=,user=,args=");
+        drop(tmp);
+    }
+
+    #[tokio::test]
+    async fn test_empty_keyword_returns_all_processes() {
+        let ch = Arc::new(PsChannel { stdout: PS_OUTPUT, calls: tokio::sync::Mutex::new(Vec::new()) });
+        let (tmp, core) = setup(ch.clone()).await;
+        let handler = ListProcessesHandler { core };
+        let ctx = ToolContext { session_id: "s1".into(), channel: None };
+        let out = handler.execute(serde_json::json!({"environment": "prod", "keyword": ""}), &ctx).await;
+        assert!(out.success);
+        // 空串视为未传：返回全部进程，纯 ps 命令
+        assert_eq!(out.data["count"], 3);
+        let calls = ch.calls.lock().await;
+        assert_eq!(calls[0], "ps -eo pid=,user=,args=");
+        drop(tmp);
+    }
+
+    #[tokio::test]
+    async fn test_no_match_returns_empty() {
+        let ch = Arc::new(PsChannel { stdout: PS_OUTPUT, calls: tokio::sync::Mutex::new(Vec::new()) });
+        let (tmp, core) = setup(ch).await;
+        let handler = ListProcessesHandler { core };
+        let ctx = ToolContext { session_id: "s1".into(), channel: None };
+        let out = handler
+            .execute(serde_json::json!({"environment": "prod", "keyword": "nonexistent-svc"}), &ctx)
+            .await;
         assert!(out.success);
         assert_eq!(out.data["count"], 0);
         assert_eq!(out.data["processes"], "");
@@ -170,8 +244,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_missing_environment_param() {
-        let (tmp, core) = setup(Arc::new(PsChannel { stdout: PS_OUTPUT })).await;
-        let handler = ListJavaProcessesHandler { core };
+        let ch = Arc::new(PsChannel { stdout: PS_OUTPUT, calls: tokio::sync::Mutex::new(Vec::new()) });
+        let (tmp, core) = setup(ch).await;
+        let handler = ListProcessesHandler { core };
         let ctx = ToolContext { session_id: "s1".into(), channel: None };
         let out = handler.execute(serde_json::json!({}), &ctx).await;
         assert!(!out.success);
@@ -181,8 +256,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_unknown_environment_guides_agent() {
-        let (tmp, core) = setup(Arc::new(PsChannel { stdout: PS_OUTPUT })).await;
-        let handler = ListJavaProcessesHandler { core };
+        let ch = Arc::new(PsChannel { stdout: PS_OUTPUT, calls: tokio::sync::Mutex::new(Vec::new()) });
+        let (tmp, core) = setup(ch).await;
+        let handler = ListProcessesHandler { core };
         let ctx = ToolContext { session_id: "s1".into(), channel: None };
         let out = handler.execute(serde_json::json!({"environment": "nope"}), &ctx).await;
         assert!(!out.success);
@@ -193,11 +269,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_def_metadata() {
-        let (tmp, core) = setup(Arc::new(PsChannel { stdout: "" })).await;
-        let def = list_java_processes_tool_def(core);
-        assert_eq!(def.name, "list_java_processes");
+        let ch = Arc::new(PsChannel { stdout: "", calls: tokio::sync::Mutex::new(Vec::new()) });
+        let (tmp, core) = setup(ch).await;
+        let def = list_processes_tool_def(core);
+        assert_eq!(def.name, "list_processes");
         assert_eq!(def.risk_level, RiskLevel::ReadOnly);
         assert!(!def.needs_channel);
+        assert!(def.input_schema["properties"]["keyword"].is_object());
         drop(tmp);
     }
 }

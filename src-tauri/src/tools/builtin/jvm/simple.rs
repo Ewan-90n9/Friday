@@ -163,7 +163,7 @@ fn simple_schema(
     );
     props.insert(
         "pid".into(),
-        serde_json::json!({ "type": "string", "description": "目标 JVM 进程 PID（正整数字符串，用 list_java_processes 获取）" }),
+        serde_json::json!({ "type": "string", "description": "目标 JVM 进程 PID（正整数字符串，用 list_processes 获取）" }),
     );
     props.insert(
         "timeout_secs".into(),

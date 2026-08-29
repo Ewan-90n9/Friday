@@ -205,7 +205,7 @@ pub fn jvm_heap_dump_tool_def(
             "type": "object",
             "properties": {
                 "environment": { "type": "string", "description": "目标环境名称（list_environments 返回的 name）" },
-                "pid": { "type": "string", "description": "目标 Java 进程 PID（list_java_processes 返回）" },
+                "pid": { "type": "string", "description": "目标 Java 进程 PID（list_processes 返回）" },
                 "timeout_secs": { "type": "number", "description": "dump 生成超时秒数，默认 300，上限 600" }
             },
             "required": ["environment", "pid"]
