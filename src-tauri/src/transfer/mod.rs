@@ -2,6 +2,7 @@ pub mod state;
 pub mod worker;
 
 use crate::app::events::{AppEvent, EventBus};
+use crate::exec::channel::ExecChannel;
 use state::{Direction, Status, TransferState};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,10 +12,19 @@ use tokio_util::sync::CancellationToken;
 /// 终态记录保留上限（LRU 淘汰防泄漏）
 const MAX_FINISHED_RECORDS: usize = 100;
 
+/// 专用连接工厂注入点（测试用）：替代真实 SSH 直连
+pub type ChannelFactory = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Arc<dyn ExecChannel>, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
 pub struct TransferManager {
     db: sqlx::SqlitePool,
     bus: EventBus,
     transfers: Mutex<HashMap<String, ManagedTransfer>>,
+    /// None = 真实专用 SSH 连连（fetch_environment + build_transport）
+    channel_factory: Option<ChannelFactory>,
 }
 
 struct ManagedTransfer {
@@ -28,7 +38,27 @@ impl TransferManager {
             db,
             bus,
             transfers: Mutex::new(HashMap::new()),
+            channel_factory: None,
         }
+    }
+
+    /// 注入专用连接工厂（测试用）。必须在 Arc 包装前调用。
+    pub fn set_channel_factory(&mut self, factory: ChannelFactory) {
+        self.channel_factory = Some(factory);
+    }
+
+    /// 后台任务专用连接：优先测试注入工厂，否则真实 SSH 直连（不走 ExecChannelPool）
+    pub(crate) async fn dedicated_channel(&self, env_id: &str) -> Result<Arc<dyn ExecChannel>, String> {
+        if let Some(factory) = &self.channel_factory {
+            return factory().await;
+        }
+        let env = crate::exec::pool::fetch_environment(&self.db, env_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let transport = crate::exec::pool::build_transport(env_id, &env)
+            .map_err(|e| e.to_string())?;
+        transport.connect().await.map_err(|e| e.to_string())?;
+        Ok(Arc::new(transport))
     }
 
     /// 是否已有同 session + direction + remote_path 的活跃传输

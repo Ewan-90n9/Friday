@@ -1,24 +1,12 @@
 use super::state::{Status, TransferState};
 use super::TransferManager;
 use crate::exec::channel::ExecChannel;
-use crate::exec::pool::{build_transport, fetch_environment};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 const MAX_ATTEMPTS: u32 = 5;
 const MAX_TOTAL_SECS: u64 = 7200; // 2 小时重试预算
 const BACKOFF_SECS: [u64; 5] = [5, 15, 45, 120, 360];
-
-/// 建一条专用连接（不走 ExecChannelPool）
-async fn dedicated_channel(
-    db: &sqlx::SqlitePool,
-    env_id: &str,
-) -> Result<Arc<dyn ExecChannel>, String> {
-    let env = fetch_environment(db, env_id).await.map_err(|e| e.to_string())?;
-    let transport = build_transport(env_id, &env).map_err(|e| e.to_string())?;
-    transport.connect().await.map_err(|e| e.to_string())?;
-    Ok(Arc::new(transport))
-}
 
 enum StatRemote {
     Size(u64),
@@ -91,7 +79,7 @@ pub async fn run_download(mgr: Arc<TransferManager>, state: TransferState, cance
             }
         }
 
-        let channel = match dedicated_channel(mgr.db(), &env_id).await {
+        let channel = match mgr.dedicated_channel(&env_id).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(transfer_id = %id, env_id = %env_id, attempt, error = %e, "transfer: connect failed");
@@ -218,7 +206,7 @@ async fn channel_cmd_after_disconnect(
     env_id: &str,
     remote_path: &str,
 ) -> Result<(), String> {
-    let channel = dedicated_channel(mgr.db(), env_id).await?;
+    let channel = mgr.dedicated_channel(env_id).await?;
     let cmd = format!("rm -f {}", crate::exec::ssh::shell_quote_single(remote_path));
     match channel.run(&cmd).await {
         Err(e) => {
@@ -285,7 +273,7 @@ pub async fn run_upload(mgr: Arc<TransferManager>, state: TransferState, cancel:
             }
         }
 
-        let channel = match dedicated_channel(mgr.db(), &env_id).await {
+        let channel = match mgr.dedicated_channel(&env_id).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(transfer_id = %id, env_id = %env_id, attempt, error = %e, "transfer: connect failed");
@@ -328,7 +316,7 @@ pub async fn run_upload(mgr: Arc<TransferManager>, state: TransferState, cancel:
             }
             Ok(()) => {
                 // 远端大小校验：再开短连接 stat
-                let check = match dedicated_channel(mgr.db(), &env_id).await {
+                let check = match mgr.dedicated_channel(&env_id).await {
                     Ok(c) => {
                         let size = stat_remote(&c, &remote_path).await;
                         c.disconnect().await;
@@ -367,6 +355,9 @@ pub async fn run_upload(mgr: Arc<TransferManager>, state: TransferState, cancel:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::channel::ExecOutput;
+    use crate::transfer::state::Direction;
+    use async_trait::async_trait;
 
     #[test]
     fn test_backoff_sequence() {
@@ -441,5 +432,159 @@ mod tests {
         }
         let ch: Arc<dyn ExecChannel> = Arc::new(BrokenChan);
         assert!(matches!(stat_remote(&ch, "/tmp/x").await, StatRemote::Unavailable));
+    }
+
+    // ------------------------------------------------------------------
+    // cancel 契约回归（issue #5 场景）：download/upload 挂起时持有 conn 锁，
+    // cancel 后 worker 必须及时 disconnect 并到达 Cancelled 终态——
+    // 依赖 tokio::select! 的作用域设计（败选 future 在 handler 前被 drop）。
+    // 若未来重构破坏该契约（如把 disconnect 挪回 select 分支体内且 futures
+    // 生命周期外提），本测试在 5s 内超时失败。
+    // ------------------------------------------------------------------
+
+    /// 模拟真实 SshTransport 的锁行为：
+    /// download/upload 全程持有 conn 锁；disconnect 需要同一把锁。
+    struct ConnHoldingChannel {
+        conn: Arc<tokio::sync::Mutex<()>>,
+    }
+
+    #[async_trait]
+    impl ExecChannel for ConnHoldingChannel {
+        async fn run(&self, _cmd: &str) -> Result<ExecOutput, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(ExecOutput { stdout: "100\n".into(), stderr: String::new(), exit_code: 0 })
+        }
+        async fn connect(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> { Ok(()) }
+        async fn disconnect(&self) {
+            // 模拟 SshTransport::disconnect：需要拿 conn 锁
+            let _ = self.conn.lock().await;
+        }
+        async fn is_alive(&self) -> bool { true }
+        async fn download(
+            &self,
+            _remote_path: &str,
+            _local: &std::path::Path,
+            _offset: u64,
+            _progress: &(dyn Fn(u64, u64) + Sync),
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            let _guard = self.conn.lock().await; // 全程持锁（真实实现同此）
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await; // 永不完成
+            Ok(())
+        }
+        async fn upload(&self, _local: &std::path::Path, _remote_path: &str)
+            -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            let _guard = self.conn.lock().await;
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            Ok(())
+        }
+    }
+
+    async fn manager_with_factory(
+        ch: Arc<ConnHoldingChannel>,
+    ) -> (tempfile::TempDir, Arc<TransferManager>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::infra::db::init(tmp.path().join("t.db")).await.unwrap();
+        let mut mgr = TransferManager::new(db, crate::app::events::EventBus::disabled());
+        let ch = ch as Arc<dyn ExecChannel>;
+        mgr.set_channel_factory(Arc::new(move || {
+            let ch = ch.clone();
+            Box::pin(async move { Ok(ch.clone()) })
+        }));
+        (tmp, Arc::new(mgr))
+    }
+
+    /// 等到传输进入指定状态（超时 panic，给出清晰诊断）
+    async fn wait_for_status(mgr: &Arc<TransferManager>, id: &str, want: Status) {
+        let deadline = std::time::Duration::from_secs(5);
+        tokio::time::timeout(deadline, async {
+            loop {
+                if let Some(s) = mgr.get(id).await {
+                    if s.status == want {
+                        return;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("transfer {id} 未在 5s 内进入 {want:?}"));
+    }
+
+    /// 等到传输进入终态；超时返回 None（死锁信号）
+    async fn wait_for_terminal(
+        mgr: &Arc<TransferManager>,
+        id: &str,
+    ) -> Option<Status> {
+        let deadline = std::time::Duration::from_secs(5);
+        tokio::time::timeout(deadline, async {
+            loop {
+                if let Some(s) = mgr.get(id).await {
+                    if s.status.is_terminal() {
+                        return s.status;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .ok()
+    }
+
+    #[tokio::test]
+    async fn test_download_cancel_reaches_terminal_despite_held_conn_lock() {
+        let ch = Arc::new(ConnHoldingChannel { conn: Arc::new(tokio::sync::Mutex::new(())) });
+        let (tmp, mgr) = manager_with_factory(ch).await;
+        let local = tmp.path().join("a.hprof");
+        let state = TransferState::new(
+            Direction::Download,
+            "s1",
+            "env-x",
+            "/tmp/a.hprof",
+            local,
+            false,
+        );
+        let id = mgr.start(state).await;
+
+        // 等 worker 进入传输（download 已持锁挂起）
+        wait_for_status(&mgr, &id, Status::Transferring).await;
+
+        assert!(mgr.cancel(&id).await, "cancel 应返回 true");
+
+        let status = wait_for_terminal(&mgr, &id).await;
+        assert!(
+            status.is_some(),
+            "cancel 后 5s 内未到达终态：worker 疑似在 disconnect 上死锁（issue #5）"
+        );
+        assert_eq!(status.unwrap(), Status::Cancelled);
+        drop(tmp);
+    }
+
+    #[tokio::test]
+    async fn test_upload_cancel_reaches_terminal_despite_held_conn_lock() {
+        let ch = Arc::new(ConnHoldingChannel { conn: Arc::new(tokio::sync::Mutex::new(())) });
+        let (tmp, mgr) = manager_with_factory(ch).await;
+        let local = tmp.path().join("up.jar");
+        std::fs::write(&local, b"jar").unwrap();
+        let state = TransferState::new(
+            Direction::Upload,
+            "s1",
+            "env-x",
+            "/tmp/up.jar",
+            local,
+            false,
+        );
+        let id = mgr.start(state).await;
+
+        // upload 无 ticker，等待 Connecting 即可（已进入本轮连接）
+        wait_for_status(&mgr, &id, Status::Connecting).await;
+
+        assert!(mgr.cancel(&id).await, "cancel 应返回 true");
+
+        let status = wait_for_terminal(&mgr, &id).await;
+        assert!(
+            status.is_some(),
+            "cancel 后 5s 内未到达终态：worker 疑似在 disconnect 上死锁（issue #5）"
+        );
+        assert_eq!(status.unwrap(), Status::Cancelled);
+        drop(tmp);
     }
 }

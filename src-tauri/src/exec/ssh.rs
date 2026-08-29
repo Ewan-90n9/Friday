@@ -390,7 +390,11 @@ impl ExecChannel for SshTransport {
             return Err("ssh not connected (call connect first)".into());
         };
 
-        let channel = c.handle.channel_open_session().await?;
+        let mut channel = c.handle.channel_open_session().await?;
+        // 必须显式请求 sftp 子系统，服务端才会启动 sftp-server；否则后续所有
+        // SFTP 请求（含 INIT 握手）永远无响应，直到 request_timeout 超时
+        // （issue #5：下载 0 字节挂死的根因）。对齐 russh-sftp 官方示例用法。
+        channel.request_subsystem(true, "sftp").await?;
         // 默认 request_timeout_secs=10：慢速链路传大文件时单个 write 请求超时（issue #4
         // 第三轮反馈的 "Timeout"）。放宽到 600s 与下载阶段超时对齐，并发写提升到 16 提高吞吐
         let sftp_cfg = russh_sftp::client::Config {
@@ -471,7 +475,9 @@ impl ExecChannel for SshTransport {
             }
         }
 
-        let channel = c.handle.channel_open_session().await?;
+        let mut channel = c.handle.channel_open_session().await?;
+        // 对齐 upload：必须显式请求 sftp 子系统（issue #5 根因），否则 SFTP 请求无响应
+        channel.request_subsystem(true, "sftp").await?;
         // 对齐 upload：慢速链路传 GB 级 dump 时 10s 默认超时不够
         let sftp_cfg = russh_sftp::client::Config {
             request_timeout_secs: 600,
