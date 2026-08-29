@@ -80,6 +80,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // Create shared state for MCP server
             let exec_pool = Arc::new(Mutex::new(crate::exec::pool::ExecChannelPool::new()));
 
+            // 文件传输：TransferManager（后台异步传输引擎）+ 4 个工具
+            let transfer_manager = Arc::new(crate::transfer::TransferManager::new(
+                pool.clone(),
+                EventBus::new(handle.clone()),
+            ));
+
             // Build tool registry
             // JVM 语义工具共享内核与 JDK 路径缓存（ensure_tool 与 jvm_* 必须共享同一实例）
             let jdk_cache = Arc::new(crate::tools::builtin::jvm::jdk_cache::JdkCache::new());
@@ -107,6 +113,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 EventBus::new(handle.clone()),
                 jdk_cache,
             ));
+            for def in crate::tools::builtin::file_transfer::file_transfer_tool_defs(
+                transfer_manager.clone(),
+                paths.artifacts_dir(),
+            ) {
+                tool_registry.register(def);
+            }
             crate::tools::builtin::jvm::register_all(
                 &mut tool_registry,
                 jvm_core,

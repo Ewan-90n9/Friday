@@ -1,4 +1,5 @@
 pub mod ensure_tool;
+pub mod file_transfer;
 pub mod jvm;
 pub mod list_environments;
 pub mod run_command;
