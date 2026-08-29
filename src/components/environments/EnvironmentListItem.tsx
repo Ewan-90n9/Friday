@@ -38,7 +38,7 @@ export function EnvironmentListItem({ env, onEdit, onDelete }: EnvironmentListIt
         >
           {env.user}@{env.host}:{env.port}
         </span>
-        <span className="shrink-0 hidden group-hover:flex items-center gap-1">
+        <span className="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
           <button
             onClick={() => onEdit(env)}
             aria-label={`编辑 ${env.name}`}

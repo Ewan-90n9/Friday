@@ -87,7 +87,7 @@ export function SessionSidebar() {
               : s.created_at.slice(0, 10)}
           </span>
 
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
             {isArchiveView ? (
               <button
                 type="button"

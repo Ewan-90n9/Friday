@@ -78,13 +78,18 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
       setFormError("私钥认证需要填写私钥路径");
       return;
     }
+    const port = parsePort(form.port);
+    if (port === null) {
+      setFormError("端口必须是 1-65535 的数字");
+      return;
+    }
     setSaving(true);
     setFormError(null);
     try {
       const params = {
         name: form.name.trim(),
         host: form.host.trim(),
-        port: parseInt(form.port, 10) || 22,
+        port,
         user: form.user.trim(),
         authType: form.authType,
         privateKeyPath: form.authType === "private_key" ? form.privateKeyPath.trim() : null,
@@ -102,6 +107,11 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
       setFormError("主机 / 用户名不能为空");
       return;
     }
+    const port = parsePort(form.port);
+    if (port === null) {
+      setFormError("端口必须是 1-65535 的数字");
+      return;
+    }
     setTesting(true);
     setTestResult(null);
     setFormError(null);
@@ -110,7 +120,7 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
         await test({
           environmentId: editing?.id ?? null,
           host: form.host.trim(),
-          port: parseInt(form.port, 10) || 22,
+          port,
           user: form.user.trim(),
           authType: form.authType,
           privateKeyPath: form.authType === "private_key" ? form.privateKeyPath.trim() : null,
@@ -141,8 +151,9 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3 min-h-0">
-          <Field label="名称">
+          <Field label="名称" htmlFor="env-name">
             <input
+              id="env-name"
               type="text"
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -151,8 +162,9 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
             />
           </Field>
           <div className="flex gap-3">
-            <Field label="主机" className="flex-1">
+            <Field label="主机" htmlFor="env-host" className="flex-1">
               <input
+                id="env-host"
                 type="text"
                 value={form.host}
                 onChange={(e) => setForm({ ...form, host: e.target.value })}
@@ -160,17 +172,20 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
                 className={inputCls}
               />
             </Field>
-            <Field label="端口" className="w-24">
+            <Field label="端口" htmlFor="env-port" className="w-24">
               <input
+                id="env-port"
                 type="text"
+                inputMode="numeric"
                 value={form.port}
                 onChange={(e) => setForm({ ...form, port: e.target.value })}
                 className={inputCls}
               />
             </Field>
           </div>
-          <Field label="用户名">
+          <Field label="用户名" htmlFor="env-user">
             <input
+              id="env-user"
               type="text"
               value={form.user}
               onChange={(e) => setForm({ ...form, user: e.target.value })}
@@ -178,8 +193,9 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
               className={inputCls}
             />
           </Field>
-          <Field label="认证方式">
+          <Field label="认证方式" htmlFor="env-auth-type">
             <select
+              id="env-auth-type"
               value={form.authType}
               onChange={(e) =>
                 setForm({ ...form, authType: e.target.value as "private_key" | "password" })
@@ -191,8 +207,9 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
             </select>
           </Field>
           {form.authType === "private_key" ? (
-            <Field label="私钥路径">
+            <Field label="私钥路径" htmlFor="env-private-key">
               <input
+                id="env-private-key"
                 type="text"
                 value={form.privateKeyPath}
                 onChange={(e) => setForm({ ...form, privateKeyPath: e.target.value })}
@@ -205,8 +222,12 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
               </p>
             </Field>
           ) : null}
-          <Field label={form.authType === "private_key" ? "密钥口令（可选）" : "密码"}>
+          <Field
+            label={form.authType === "private_key" ? "密钥口令（可选）" : "密码"}
+            htmlFor="env-password"
+          >
             <input
+              id="env-password"
               type="password"
               value={form.password}
               onChange={(e) => setForm({ ...form, password: e.target.value })}
@@ -238,7 +259,9 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
           )}
 
           {(formError ?? storeError) && (
-            <p className="text-xs text-destructive break-words">{formError ?? storeError}</p>
+            <p role="alert" className="text-xs text-destructive break-words">
+              {formError ?? storeError}
+            </p>
           )}
         </div>
 
@@ -279,18 +302,29 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
 const inputCls =
   "w-full bg-muted border border-border rounded-md text-sm text-foreground px-3 py-1.5 placeholder:text-muted-foreground/50 outline-none";
 
+/** 端口解析：1-65535 的整数，非法返回 null（不再静默回退 22） */
+function parsePort(raw: string): number | null {
+  const n = parseInt(raw, 10);
+  if (!Number.isInteger(n) || n < 1 || n > 65535 || String(n) !== raw.trim()) return null;
+  return n;
+}
+
 function Field({
   label,
+  htmlFor,
   className = "",
   children,
 }: {
   label: string;
+  htmlFor: string;
   className?: string;
   children: React.ReactNode;
 }) {
   return (
     <div className={className}>
-      <label className="block text-xs text-muted-foreground mb-1">{label}</label>
+      <label htmlFor={htmlFor} className="block text-xs text-muted-foreground mb-1">
+        {label}
+      </label>
       {children}
     </div>
   );

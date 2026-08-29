@@ -30,7 +30,7 @@
 | `--secondary` | `#1A1A1A` | 次要操作面 |
 | `--secondary-foreground` | `#E8E8E8` | 次要操作面文本 |
 | `--muted` | `#121212` | 静默背景（输入框、禁用区） |
-| `--muted-foreground` | `#6B6B6B` | 次要文本 |
+| `--muted-foreground` | `#909090` | 次要文本（纯黑上 6.6:1，满足 4.5:1） |
 | `--border` | `rgba(255,255,255,0.08)` | 边框/分隔线 |
 | `--border-strong` | `rgba(255,255,255,0.14)` | 强边框（分隔线） |
 | `--accent` | `#3B82F6` | 强调色：蓝（Blue-500） |

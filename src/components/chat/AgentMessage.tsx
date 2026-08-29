@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CaretRight, CaretDown } from "@phosphor-icons/react";
+import { CaretRight, CaretDown, CheckCircle, XCircle, Stop } from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage } from "@/lib/types";
@@ -94,12 +94,24 @@ export function AgentMessage({ message }: AgentMessageProps) {
 
       {!isStreaming && (
         <div
-          className="text-xs text-muted-foreground"
+          className="text-xs flex items-center gap-1"
           style={{ fontFamily: "var(--font-mono)" }}
         >
-          {message.status === "done" && "✓ 完成"}
-          {message.status === "stopped" && "■ 已停止"}
-          {message.status === "error" && "✕ 出错"}
+          {message.status === "done" && (
+            <span className="text-success flex items-center gap-1">
+              <CheckCircle size={12} weight="fill" aria-hidden="true" /> 完成
+            </span>
+          )}
+          {message.status === "stopped" && (
+            <span className="text-muted-foreground flex items-center gap-1">
+              <Stop size={10} weight="fill" aria-hidden="true" /> 已停止
+            </span>
+          )}
+          {message.status === "error" && (
+            <span className="text-destructive flex items-center gap-1">
+              <XCircle size={12} weight="fill" aria-hidden="true" /> 出错
+            </span>
+          )}
         </div>
       )}
     </div>
