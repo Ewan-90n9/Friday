@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { sendMessage as ipcSendMessage, stopAgent, listSessions, onAppEvent, getSessionMessages, archiveSession as ipcArchiveSession, unarchiveSession as ipcUnarchiveSession, deleteSession as ipcDeleteSession, confirmTool } from "@/lib/ipc";
-import type { SessionRow, ChatMessage, ChatPart, AppEvent, MessageRow } from "@/lib/types";
+import type { SessionRow, ChatMessage, ChatPart, AppEvent, MessageRow, TransferInfo } from "@/lib/types";
 
 interface SessionStore {
   sessions: SessionRow[];
@@ -469,6 +469,60 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       }
 
       const updatedMessages = [...messages];
+      updatedMessages[lastIdx] = { ...lastMsg, parts: updatedParts };
+      set({
+        messagesBySession: {
+          ...state.messagesBySession,
+          [session_id]: updatedMessages,
+        },
+      });
+      return;
+    }
+
+    if (event.type === "transfer_progress" || event.type === "transfer_finished") {
+      const messages = state.messagesBySession[session_id] ?? [];
+      const speed = event.type === "transfer_progress" ? event.speed_bps : 0;
+      const attempt = event.type === "transfer_progress" ? event.attempt : 0;
+      const info: TransferInfo = {
+        transfer_id: event.transfer_id,
+        direction: event.direction,
+        status: event.status,
+        transferred_bytes: event.transferred_bytes,
+        total_bytes: event.total_bytes,
+        speed_bps: speed,
+        attempt,
+        error: "error" in event ? event.error : null,
+        file_name: "remote_path" in event ? event.remote_path.split("/").pop() ?? event.remote_path : "",
+      };
+
+      let messages2 = messages;
+      // 无 agent 消息时兜底新建一条承载（heap_dump 场景 Agent 可能已结束本轮回复）
+      if (messages2.length === 0 || messages2[messages2.length - 1].role !== "agent") {
+        messages2 = [
+          ...messages2,
+          {
+            id: `agent-${agentMessageCounter++}`,
+            role: "agent" as const,
+            content: "",
+            parts: [],
+            status: "done" as const,
+          },
+        ];
+      }
+
+      const lastIdx = messages2.length - 1;
+      const lastMsg = messages2[lastIdx];
+      const updatedParts = [...lastMsg.parts];
+      const existingIdx = updatedParts.findIndex(
+        (p) => p.type === "transfer" && p.transfer?.transfer_id === event.transfer_id,
+      );
+      if (existingIdx >= 0) {
+        updatedParts[existingIdx] = { ...updatedParts[existingIdx], transfer: info };
+      } else {
+        updatedParts.push({ type: "transfer", transfer: info });
+      }
+
+      const updatedMessages = [...messages2];
       updatedMessages[lastIdx] = { ...lastMsg, parts: updatedParts };
       set({
         messagesBySession: {
