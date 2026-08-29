@@ -176,6 +176,27 @@ fn should_reconnect(exit_code: i32, exec_err: Option<&str>) -> bool {
     exec_err.is_some() || exit_code == -1
 }
 
+/// 续传前置校验（纯函数，便于单测）：本地文件已有字节数必须等于 offset，
+/// 否则 append 续传会把两段不连续的数据拼成损坏的文件。
+fn verify_resume_offset(actual_len: u64, offset: u64) -> Result<(), String> {
+    if actual_len == offset {
+        Ok(())
+    } else {
+        Err(format!(
+            "resume offset mismatch: local file has {actual_len} bytes but offset is {offset}"
+        ))
+    }
+}
+
+/// 本地文件当前长度；文件不存在视作 0（续传场景下同样属于 offset mismatch）
+async fn local_len_or_zero(path: &std::path::Path) -> std::io::Result<u64> {
+    match tokio::fs::metadata(path).await {
+        Ok(m) => Ok(m.len()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(e),
+    }
+}
+
 /// 在已有 handle 上开 channel 执行命令，收集 stdout/stderr/exit_code。env_id/label 仅用于日志上下文（label 为用户原始命令）。
 async fn exec_on_handle(
     handle: &russh::client::Handle<SshHandler>,
@@ -412,6 +433,30 @@ impl ExecChannel for SshTransport {
             return Err("ssh not connected (call connect first)".into());
         };
 
+        tracing::info!(
+            env_id = %self.env_id,
+            remote_path,
+            local = %local.display(),
+            offset,
+            "sftp download starting"
+        );
+
+        // 续传前置校验：本地文件长度必须等于 offset；文件不存在视作 0 字节。
+        // 在任何 SFTP 操作之前失败返回，避免白开 channel 后才拼出损坏文件。
+        if offset > 0 {
+            let actual_len = local_len_or_zero(local).await?;
+            if let Err(msg) = verify_resume_offset(actual_len, offset) {
+                tracing::warn!(
+                    env_id = %self.env_id,
+                    local = %local.display(),
+                    offset,
+                    actual_len,
+                    "{}", msg
+                );
+                return Err(msg.into());
+            }
+        }
+
         let channel = c.handle.channel_open_session().await?;
         // 对齐 upload：慢速链路传 GB 级 dump 时 10s 默认超时不够
         let sftp_cfg = russh_sftp::client::Config {
@@ -438,7 +483,7 @@ impl ExecChannel for SshTransport {
             remote_file.seek(std::io::SeekFrom::Start(offset)).await?;
         }
 
-        let mut buf = vec![0u8; 32 * 1024];
+        let mut buf = vec![0u8; 256 * 1024];
         let mut transferred: u64 = offset;
         let mut last_report = std::time::Instant::now();
         let mut last_bytes = transferred;
@@ -614,5 +659,33 @@ mod tests {
     #[test]
     fn test_no_reconnect_on_exit_255() {
         assert!(!should_reconnect(255, None));
+    }
+
+    #[test]
+    fn test_verify_resume_offset_match_is_ok() {
+        assert!(verify_resume_offset(0, 0).is_ok());
+        assert!(verify_resume_offset(4096, 4096).is_ok());
+    }
+
+    #[test]
+    fn test_verify_resume_offset_mismatch_message() {
+        let err = verify_resume_offset(100, 200).unwrap_err();
+        assert!(err.contains("resume offset mismatch"), "err: {err}");
+        assert!(err.contains("local file has 100 bytes but offset is 200"), "err: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_local_len_or_zero_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("partial.bin");
+        std::fs::write(&p, vec![0u8; 1234]).unwrap();
+        assert_eq!(local_len_or_zero(&p).await.unwrap(), 1234);
+    }
+
+    #[tokio::test]
+    async fn test_local_len_or_zero_missing_file_is_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("no-such-file.bin");
+        assert_eq!(local_len_or_zero(&p).await.unwrap(), 0);
     }
 }
