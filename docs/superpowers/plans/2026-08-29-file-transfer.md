@@ -2125,20 +2125,22 @@ export interface ChatPart {
 
 - [ ] **Step 2: sessionStore.ts 处理两个事件**
 
-`handleEvent` 里（`provision_progress` 分支后）加：
+`handleEvent` 里（`provision_progress` 分支后）加。注意 `transfer_finished` 事件没有 `speed_bps`/`attempt` 字段，联合类型上不能直接 `event.speed_bps ?? 0`——先做条件取值：
 
 ```typescript
     if (event.type === "transfer_progress" || event.type === "transfer_finished") {
       const messages = state.messagesBySession[session_id] ?? [];
+      const speed = event.type === "transfer_progress" ? event.speed_bps : 0;
+      const attempt = event.type === "transfer_progress" ? event.attempt : 0;
       const info: TransferInfo = {
         transfer_id: event.transfer_id,
         direction: event.direction,
         status: event.status,
         transferred_bytes: event.transferred_bytes,
         total_bytes: event.total_bytes,
-        speed_bps: event.speed_bps ?? 0,
-        attempt: event.attempt ?? 0,
-        error: event.error ?? null,
+        speed_bps: speed,
+        attempt,
+        error: "error" in event ? event.error : null,
         file_name: event.remote_path.split("/").pop() ?? event.remote_path,
       };
 
@@ -2179,26 +2181,6 @@ export interface ChatPart {
       });
       return;
     }
-```
-
-注意：`transfer_finished` 事件没有 `speed_bps`/`attempt` 字段——`event.speed_bps ?? 0` 在 TS 联合类型上会报错（类型不同）。处理：finished 分支单独构造 info：
-
-```typescript
-    if (event.type === "transfer_progress" || event.type === "transfer_finished") {
-      const speed = event.type === "transfer_progress" ? event.speed_bps : 0;
-      const attempt = event.type === "transfer_progress" ? event.attempt : 0;
-      const info: TransferInfo = {
-        transfer_id: event.transfer_id,
-        direction: event.direction,
-        status: event.status,
-        transferred_bytes: event.transferred_bytes,
-        total_bytes: event.total_bytes,
-        speed_bps: speed,
-        attempt,
-        error: "error" in event ? event.error : null,
-        file_name: event.remote_path.split("/").pop() ?? event.remote_path,
-      };
-      // ... 其余同上
 ```
 
 sessionStore.ts 顶部 import 补 `TransferInfo`（从 `@/lib/types`）。
