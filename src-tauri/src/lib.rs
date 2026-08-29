@@ -1,4 +1,5 @@
 mod agent;
+mod analyzer;
 mod app;
 mod exec;
 mod infra;
