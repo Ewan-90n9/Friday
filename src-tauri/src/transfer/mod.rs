@@ -167,6 +167,7 @@ impl TransferManager {
                 total_bytes: event.total_bytes,
                 speed_bps: event.speed_bps,
                 attempt: event.attempt,
+                remote_path: event.remote_path.clone(),
             },
         );
         if event.status == Status::Retrying {

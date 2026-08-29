@@ -492,7 +492,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         speed_bps: speed,
         attempt,
         error: "error" in event ? event.error : null,
-        file_name: "remote_path" in event ? event.remote_path.split("/").pop() ?? event.remote_path : "",
+        file_name: event.remote_path.split("/").pop() ?? event.remote_path,
       };
 
       let messages2 = messages;

@@ -22,7 +22,7 @@ export type AppEvent =
   | { type: "diagnosis_done"; session_id: string; conclusion: string }
   | { type: "session_closed"; session_id: string }
   | { type: "provision_progress"; session_id: string; tool: string; stage: string; detail: string }
-  | { type: "transfer_progress"; session_id: string; transfer_id: string; direction: "download" | "upload"; status: "pending" | "connecting" | "transferring" | "retrying" | "completed" | "failed" | "cancelled"; transferred_bytes: number; total_bytes: number; speed_bps: number; attempt: number }
+  | { type: "transfer_progress"; session_id: string; transfer_id: string; direction: "download" | "upload"; status: "pending" | "connecting" | "transferring" | "retrying" | "completed" | "failed" | "cancelled"; transferred_bytes: number; total_bytes: number; speed_bps: number; attempt: number; remote_path: string }
   | { type: "transfer_finished"; session_id: string; transfer_id: string; direction: "download" | "upload"; status: "completed" | "failed" | "cancelled"; transferred_bytes: number; total_bytes: number; error: string | null; local_path: string | null; remote_path: string }
   | { type: "session_deleted"; session_id: string };
 

@@ -60,6 +60,7 @@ pub enum AppEvent {
         total_bytes: u64,
         speed_bps: u64,
         attempt: u32,
+        remote_path: String,
     },
     TransferFinished {
         session_id: String,
@@ -203,11 +204,13 @@ mod tests {
             total_bytes: 200,
             speed_bps: 10,
             attempt: 1,
+            remote_path: "/tmp/x.hprof".to_string(),
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("transfer_progress"));
         assert!(json.contains("transferring"));
         assert!(json.contains("download"));
+        assert!(json.contains("/tmp/x.hprof"));
     }
 
     #[test]
