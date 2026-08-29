@@ -4,6 +4,7 @@ pub mod worker;
 use crate::app::events::{AppEvent, EventBus};
 use state::{Direction, Status, TransferState};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -67,6 +68,50 @@ impl TransferManager {
         if let Some(t) = transfers.get_mut(transfer_id) {
             t.cancel = Some(cancel);
         }
+    }
+
+    /// 启动后台传输任务（spawn worker）。若已有同 session+direction+remote_path
+    /// 的活跃传输则返回已有任务的 id（原子去重）。
+    pub async fn start(self: &Arc<Self>, state: TransferState) -> String {
+        let cancel = CancellationToken::new();
+        let id = {
+            let mut transfers = self.transfers.lock().await;
+            // 原子去重：同一 session + direction + remote_path 的活跃任务直接复用
+            let existing = transfers
+                .values()
+                .find(|t| {
+                    !t.state.status.is_terminal()
+                        && t.state.session_id == state.session_id
+                        && t.state.direction == state.direction
+                        && t.state.remote_path == state.remote_path
+                })
+                .map(|t| t.state.id.clone());
+            match existing {
+                Some(id) => return id,
+                None => {
+                    let id = state.id.clone();
+                    transfers.insert(
+                        id.clone(),
+                        ManagedTransfer { state: state.clone(), cancel: Some(cancel.clone()) },
+                    );
+                    id
+                }
+            }
+        };
+        let mgr = self.clone();
+        match state.direction {
+            Direction::Download => {
+                tokio::spawn(async move {
+                    worker::run_download(mgr, state, cancel).await;
+                });
+            }
+            Direction::Upload => {
+                tokio::spawn(async move {
+                    worker::run_upload(mgr, state, cancel).await;
+                });
+            }
+        }
+        id
     }
 
     pub async fn get(&self, transfer_id: &str) -> Option<TransferState> {
@@ -344,6 +389,23 @@ mod tests {
         let list = mgr.list_for_session("s1").await;
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].remote_path, "/tmp/b.hprof");
+    }
+
+    #[tokio::test]
+    async fn test_start_dedups_active_transfer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::infra::db::init(tmp.path().join("t.db")).await.unwrap();
+        let mgr = Arc::new(TransferManager::new(db, EventBus::disabled()));
+        let st1 = make_state(Direction::Download, "/tmp/a.hprof", "s1");
+        let id1 = mgr.start(st1).await;
+        let st2 = make_state(Direction::Download, "/tmp/a.hprof", "s1");
+        let id2 = mgr.start(st2).await;
+        // 同 session+direction+path：返回已有 id
+        assert_eq!(id1, id2);
+        // 不同 path：新任务
+        let st3 = make_state(Direction::Download, "/tmp/b.hprof", "s1");
+        let id3 = mgr.start(st3).await;
+        assert_ne!(id1, id3);
     }
 
     #[tokio::test]
