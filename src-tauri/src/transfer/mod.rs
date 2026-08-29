@@ -98,6 +98,9 @@ impl TransferManager {
         let event = {
             let mut transfers = self.transfers.lock().await;
             let Some(t) = transfers.get_mut(transfer_id) else { return };
+            if status.is_terminal() {
+                return; // 终态只能经 finish 流转
+            }
             if t.state.status.is_terminal() {
                 return; // 已终态，迟到进度丢弃
             }
@@ -168,10 +171,11 @@ impl TransferManager {
                 remote_path: event.remote_path.clone(),
             },
         );
-        self.evict_finished_locked().await;
+        tracing::info!(transfer_id = %event.id, status = ?event.status, error = ?event.error, "transfer finished");
+        self.evict_finished().await;
     }
 
-    /// 请求取消。返回 false = 不存在或已终态。
+    /// 请求取消。返回 false = 不存在、已终态或尚未 attach worker。
     pub async fn cancel(&self, transfer_id: &str) -> bool {
         let token = {
             let transfers = self.transfers.lock().await;
@@ -192,7 +196,7 @@ impl TransferManager {
     }
 
     /// 终态记录超上限时按 created_at 淘汰最旧的（仅终态可淘汰）
-    async fn evict_finished_locked(&self) {
+    async fn evict_finished(&self) {
         let mut transfers = self.transfers.lock().await;
         let finished: Vec<(String, chrono::DateTime<chrono::Utc>)> = transfers
             .iter()
@@ -260,7 +264,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_finish_sets_terminal_and_emits() {
+    async fn test_finish_sets_terminal_and_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let db = crate::infra::db::init(tmp.path().join("t.db")).await.unwrap();
         let mgr = TransferManager::new(db, EventBus::disabled());
@@ -274,6 +278,20 @@ mod tests {
         // 重复 finish 幂等（第二次不覆盖）
         mgr.finish(&id, Status::Failed, Some("x".into()), 50, 100).await;
         assert_eq!(mgr.get(&id).await.unwrap().status, Status::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_update_progress_rejects_terminal_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::infra::db::init(tmp.path().join("t.db")).await.unwrap();
+        let mgr = TransferManager::new(db, EventBus::disabled());
+        let id = mgr
+            .register(make_state(Direction::Download, "/tmp/a.hprof", "s1"))
+            .await;
+        mgr.update_progress(&id, Status::Completed, 1, 1, 0, 1).await;
+        let st = mgr.get(&id).await.unwrap();
+        assert_eq!(st.status, Status::Pending);
+        assert!(st.completed_at.is_none());
     }
 
     #[tokio::test]
