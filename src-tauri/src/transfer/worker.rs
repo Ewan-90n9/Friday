@@ -20,13 +20,28 @@ async fn dedicated_channel(
     Ok(Arc::new(transport))
 }
 
-/// stat 远端文件大小；None = 文件不存在或 stat 失败
-async fn stat_remote(channel: &Arc<dyn ExecChannel>, remote_path: &str) -> Option<u64> {
+enum StatRemote {
+    Size(u64),
+    Missing,      // exit_code != 0 → 远端文件不存在（终态）
+    Unavailable,  // run() 出错 → 连接问题（可重试）
+}
+
+/// stat 远端文件大小。Missing = 文件不存在（终态）；Unavailable = 通道错误（可重试）。
+async fn stat_remote(channel: &Arc<dyn ExecChannel>, remote_path: &str) -> StatRemote {
     let cmd = format!("stat -c %s {}", crate::exec::ssh::shell_quote_single(remote_path));
     match channel.run(&cmd).await {
-        Ok(o) if o.exit_code == 0 => o.stdout.trim().parse().ok(),
-        _ => None,
+        Err(_) => StatRemote::Unavailable,
+        Ok(o) if o.exit_code == 0 => match o.stdout.trim().parse::<u64>() {
+            Ok(n) => StatRemote::Size(n),
+            Err(_) => StatRemote::Missing,
+        },
+        Ok(_) => StatRemote::Missing,
     }
+}
+
+/// 断点续传偏移：本地 .part 已有字节数，钳制到远端总大小内
+fn resume_offset(part_len: Option<u64>, total: u64) -> u64 {
+    part_len.unwrap_or(0).min(total)
 }
 
 /// 下载 worker：断点续传 + 重试。进度经 manager.update_progress 上报。
@@ -83,19 +98,28 @@ pub async fn run_download(mgr: Arc<TransferManager>, state: TransferState, cance
         };
         mgr.update_progress(&id, Status::Connecting, 0, 0, 0, attempt).await;
 
-        let Some(total) = stat_remote(&channel, &remote_path).await else {
-            channel.disconnect().await;
-            mgr.finish(
-                &id,
-                Status::Failed,
-                Some(format!("远端文件不存在或无法读取: {remote_path}")),
-                0, 0,
-            ).await;
-            return; // 终态不重试
+        let total = match stat_remote(&channel, &remote_path).await {
+            StatRemote::Size(total) => total,
+            StatRemote::Missing => {
+                channel.disconnect().await;
+                mgr.finish(
+                    &id,
+                    Status::Failed,
+                    Some(format!("远端文件不存在或无法读取: {remote_path}")),
+                    0, 0,
+                ).await;
+                return; // 终态不重试
+            }
+            StatRemote::Unavailable => {
+                tracing::warn!(transfer_id = %id, env_id = %env_id, attempt, "transfer: remote stat unavailable, retrying");
+                channel.disconnect().await;
+                continue;
+            }
         };
 
         // 断点续传：本地 .part 已有字节数为偏移
-        let offset = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0).min(total);
+        let part_len = std::fs::metadata(&part).map(|m| m.len()).ok();
+        let offset = resume_offset(part_len, total);
         let transferred_cell = Arc::new(std::sync::Mutex::new(offset));
         let speed_cell = Arc::new(std::sync::Mutex::new(0u64));
 
@@ -138,7 +162,7 @@ pub async fn run_download(mgr: Arc<TransferManager>, state: TransferState, cance
 
         match result {
             Err(e) => {
-                tracing::warn!(transfer_id = %id, env_id = %env_id, attempt, error = %e, "transfer: download interrupted");
+                tracing::warn!(transfer_id = %id, env_id = %env_id, attempt, error = ?e, "transfer: download interrupted");
                 continue; // 重试（.part 保留，下次续传）
             }
             Ok(()) => {
@@ -176,12 +200,19 @@ async fn channel_cmd_after_disconnect(
 ) -> Result<(), String> {
     let channel = dedicated_channel(mgr.db(), env_id).await?;
     let cmd = format!("rm -f {}", crate::exec::ssh::shell_quote_single(remote_path));
-    let out = channel.run(&cmd).await.map_err(|e| e.to_string())?;
-    channel.disconnect().await;
-    if out.exit_code == 0 {
-        Ok(())
-    } else {
-        Err(format!("rm exit {}: {}", out.exit_code, out.stderr))
+    match channel.run(&cmd).await {
+        Err(e) => {
+            channel.disconnect().await;
+            Err(e.to_string())
+        }
+        Ok(out) => {
+            channel.disconnect().await;
+            if out.exit_code == 0 {
+                Ok(())
+            } else {
+                Err(format!("rm exit {}: {}", out.exit_code, out.stderr))
+            }
+        }
     }
 }
 
@@ -251,7 +282,7 @@ pub async fn run_upload(mgr: Arc<TransferManager>, state: TransferState, cancel:
 
         match result {
             Err(e) => {
-                tracing::warn!(transfer_id = %id, env_id = %env_id, attempt, error = %e, "transfer: upload interrupted");
+                tracing::warn!(transfer_id = %id, env_id = %env_id, attempt, error = ?e, "transfer: upload interrupted");
                 continue;
             }
             Ok(()) => {
@@ -265,12 +296,21 @@ pub async fn run_upload(mgr: Arc<TransferManager>, state: TransferState, cancel:
                     Err(e) => Err(e),
                 };
                 match check {
-                    Ok(Some(remote_size)) if remote_size == total => {
+                    Ok(StatRemote::Size(remote_size)) if remote_size == total => {
                         mgr.finish(&id, Status::Completed, None, total, total).await;
                         return;
                     }
-                    Ok(_) => {
-                        tracing::warn!(transfer_id = %id, "transfer: remote size mismatch after upload, retrying");
+                    Ok(StatRemote::Size(remote_size)) => {
+                        tracing::warn!(transfer_id = %id, remote_size, total, "transfer: remote size mismatch after upload, retrying");
+                        continue;
+                    }
+                    Ok(StatRemote::Missing) => {
+                        // 上传刚完成，文件理应存在；不存在视作异常，重试
+                        tracing::warn!(transfer_id = %id, "transfer: remote file missing after upload, retrying");
+                        continue;
+                    }
+                    Ok(StatRemote::Unavailable) => {
+                        tracing::warn!(transfer_id = %id, "transfer: remote stat unavailable after upload, retrying");
                         continue;
                     }
                     Err(e) => {
@@ -296,8 +336,9 @@ mod tests {
     #[test]
     fn test_offset_clamped_to_total() {
         // offset = min(.part 大小, total)
-        let offset = 300u64.min(200);
-        assert_eq!(offset, 200);
+        assert_eq!(resume_offset(Some(300), 200), 200);
+        assert_eq!(resume_offset(None, 200), 0);
+        assert_eq!(resume_offset(Some(100), 200), 100);
     }
 
     #[tokio::test]
@@ -319,13 +360,13 @@ mod tests {
         let ch = Arc::new(StatChan(tokio::sync::Mutex::new(Vec::new())));
         let dyn_ch: Arc<dyn ExecChannel> = ch.clone();
         let size = stat_remote(&dyn_ch, "/tmp/a b.hprof").await;
-        assert_eq!(size, Some(12345));
+        assert!(matches!(size, StatRemote::Size(12345)));
         let calls = ch.0.lock().await;
         assert!(calls[0].contains("'/tmp/a b.hprof'"), "cmd: {}", calls[0]);
     }
 
     #[tokio::test]
-    async fn test_stat_remote_missing_returns_none() {
+    async fn test_stat_remote_missing_returns_missing() {
         use crate::exec::channel::{ExecChannel, ExecOutput};
         use async_trait::async_trait;
         struct NoFileChan;
@@ -339,6 +380,25 @@ mod tests {
             async fn is_alive(&self) -> bool { true }
         }
         let ch: Arc<dyn ExecChannel> = Arc::new(NoFileChan);
-        assert_eq!(stat_remote(&ch, "/tmp/gone").await, None);
+        assert!(matches!(stat_remote(&ch, "/tmp/gone").await, StatRemote::Missing));
+    }
+
+    #[tokio::test]
+    async fn test_stat_remote_unavailable_on_channel_error() {
+        // run() 出错 → Unavailable（可重试），而不是 Missing（终态）
+        use crate::exec::channel::{ExecChannel, ExecOutput};
+        use async_trait::async_trait;
+        struct BrokenChan;
+        #[async_trait]
+        impl ExecChannel for BrokenChan {
+            async fn run(&self, _cmd: &str) -> Result<ExecOutput, Box<dyn std::error::Error + Send + Sync>> {
+                Err("conn broke".into())
+            }
+            async fn connect(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> { Ok(()) }
+            async fn disconnect(&self) {}
+            async fn is_alive(&self) -> bool { false }
+        }
+        let ch: Arc<dyn ExecChannel> = Arc::new(BrokenChan);
+        assert!(matches!(stat_remote(&ch, "/tmp/x").await, StatRemote::Unavailable));
     }
 }
