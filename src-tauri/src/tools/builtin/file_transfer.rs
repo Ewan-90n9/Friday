@@ -36,10 +36,15 @@ fn validate_remote_path(p: &str) -> Result<(), String> {
     }
 }
 
-/// 远端 basename 校验（防穿越）：非空且不是 . / ..
+/// 远端 basename 校验（防穿越）：非空且不是 . / ..，且不含 Windows 路径分隔符或盘符冒号
 fn remote_basename(p: &str) -> Result<String, String> {
     let name = p.rsplit('/').next().unwrap_or("");
-    if name.is_empty() || name == "." || name == ".." {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('\\')
+        || name.contains(':')
+    {
         Err(format!("remote_path 文件名非法: {p}"))
     } else {
         Ok(name.to_string())
@@ -140,8 +145,8 @@ impl FileTransferTools {
         if let Err(e) = validate_remote_path(remote_path) {
             return err_invalid(&e);
         }
-        if !local.exists() {
-            return err_invalid(&format!("本地文件不存在: {local_path}"));
+        if !local.is_file() {
+            return err_invalid(&format!("本地文件不存在或不是普通文件: {local_path}"));
         }
         let env = match crate::app::environments::find_by_name(self.core.db(), environment).await {
             Ok(Some(env)) => env,
@@ -409,6 +414,45 @@ mod tests {
             assert!(!out.success, "path {p} must be rejected");
             assert_eq!(out.data["error"], "invalid_params");
         }
+        drop(tmp);
+    }
+
+    #[test]
+    fn test_remote_basename_validation() {
+        assert!(remote_basename("/tmp/a.hprof").is_ok());
+        assert!(remote_basename("/tmp/").is_err());
+        assert!(remote_basename("/tmp/..").is_err());
+        assert!(remote_basename("/tmp/a\\b").is_err());
+        assert!(remote_basename("/tmp/C:\\evil").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_download_rejects_windows_traversal_in_basename() {
+        let (tmp, tools) = setup().await;
+        let h = FileDownloadHandler(tools);
+        for p in ["/tmp/..\\..\\..\\evil.exe", "/tmp/C:\\evil", "/tmp/a\\b.hprof"] {
+            let out = h.execute(
+                serde_json::json!({"environment": "prod", "remote_path": p}),
+                &ctx(),
+            ).await;
+            assert!(!out.success, "path {p} must be rejected");
+            assert_eq!(out.data["error"], "invalid_params");
+        }
+        drop(tmp);
+    }
+
+    #[tokio::test]
+    async fn test_download_duplicate_returns_existing_transfer_id() {
+        let (tmp, tools) = setup().await;
+        let h = FileDownloadHandler(tools.clone());
+        let args = serde_json::json!({"environment": "prod", "remote_path": "/tmp/friday-tools/dup.hprof"});
+        let first = h.execute(args.clone(), &ctx()).await;
+        assert!(first.success);
+        let tid = first.data["transfer_id"].as_str().unwrap().to_string();
+        let second = h.execute(args, &ctx()).await;
+        assert!(!second.success);
+        assert_eq!(second.data["error"], "duplicate_transfer");
+        assert_eq!(second.data["transfer_id"].as_str().unwrap(), tid);
         drop(tmp);
     }
 
