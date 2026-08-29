@@ -51,6 +51,27 @@ pub enum AppEvent {
         stage: String,
         detail: String,
     },
+    TransferProgress {
+        session_id: String,
+        transfer_id: String,
+        direction: crate::transfer::state::Direction,
+        status: crate::transfer::state::Status,
+        transferred_bytes: u64,
+        total_bytes: u64,
+        speed_bps: u64,
+        attempt: u32,
+    },
+    TransferFinished {
+        session_id: String,
+        transfer_id: String,
+        direction: crate::transfer::state::Direction,
+        status: crate::transfer::state::Status,
+        transferred_bytes: u64,
+        total_bytes: u64,
+        error: Option<String>,
+        local_path: Option<String>,
+        remote_path: String,
+    },
     SessionDeleted {
         session_id: String,
     },
@@ -169,5 +190,43 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("session_deleted"));
         assert!(json.contains("s99"));
+    }
+
+    #[test]
+    fn test_transfer_progress_serialization() {
+        let event = AppEvent::TransferProgress {
+            session_id: "s1".to_string(),
+            transfer_id: "t1".to_string(),
+            direction: crate::transfer::state::Direction::Download,
+            status: crate::transfer::state::Status::Transferring,
+            transferred_bytes: 100,
+            total_bytes: 200,
+            speed_bps: 10,
+            attempt: 1,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("transfer_progress"));
+        assert!(json.contains("transferring"));
+        assert!(json.contains("download"));
+    }
+
+    #[test]
+    fn test_transfer_finished_serialization() {
+        let event = AppEvent::TransferFinished {
+            session_id: "s1".to_string(),
+            transfer_id: "t1".to_string(),
+            direction: crate::transfer::state::Direction::Upload,
+            status: crate::transfer::state::Status::Failed,
+            transferred_bytes: 1,
+            total_bytes: 2,
+            error: Some("boom".to_string()),
+            local_path: None,
+            remote_path: "/tmp/x".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("transfer_finished"));
+        assert!(json.contains("upload"));
+        assert!(json.contains("failed"));
+        assert!(json.contains("boom"));
     }
 }
