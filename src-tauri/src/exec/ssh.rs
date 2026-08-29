@@ -398,9 +398,14 @@ impl ExecChannel for SshTransport {
         Ok(())
     }
 
-    async fn download(&self, remote_path: &str, local: &std::path::Path)
-        -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    async fn download(
+        &self,
+        remote_path: &str,
+        local: &std::path::Path,
+        offset: u64,
+        progress: &(dyn Fn(u64, u64) + Sync),
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
         let mut conn = self.conn.lock().await;
         let Some(c) = conn.as_mut() else {
@@ -420,17 +425,42 @@ impl ExecChannel for SshTransport {
         if let Some(parent) = local.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let mut local_file = tokio::fs::File::create(local).await?;
+        // 续传：append 模式打开本地；offset=0 时 truncate
+        let mut local_file = if offset > 0 {
+            tokio::fs::OpenOptions::new()
+                .append(true)
+                .open(local)
+                .await?
+        } else {
+            tokio::fs::File::create(local).await?
+        };
+        if offset > 0 {
+            remote_file.seek(std::io::SeekFrom::Start(offset)).await?;
+        }
 
         let mut buf = vec![0u8; 32 * 1024];
-        let mut total: u64 = 0;
+        let mut transferred: u64 = offset;
+        let mut last_report = std::time::Instant::now();
+        let mut last_bytes = transferred;
         loop {
             let n = remote_file.read(&mut buf).await?;
             if n == 0 {
                 break;
             }
             local_file.write_all(&buf[..n]).await?;
-            total += n as u64;
+            transferred += n as u64;
+            // 1s 节流进度回调（回调只做同步轻量更新）
+            if last_report.elapsed() >= std::time::Duration::from_secs(1) {
+                let elapsed = last_report.elapsed().as_secs_f64();
+                let speed = if elapsed > 0.0 {
+                    ((transferred - last_bytes) as f64 / elapsed) as u64
+                } else {
+                    0
+                };
+                progress(transferred, speed);
+                last_report = std::time::Instant::now();
+                last_bytes = transferred;
+            }
         }
         local_file.flush().await?;
         sftp.close().await?;
@@ -439,7 +469,8 @@ impl ExecChannel for SshTransport {
             env_id = %self.env_id,
             remote_path,
             local = %local.display(),
-            bytes = total,
+            offset,
+            bytes = transferred - offset,
             "sftp download complete"
         );
         Ok(())

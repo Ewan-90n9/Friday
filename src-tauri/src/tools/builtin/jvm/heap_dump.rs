@@ -163,7 +163,7 @@ impl ToolHandler for HeapDumpHandler {
         let download_start = std::time::Instant::now();
         let download_result = tokio::time::timeout(
             std::time::Duration::from_secs(download_timeout),
-            channel.download(&remote_path, &local_path),
+            channel.download(&remote_path, &local_path, 0, &|_, _| {}),
         )
         .await;
         let download_elapsed_ms = download_start.elapsed().as_millis() as u64;
@@ -324,6 +324,8 @@ mod tests {
             &self,
             _remote: &str,
             local: &std::path::Path,
+            _offset: u64,
+            _progress: &(dyn Fn(u64, u64) + Sync),
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if !self.download_ok {
                 // 模拟半途而废：写部分字节后失败
