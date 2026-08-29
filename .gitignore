@@ -33,3 +33,6 @@ pnpm-debug.log*
 
 # Visual companion brainstorming
 .superpowers/
+
+# Heap analyzer vendored JAR (fetched at build time, see scripts/fetch-analyzer-jar.ps1)
+src-tauri/resources/analyzer/*.jar
