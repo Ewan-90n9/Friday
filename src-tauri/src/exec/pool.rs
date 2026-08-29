@@ -133,7 +133,7 @@ pub struct EnvironmentInfo {
     pub private_key_path: Option<String>,
 }
 
-fn build_transport(
+pub fn build_transport(
     environment_id: &str,
     env: &EnvironmentInfo,
 ) -> Result<super::ssh::SshTransport, PoolError> {
@@ -158,7 +158,7 @@ fn build_transport(
     }
 }
 
-async fn fetch_environment(
+pub async fn fetch_environment(
     pool: &sqlx::SqlitePool,
     environment_id: &str,
 ) -> Result<EnvironmentInfo, PoolError> {

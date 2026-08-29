@@ -6,6 +6,7 @@ mod knowledge;
 mod mcp;
 mod provision;
 mod tools;
+mod transfer;
 
 use app::events::EventBus;
 use infra::paths::Paths;
