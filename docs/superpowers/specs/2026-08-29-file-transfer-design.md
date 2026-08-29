@@ -208,6 +208,7 @@ TransferProgress {
     session_id: String, transfer_id: String, direction: Direction,
     status: Status,            // retrying 也走这个事件
     transferred_bytes: u64, total_bytes: u64, speed_bps: u64, attempt: u32,
+    remote_path: String,
 },
 TransferFinished {             // 终态一次性事件
     session_id: String, transfer_id: String, direction: Direction,

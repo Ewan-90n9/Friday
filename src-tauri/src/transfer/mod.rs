@@ -50,26 +50,6 @@ impl TransferManager {
             .map(|t| t.state.clone())
     }
 
-    /// 注册新传输（状态 Pending），返回 transfer_id。调用方随后 spawn worker 并
-    /// 调 attach_worker 装上 cancel token。
-    pub async fn register(&self, state: TransferState) -> String {
-        let id = state.id.clone();
-        let mut transfers = self.transfers.lock().await;
-        transfers.insert(
-            id.clone(),
-            ManagedTransfer { state, cancel: None },
-        );
-        id
-    }
-
-    /// worker 启动后装上取消令牌
-    pub async fn attach_worker(&self, transfer_id: &str, cancel: CancellationToken) {
-        let mut transfers = self.transfers.lock().await;
-        if let Some(t) = transfers.get_mut(transfer_id) {
-            t.cancel = Some(cancel);
-        }
-    }
-
     /// 启动后台传输任务（spawn worker）。若已有同 session+direction+remote_path
     /// 的活跃传输则返回已有任务的 id（原子去重）。
     pub async fn start(self: &Arc<Self>, state: TransferState) -> String {
@@ -282,23 +262,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_register_and_get() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db = crate::infra::db::init(tmp.path().join("t.db")).await.unwrap();
-        let mgr = TransferManager::new(db, EventBus::disabled());
-        let st = make_state(Direction::Download, "/tmp/a.hprof", "s1");
-        let id = mgr.register(st).await;
-        assert!(mgr.get(&id).await.is_some());
-        assert!(mgr.get("nope").await.is_none());
-    }
-
-    #[tokio::test]
     async fn test_find_active_matches_active_only() {
         let tmp = tempfile::tempdir().unwrap();
         let db = crate::infra::db::init(tmp.path().join("t.db")).await.unwrap();
-        let mgr = TransferManager::new(db, EventBus::disabled());
+        let mgr = Arc::new(TransferManager::new(db, EventBus::disabled()));
         let id = mgr
-            .register(make_state(Direction::Download, "/tmp/a.hprof", "s1"))
+            .start(make_state(Direction::Download, "/tmp/a.hprof", "s1"))
             .await;
         assert!(mgr.find_active("s1", Direction::Download, "/tmp/a.hprof").await.is_some());
         // 不同 session / 不同路径不算
@@ -313,9 +282,9 @@ mod tests {
     async fn test_finish_sets_terminal_and_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let db = crate::infra::db::init(tmp.path().join("t.db")).await.unwrap();
-        let mgr = TransferManager::new(db, EventBus::disabled());
+        let mgr = Arc::new(TransferManager::new(db, EventBus::disabled()));
         let id = mgr
-            .register(make_state(Direction::Download, "/tmp/a.hprof", "s1"))
+            .start(make_state(Direction::Download, "/tmp/a.hprof", "s1"))
             .await;
         mgr.finish(&id, Status::Completed, None, 100, 100).await;
         let st = mgr.get(&id).await.unwrap();
@@ -330,13 +299,14 @@ mod tests {
     async fn test_update_progress_rejects_terminal_status() {
         let tmp = tempfile::tempdir().unwrap();
         let db = crate::infra::db::init(tmp.path().join("t.db")).await.unwrap();
-        let mgr = TransferManager::new(db, EventBus::disabled());
+        let mgr = Arc::new(TransferManager::new(db, EventBus::disabled()));
         let id = mgr
-            .register(make_state(Direction::Download, "/tmp/a.hprof", "s1"))
+            .start(make_state(Direction::Download, "/tmp/a.hprof", "s1"))
             .await;
         mgr.update_progress(&id, Status::Completed, 1, 1, 0, 1).await;
         let st = mgr.get(&id).await.unwrap();
-        assert_eq!(st.status, Status::Pending);
+        // 非终态即可（worker 可能已把状态推到 Retrying，但不能是终态）
+        assert!(!st.status.is_terminal());
         assert!(st.completed_at.is_none());
     }
 
@@ -344,9 +314,9 @@ mod tests {
     async fn test_update_progress_late_after_terminal_dropped() {
         let tmp = tempfile::tempdir().unwrap();
         let db = crate::infra::db::init(tmp.path().join("t.db")).await.unwrap();
-        let mgr = TransferManager::new(db, EventBus::disabled());
+        let mgr = Arc::new(TransferManager::new(db, EventBus::disabled()));
         let id = mgr
-            .register(make_state(Direction::Download, "/tmp/a.hprof", "s1"))
+            .start(make_state(Direction::Download, "/tmp/a.hprof", "s1"))
             .await;
         mgr.finish(&id, Status::Cancelled, None, 0, 100).await;
         mgr.update_progress(&id, Status::Transferring, 50, 100, 10, 1).await;
@@ -357,16 +327,12 @@ mod tests {
     async fn test_cancel_requires_active_and_token() {
         let tmp = tempfile::tempdir().unwrap();
         let db = crate::infra::db::init(tmp.path().join("t.db")).await.unwrap();
-        let mgr = TransferManager::new(db, EventBus::disabled());
+        let mgr = Arc::new(TransferManager::new(db, EventBus::disabled()));
         let id = mgr
-            .register(make_state(Direction::Download, "/tmp/a.hprof", "s1"))
+            .start(make_state(Direction::Download, "/tmp/a.hprof", "s1"))
             .await;
-        // 未 attach worker：无 token，取消失败
-        assert!(!mgr.cancel(&id).await);
-        let token = CancellationToken::new();
-        mgr.attach_worker(&id, token.clone()).await;
+        // start 注册时即装上 cancel token：活跃任务取消成功
         assert!(mgr.cancel(&id).await);
-        assert!(token.is_cancelled());
         // 终态后再取消失败
         mgr.finish(&id, Status::Cancelled, None, 0, 100).await;
         assert!(!mgr.cancel(&id).await);
@@ -376,16 +342,16 @@ mod tests {
     async fn test_list_for_session_orders_desc_and_filters() {
         let tmp = tempfile::tempdir().unwrap();
         let db = crate::infra::db::init(tmp.path().join("t.db")).await.unwrap();
-        let mgr = TransferManager::new(db, EventBus::disabled());
+        let mgr = Arc::new(TransferManager::new(db, EventBus::disabled()));
         let _a = mgr
-            .register(make_state(Direction::Download, "/tmp/a.hprof", "s1"))
+            .start(make_state(Direction::Download, "/tmp/a.hprof", "s1"))
             .await;
         std::thread::sleep(std::time::Duration::from_millis(5));
         let _b = mgr
-            .register(make_state(Direction::Download, "/tmp/b.hprof", "s1"))
+            .start(make_state(Direction::Download, "/tmp/b.hprof", "s1"))
             .await;
         let _c = mgr
-            .register(make_state(Direction::Download, "/tmp/c.hprof", "s2"))
+            .start(make_state(Direction::Download, "/tmp/c.hprof", "s2"))
             .await;
         let list = mgr.list_for_session("s1").await;
         assert_eq!(list.len(), 2);
@@ -413,11 +379,11 @@ mod tests {
     async fn test_evict_finished_keeps_cap() {
         let tmp = tempfile::tempdir().unwrap();
         let db = crate::infra::db::init(tmp.path().join("t.db")).await.unwrap();
-        let mgr = TransferManager::new(db, EventBus::disabled());
+        let mgr = Arc::new(TransferManager::new(db, EventBus::disabled()));
         let mut ids = Vec::new();
         for i in 0..(MAX_FINISHED_RECORDS + 10) {
             let id = mgr
-                .register(make_state(Direction::Download, &format!("/tmp/{i}.hprof"), "s1"))
+                .start(make_state(Direction::Download, &format!("/tmp/{i}.hprof"), "s1"))
                 .await;
             mgr.finish(&id, Status::Completed, None, 1, 1).await;
             ids.push(id);

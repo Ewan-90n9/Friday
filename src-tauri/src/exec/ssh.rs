@@ -197,6 +197,14 @@ async fn local_len_or_zero(path: &std::path::Path) -> std::io::Result<u64> {
     }
 }
 
+/// 远端 I/O 错误标记：russh-sftp 的 File 走 tokio AsyncRead/AsyncWrite，错误类型是
+/// std::io::Error，与本地磁盘错误无法区分。TransferWorker 靠「错误是否为 io::Error」
+/// 判定本地磁盘故障（终态、不重试），因此远端读写/seek/shutdown 的错误必须包装成
+/// 非 io 类型，保证 io::Error 只代表本地文件操作失败。
+fn remote_io_err(op: &str, e: std::io::Error) -> Box<dyn std::error::Error + Send + Sync> {
+    format!("远端 I/O 失败（{op}）: {e}").into()
+}
+
 /// 在已有 handle 上开 channel 执行命令，收集 stdout/stderr/exit_code。env_id/label 仅用于日志上下文（label 为用户原始命令）。
 async fn exec_on_handle(
     handle: &russh::client::Handle<SshHandler>,
@@ -403,10 +411,16 @@ impl ExecChannel for SshTransport {
             if n == 0 {
                 break;
             }
-            remote_file.write_all(&buf[..n]).await?;
+            remote_file
+                .write_all(&buf[..n])
+                .await
+                .map_err(|e| remote_io_err("write", e))?;
             total += n as u64;
         }
-        remote_file.shutdown().await?;
+        remote_file
+            .shutdown()
+            .await
+            .map_err(|e| remote_io_err("shutdown", e))?;
         sftp.close().await?;
 
         tracing::info!(
@@ -480,7 +494,10 @@ impl ExecChannel for SshTransport {
             tokio::fs::File::create(local).await?
         };
         if offset > 0 {
-            remote_file.seek(std::io::SeekFrom::Start(offset)).await?;
+            remote_file
+                .seek(std::io::SeekFrom::Start(offset))
+                .await
+                .map_err(|e| remote_io_err("seek", e))?;
         }
 
         let mut buf = vec![0u8; 256 * 1024];
@@ -488,7 +505,10 @@ impl ExecChannel for SshTransport {
         let mut last_report = std::time::Instant::now();
         let mut last_bytes = transferred;
         loop {
-            let n = remote_file.read(&mut buf).await?;
+            let n = remote_file
+                .read(&mut buf)
+                .await
+                .map_err(|e| remote_io_err("read", e))?;
             if n == 0 {
                 break;
             }

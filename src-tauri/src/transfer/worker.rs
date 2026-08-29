@@ -55,6 +55,7 @@ pub async fn run_download(mgr: Arc<TransferManager>, state: TransferState, cance
     let session_id = state.session_id.clone();
     let started = std::time::Instant::now();
     let mut attempt: u32 = 0;
+    let mut last_err: Option<String> = None;
 
     tracing::info!(transfer_id = %id, session_id = %session_id, env_id = %env_id, remote_path = %remote_path, "transfer worker: download starting");
 
@@ -69,7 +70,8 @@ pub async fn run_download(mgr: Arc<TransferManager>, state: TransferState, cance
                 &id,
                 Status::Failed,
                 Some(format!(
-                    "传输失败：重试次数用尽（{remote_path}）。远端文件保留，可重新调用 file_download 断点续传。"
+                    "传输失败：重试次数用尽（{remote_path}）。最后错误: {}. 远端文件保留，可重新调用 file_download 断点续传。",
+                    last_err.as_deref().unwrap_or("未知")
                 )),
                 0, 0,
             ).await;
@@ -93,6 +95,7 @@ pub async fn run_download(mgr: Arc<TransferManager>, state: TransferState, cance
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(transfer_id = %id, env_id = %env_id, attempt, error = %e, "transfer: connect failed");
+                last_err = Some(e);
                 continue;
             }
         };
@@ -162,7 +165,24 @@ pub async fn run_download(mgr: Arc<TransferManager>, state: TransferState, cance
 
         match result {
             Err(e) => {
+                // 本地磁盘错误（写失败/磁盘满/权限）重试无意义 → 终态。
+                // io::Error 只可能来自本地文件操作：ssh.rs 中远端 I/O（read/seek）
+                // 的错误已包装为非 io 类型，传输层错误不会是 io::Error。
+                let is_local_io = e
+                    .downcast_ref::<std::io::Error>()
+                    .is_some();
+                if is_local_io {
+                    tracing::error!(transfer_id = %id, env_id = %env_id, attempt, error = ?e, "transfer: local write failed, terminating");
+                    mgr.finish(
+                        &id,
+                        Status::Failed,
+                        Some(format!("本地写入失败（磁盘满/权限等）: {e}")),
+                        0, 0,
+                    ).await;
+                    return;
+                }
                 tracing::warn!(transfer_id = %id, env_id = %env_id, attempt, error = ?e, "transfer: download interrupted");
+                last_err = Some(e.to_string());
                 continue; // 重试（.part 保留，下次续传）
             }
             Ok(()) => {
@@ -225,6 +245,7 @@ pub async fn run_upload(mgr: Arc<TransferManager>, state: TransferState, cancel:
     let session_id = state.session_id.clone();
     let started = std::time::Instant::now();
     let mut attempt: u32 = 0;
+    let mut last_err: Option<String> = None;
 
     let Ok(meta) = std::fs::metadata(&local) else {
         mgr.finish(&id, Status::Failed, Some(format!("本地文件不存在: {}", local.display())), 0, 0).await;
@@ -244,7 +265,10 @@ pub async fn run_upload(mgr: Arc<TransferManager>, state: TransferState, cancel:
             mgr.finish(
                 &id,
                 Status::Failed,
-                Some(format!("上传失败：重试次数用尽（远端 {remote_path} 可能有残留半成品，重新上传会覆盖）。")),
+                Some(format!(
+                    "上传失败：重试次数用尽（远端 {remote_path} 可能有残留半成品，重新上传会覆盖）。最后错误: {}。",
+                    last_err.as_deref().unwrap_or("未知")
+                )),
                 0, total,
             ).await;
             return;
@@ -265,6 +289,7 @@ pub async fn run_upload(mgr: Arc<TransferManager>, state: TransferState, cancel:
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(transfer_id = %id, env_id = %env_id, attempt, error = %e, "transfer: connect failed");
+                last_err = Some(e);
                 continue;
             }
         };
@@ -282,7 +307,23 @@ pub async fn run_upload(mgr: Arc<TransferManager>, state: TransferState, cancel:
 
         match result {
             Err(e) => {
+                // 本地读取错误（文件被删/权限/IO 故障）重试无意义 → 终态。
+                // 远端写错误在 ssh.rs 已包装为非 io 类型，不会误判。
+                let is_local_io = e
+                    .downcast_ref::<std::io::Error>()
+                    .is_some();
+                if is_local_io {
+                    tracing::error!(transfer_id = %id, env_id = %env_id, attempt, error = ?e, "transfer: local read failed, terminating");
+                    mgr.finish(
+                        &id,
+                        Status::Failed,
+                        Some(format!("本地读取失败: {e}")),
+                        0, total,
+                    ).await;
+                    return;
+                }
                 tracing::warn!(transfer_id = %id, env_id = %env_id, attempt, error = ?e, "transfer: upload interrupted");
+                last_err = Some(e.to_string());
                 continue;
             }
             Ok(()) => {

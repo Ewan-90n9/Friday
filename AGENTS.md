@@ -34,6 +34,7 @@ Friday 是面向软件开发人员的**远程环境运行时故障诊断 Agent**
 - **Agent 自动识别**：检测 PATH 上的 opencode / codeagentcli 二进制、版本探测、持久化到 SQLite、UI 设置弹窗、手动添加路径、切换 active agent
 - **多 Provider 支持**：opencode 和 codeagentcli 同时支持，用户可在设置中切换。spawn 通过 `CommandConfig` 按 provider 分发不同 CLI 参数，stream 解析器同时处理两种 NDJSON 格式（opencode 的 `part.*` 和 codeagentcli 的 Claude API 风格 `message.content[]`）
 - **对话管道**：多轮对话、NDJSON 流式解析、Friday 人格 system prompt、会话列表、流式渲染（文本 + 工具卡片）
+- **文件上传下载**：独立 Agent 工具（file_download / file_upload / transfer_status / transfer_cancel），TransferManager 后台异步传输（专用 SSH 连接、断点续传、5 次重试/2h 预算、1s 进度事件），heap_dump 生成后自动后台拉回，前端聊天流内进度条卡片
 
 ## 开发命令
 
