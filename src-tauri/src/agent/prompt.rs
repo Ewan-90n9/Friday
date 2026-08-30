@@ -33,7 +33,8 @@ const TOOL_GUIDANCE: &str = "## 工具使用
 - JVM 诊断流程：list_environments → list_processes（keyword=服务名）找 PID → ensure_tool 装备 JDK → 直接调用 jvm_* 结构化工具（jvm_gc_stats / jvm_thread_dump / jvm_heap_info / jvm_vm_info / jvm_class_histogram / jvm_heap_dump）。
 - 目标环境通常只有 JRE：跳过 ensure_tool 直接调 jvm_* 会报 jdk_not_provisioned，先装备再重试即可（幂等）。
 - run_command 是兜底：非 JVM 领域命令、jstat 其他视图（-gc/-gccapacity）等长尾场景才用它，每次执行需用户确认。
-- 文件传输：拉取/推送大文件（堆快照、日志包、工具包）必须用 file_download / file_upload 后台传输工具。启动后立即返回 transfer_id，轮询 transfer_status(transfer_id) 直到终态：completed（下载场景把 local_path 告知用户，artifacts 目录可用 MAT 等分析）；failed（远端文件保留，file_download 同一文件可断点续传，不要放弃）；retrying（自动重试中，稍等再查，不要重复启动新任务）。不要用 run_command + cat/base64 拉大文件。
+- 文件传输：拉取/推送大文件（堆快照、日志包、工具包）必须用 file_download / file_upload 后台传输工具。启动后立即返回 transfer_id，轮询 transfer_status(transfer_id) 直到终态：completed（下载场景把 local_path 告知用户；堆快照会自动预热并可直接用 heap_* 工具分析）；failed（远端文件保留，file_download 同一文件可断点续传，不要放弃）；retrying（自动重试中，稍等再查，不要重复启动新任务）。不要用 run_command + cat/base64 拉大文件。
+- 堆快照分析（本机 MAT 引擎）：jvm_heap_dump 拉回完成后自动预热建索引，用 heap_open(local_path) 获取总览（预热命中秒回）→ heap_leak_suspects（泄漏嫌疑）/ heap_dominator_tree（支配树下钻）→ heap_path_to_gc_roots（引用链定责）→ heap_object_info / heap_references / heap_threads / heap_histogram 按需下钻；object_id 取自这些工具的返回。全程自主完成根因分析，不要让用户手动开 MAT。分析结束调 heap_close 释放内存。
 - 用户提到的环境先与 list_environments 的结果匹配；没有匹配时引导用户在右侧「环境」面板添加，不要瞎猜 host。";
 
 pub fn build_system_prompt(override_path: Option<&Path>) -> String {
@@ -237,5 +238,15 @@ mod tests {
     fn test_build_prompt_contains_ensure_tool_guidance() {
         let prompt = build_prompt("帮我看看 OOM", None, "s1");
         assert!(prompt.contains("ensure_tool"));
+    }
+
+    #[test]
+    fn test_tool_guidance_mentions_heap_tools() {
+        assert!(TOOL_GUIDANCE.contains("heap_open"));
+        assert!(TOOL_GUIDANCE.contains("heap_leak_suspects"));
+        assert!(TOOL_GUIDANCE.contains("heap_dominator_tree"));
+        assert!(TOOL_GUIDANCE.contains("heap_path_to_gc_roots"));
+        assert!(TOOL_GUIDANCE.contains("heap_close"));
+        assert!(TOOL_GUIDANCE.contains("不要让用户手动开 MAT"));
     }
 }

@@ -172,7 +172,7 @@ impl ToolHandler for HeapDumpHandler {
                 "remote_size": remote_size,
                 "dump_elapsed_ms": dump_elapsed_ms,
                 "local_path": local_path.to_string_lossy(),
-                "note": "dump 已生成，正在后台拉回。请轮询 transfer_status(transfer_id)；completed 后把 local_path 告知用户；failed 时远端文件保留，可用 file_download 重试（断点续传）。",
+                "note": "dump 已生成，正在后台拉回。请轮询 transfer_status(transfer_id)；completed 后自动预热分析，用 heap_open(local_path) 起步做根因分析；failed 时远端文件保留，可用 file_download 重试（断点续传）。",
             }),
             raw_stdout: Some(dump_output.stdout),
         }
@@ -200,7 +200,7 @@ pub fn jvm_heap_dump_tool_def(
 ) -> ToolDef {
     ToolDef {
         name: "jvm_heap_dump".to_string(),
-        description: "对目标 JVM 生成堆转储并后台拉回本地（jcmd GC.heap_dump）。⚠ 高风险：触发 Full GC（STW），大堆可能停顿数十秒；dump 文件可达 GB 级。生成后自动启动后台下载（返回 transfer_id），请轮询 transfer_status(transfer_id)，completed 后 local_path 在本机会话 artifacts 目录，请告知用户用 MAT 等工具分析。需先 ensure_tool 装备 JDK。".to_string(),
+        description: "对目标 JVM 生成堆转储并后台拉回本地（jcmd GC.heap_dump）。⚠ 高风险：触发 Full GC（STW），大堆可能停顿数十秒；dump 文件可达 GB 级。生成后自动启动后台下载（返回 transfer_id），请轮询 transfer_status(transfer_id)，completed 后 dump 自动预热，直接用 heap_open(local_path) 等 heap_* 工具自主分析根因（MAT 引擎，本机需 Java 21+）。需先 ensure_tool 装备 JDK。".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -355,6 +355,15 @@ mod tests {
         // schema 不再含 download_timeout_secs
         let schema_str = serde_json::to_string(&def.input_schema).unwrap();
         assert!(!schema_str.contains("download_timeout_secs"));
+        drop(tmp);
+    }
+
+    #[tokio::test]
+    async fn test_tool_def_guides_to_heap_tools() {
+        let ch = Arc::new(DumpChannel { dump_exit: 0, stat_size: "1", calls: TokioMutex::new(Vec::new()) });
+        let (tmp, core, mgr) = setup(ch).await;
+        let def = jvm_heap_dump_tool_def(core, crate::app::events::EventBus::disabled(), mgr);
+        assert!(def.description.contains("heap_open"), "description should guide to heap_* tools");
         drop(tmp);
     }
 }
