@@ -36,3 +36,4 @@ pnpm-debug.log*
 
 # Heap analyzer vendored JAR (fetched at build time, see scripts/fetch-analyzer-jar.ps1)
 src-tauri/resources/analyzer/*.jar
+src-tauri/resources/analyzer/*.downloading

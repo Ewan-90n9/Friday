@@ -7,8 +7,6 @@ use tokio::sync::watch;
 pub const MAX_OPEN_DUMPS: usize = 3;
 
 /// 单个 dump 的会话状态。watch 通道广播状态变迁（多等待者合流）。
-// Task 5（manager）接入前 Ready/Failed 无构造方，避免 dead_code 告警
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum EntryPhase {
     Warming,
@@ -28,8 +26,6 @@ pub struct DumpSessions {
     entries: HashMap<PathBuf, DumpEntry>,
 }
 
-// Task 5（manager）接入前暂无调用方，避免 dead_code 告警
-#[allow(dead_code)]
 impl DumpSessions {
     pub fn new() -> Self {
         Self { entries: HashMap::new() }
