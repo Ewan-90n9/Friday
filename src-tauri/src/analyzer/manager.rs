@@ -525,6 +525,29 @@ impl HeapAnalyzerManager {
     }
 }
 
+/// 传输完成钩子：下载的 .hprof 完成后触发自动预热（lib.rs 注入 TransferManager）。
+/// 其余扩展名直接忽略；预热失败只记事件，不影响传输终态。
+pub fn download_complete_hook(manager: &Arc<HeapAnalyzerManager>) -> crate::transfer::DownloadCompleteHook {
+    let mgr = manager.clone();
+    Arc::new(move |state: &crate::transfer::state::TransferState| {
+        let is_hprof = state
+            .local_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("hprof"))
+            .unwrap_or(false);
+        if !is_hprof {
+            return;
+        }
+        let mgr = mgr.clone();
+        let session_id = state.session_id.clone();
+        let path = state.local_path.clone();
+        tokio::spawn(async move {
+            mgr.warm_up(&session_id, &path).await;
+        });
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1173,5 +1196,36 @@ mod tests {
             closes.iter().all(|(_, args)| args["id"].as_str().unwrap() == first_id),
             "all closes must target the first (orphaned) open's id"
         );
+    }
+
+    #[tokio::test]
+    async fn test_download_complete_hook_warms_hprof_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockHeapAnalyzerClient::ok("S"));
+        let (mgr, _s) = manager_with(&mock, tmp.path(), ManagerConfig::default());
+        let mgr = Arc::new(mgr);
+        let hook = download_complete_hook(&mgr);
+
+        let a = dump_file(tmp.path(), "a.hprof");
+        let mut st = crate::transfer::state::TransferState::new(
+            crate::transfer::state::Direction::Download,
+            SID,
+            "env-1",
+            "/tmp/remote/a.hprof",
+            a.clone(),
+            false,
+        );
+        hook(&st);
+        // 非 hprof 不触发
+        let log = dump_file(tmp.path(), "b.log");
+        st.local_path = log;
+        st.id = "t2".into();
+        hook(&st);
+
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let calls = mock.calls.lock().await;
+        let opens: Vec<_> = calls.iter().filter(|(n, _)| n == "open_heap_dump").collect();
+        assert_eq!(opens.len(), 1, "only the hprof must be warmed");
+        assert!(opens[0].1["path"].as_str().unwrap().ends_with("a.hprof"));
     }
 }

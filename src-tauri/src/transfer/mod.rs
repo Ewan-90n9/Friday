@@ -19,12 +19,16 @@ pub type ChannelFactory = Arc<
         + Sync,
 >;
 
+/// 下载完成回调注入点（heap dump 拉回 → 分析预热）。必须在 Arc 包装前设置。
+pub type DownloadCompleteHook = Arc<dyn Fn(&TransferState) + Send + Sync>;
+
 pub struct TransferManager {
     db: sqlx::SqlitePool,
     bus: EventBus,
     transfers: Mutex<HashMap<String, ManagedTransfer>>,
     /// None = 真实专用 SSH 连连（fetch_environment + build_transport）
     channel_factory: Option<ChannelFactory>,
+    download_complete_hook: Option<DownloadCompleteHook>,
 }
 
 struct ManagedTransfer {
@@ -39,12 +43,18 @@ impl TransferManager {
             bus,
             transfers: Mutex::new(HashMap::new()),
             channel_factory: None,
+            download_complete_hook: None,
         }
     }
 
     /// 注入专用连接工厂（测试用）。必须在 Arc 包装前调用。
     pub fn set_channel_factory(&mut self, factory: ChannelFactory) {
         self.channel_factory = Some(factory);
+    }
+
+    /// 注入下载完成回调（heap dump 拉回 → 分析预热）。必须在 Arc 包装前调用。
+    pub fn set_download_complete_hook(&mut self, hook: DownloadCompleteHook) {
+        self.download_complete_hook = Some(hook);
     }
 
     /// 后台任务专用连接：优先测试注入工厂，否则真实 SSH 直连（不走 ExecChannelPool）
@@ -229,6 +239,12 @@ impl TransferManager {
         );
         tracing::info!(transfer_id = %event.id, status = ?event.status, error = ?event.error, "transfer finished");
         self.evict_finished().await;
+        // 下载完成回调（heap dump 拉回 → 分析预热）。失败不影响传输终态。
+        if event.direction == Direction::Download && event.status == Status::Completed {
+            if let Some(hook) = &self.download_complete_hook {
+                hook(&event);
+            }
+        }
     }
 
     /// 请求取消。返回 false = 不存在、已终态或尚未 attach worker。
@@ -424,5 +440,31 @@ mod tests {
         // 最旧的被淘汰
         assert!(mgr.get(&ids[0]).await.is_none());
         assert!(mgr.get(ids.last().unwrap()).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_download_complete_hook_invoked_for_completed_downloads_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::infra::db::init(tmp.path().join("t.db")).await.unwrap();
+        let mut mgr = TransferManager::new(db, EventBus::disabled());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<(Direction, Status)>::new()));
+        let s2 = seen.clone();
+        mgr.set_download_complete_hook(Arc::new(move |state: &TransferState| {
+            s2.lock().unwrap().push((state.direction, state.status));
+        }));
+        let mgr = Arc::new(mgr);
+
+        // completed download → 触发
+        let id = mgr.start(make_state(Direction::Download, "/tmp/a.hprof", "s1")).await;
+        mgr.finish(&id, Status::Completed, None, 10, 10).await;
+        // failed download → 不触发
+        let id2 = mgr.start(make_state(Direction::Download, "/tmp/b.hprof", "s1")).await;
+        mgr.finish(&id2, Status::Failed, Some("x".into()), 5, 10).await;
+        // upload completed → 不触发
+        let id3 = mgr.start(make_state(Direction::Upload, "/tmp/c.hprof", "s1")).await;
+        mgr.finish(&id3, Status::Completed, None, 10, 10).await;
+
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen, vec![(Direction::Download, Status::Completed)]);
     }
 }
