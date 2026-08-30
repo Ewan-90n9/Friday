@@ -1,5 +1,8 @@
 pub mod ensure_tool;
 pub mod file_transfer;
+// Task 8（lib.rs 装配）前 heap 工具未注册，避免 dead_code 告警
+#[allow(dead_code)]
+pub mod heap;
 pub mod jvm;
 pub mod list_environments;
 pub mod run_command;

@@ -1,6 +1,6 @@
 pub mod client;
 pub mod java;
-// Task 6（heap 工具接线）前 manager 仅测试消费，避免 dead_code 告警
+// Task 8（lib.rs 装配）前无非测试调用方（heap 工具已接线但未注册），避免 dead_code 告警
 #[allow(dead_code)]
 pub mod manager;
 pub mod session;
