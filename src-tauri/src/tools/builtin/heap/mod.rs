@@ -1,6 +1,6 @@
 pub mod mapping;
 
-use crate::analyzer::manager::{HeapAnalyzerManager, ManagerError};
+use crate::analyzer::manager::{normalize_dump_path, HeapAnalyzerManager, ManagerError};
 use crate::tools::builtin::run_command::{artifact_dir_for, truncate_output};
 use crate::tools::registry::{ToolContext, ToolDef, ToolHandler, ToolOutput};
 use crate::tools::risk::RiskLevel;
@@ -42,10 +42,12 @@ impl ToolHandler for HeapToolHandler {
         let Some(local_path) = args.get("local_path").and_then(|v| v.as_str()) else {
             return error_output("invalid_params", "missing required parameter: local_path");
         };
-        let path = match resolve_local_path(local_path) {
+        let path = match resolve_local_path(local_path, self.kind) {
             Ok(p) => p,
             Err(e) => return error_output("invalid_params", &e),
         };
+        // 回显解析后的绝对路径（而非原始输入），保证后续调用路径一致
+        let resolved = path.display().to_string();
         let timeout_secs =
             clamp_or(args.get("timeout_secs").and_then(|v| v.as_i64()), self.timeouts.0, self.timeouts.1);
         let start = std::time::Instant::now();
@@ -54,7 +56,7 @@ impl ToolHandler for HeapToolHandler {
         match self.kind {
             HeapToolKind::Open => match self.manager.open(&ctx.session_id, &path, timeout_secs).await {
                 Ok(outcome) => {
-                    let mut out = render(&ctx.session_id, &self.artifacts_dir, "open_heap_dump", local_path, &outcome.summary, start).await;
+                    let mut out = render(&ctx.session_id, &self.artifacts_dir, "open_heap_dump", &resolved, &outcome.summary, start, true).await;
                     if !outcome.evicted.is_empty() {
                         out.data["evicted"] = serde_json::json!(
                             outcome.evicted.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
@@ -62,19 +64,19 @@ impl ToolHandler for HeapToolHandler {
                     }
                     out
                 }
-                Err(e) => manager_error_output(e),
+                Err(e) => self.manager_error_output(e, &ctx.session_id, "open_heap_dump", &resolved, start).await,
             },
             HeapToolKind::Close => match self.manager.close(&path, timeout_secs).await {
                 Ok(was_open) => ToolOutput {
                     success: true,
                     data: serde_json::json!({
                         "tool": "close_heap_dump",
-                        "local_path": local_path,
+                        "local_path": resolved,
                         "was_open": was_open,
                     }),
                     raw_stdout: None,
                 },
-                Err(e) => manager_error_output(e),
+                Err(e) => self.manager_error_output(e, &ctx.session_id, "close_heap_dump", &resolved, start).await,
             },
             kind => {
                 let (upstream_name, upstream_args) = match mapping::build(kind, &args) {
@@ -83,16 +85,54 @@ impl ToolHandler for HeapToolHandler {
                 };
                 match self.manager.query(&path, &upstream_name, &upstream_args, timeout_secs).await {
                     Ok(outcome) => {
-                        render(&ctx.session_id, &self.artifacts_dir, &upstream_name, local_path, &outcome.text, start).await
+                        render(&ctx.session_id, &self.artifacts_dir, &upstream_name, &resolved, &outcome.text, start, true).await
                     }
-                    Err(e) => manager_error_output(e),
+                    Err(e) => self.manager_error_output(e, &ctx.session_id, &upstream_name, &resolved, start).await,
                 }
             }
         }
     }
 }
 
-/// 结果组装：64KB 头部截断 + 完整结果落盘 session artifacts（复用 run_command 机制）
+impl HeapToolHandler {
+    /// ManagerError → 结构化错误输出。Upstream（MAT 业务错误）走透传（无 error code，
+    /// 对齐 jvm_* 惯例），但同样经过 64KB 截断 + 完整结果落盘路径。
+    async fn manager_error_output(
+        &self,
+        e: ManagerError,
+        session_id: &str,
+        upstream_tool: &str,
+        local_path: &str,
+        start: std::time::Instant,
+    ) -> ToolOutput {
+        match e {
+            ManagerError::JavaMissing(m) => {
+                error_output("java_missing", &format!("本机 Java 21+ 不可用：{m}。请安装 JDK 21+ 后重试。"))
+            }
+            ManagerError::Unavailable(m) => error_output(
+                "analyzer_unavailable",
+                &format!("{m}。可重试一次；连续失败请查看 Friday 日志。"),
+            ),
+            ManagerError::Timeout(t) => error_output(
+                "analyzer_timeout",
+                &format!("分析调用超时（{t}s）。工人进程未受影响，可重试。"),
+            ),
+            ManagerError::NotOpen { warming } => {
+                if warming {
+                    error_output("dump_not_open", "该 dump 正在预热（MAT 建索引，GB 级需分钟级）。请稍候后重试 heap_open。")
+                } else {
+                    error_output("dump_not_open", "该 dump 尚未打开。请先调用 heap_open(local_path)。")
+                }
+            }
+            ManagerError::Upstream(text) => {
+                render(session_id, &self.artifacts_dir, upstream_tool, local_path, &text, start, false).await
+            }
+        }
+    }
+}
+
+/// 结果组装：64KB 头部截断 + 完整结果落盘 session artifacts（复用 run_command 机制）。
+/// success=false 用于上游业务错误透传（upstream_is_error 标记，无 error code）。
 async fn render(
     session_id: &str,
     artifacts_dir: &Path,
@@ -100,6 +140,7 @@ async fn render(
     local_path: &str,
     text: &str,
     start: std::time::Instant,
+    success: bool,
 ) -> ToolOutput {
     let elapsed_ms = start.elapsed().as_millis() as u64;
     let (body, truncated) = truncate_output(text);
@@ -108,11 +149,16 @@ async fn render(
     // 完整输出带自描述头落盘（对齐 run_command 的 full output 持久化格式）
     let full = format!("--- tool: {upstream_tool} ---\n--- local_path: {local_path} ---\n--- full output ---\n{text}\n");
     let mut full_output_path = None;
-    if tokio::fs::create_dir_all(&session_dir).await.is_ok() {
-        if tokio::fs::write(&artifact_path, &full).await.is_ok() {
-            full_output_path = Some(artifact_path);
-        } else {
-            tracing::warn!(session_id, tool = upstream_tool, "failed to persist full heap tool output");
+    match tokio::fs::create_dir_all(&session_dir).await {
+        Ok(()) => {
+            if tokio::fs::write(&artifact_path, &full).await.is_ok() {
+                full_output_path = Some(artifact_path);
+            } else {
+                tracing::warn!(session_id, tool = upstream_tool, "failed to persist full heap tool output");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(session_id, tool = upstream_tool, error = %e, "failed to create artifacts dir");
         }
     }
     let result_field = if truncated {
@@ -123,54 +169,38 @@ async fn render(
     } else {
         body
     };
-    tracing::info!(session_id, tool = upstream_tool, elapsed_ms, truncated, "heap tool executed");
+    if success {
+        tracing::info!(session_id, tool = upstream_tool, elapsed_ms, truncated, "heap tool executed");
+    } else {
+        tracing::warn!(session_id, tool = upstream_tool, elapsed_ms, truncated, "heap tool upstream error passthrough");
+    }
+    let mut data = serde_json::json!({
+        "tool": upstream_tool,
+        "local_path": local_path,
+        "result": result_field,
+        "elapsed_ms": elapsed_ms,
+        "truncated": truncated,
+        "full_output_path": full_output_path.as_ref().map(|p| p.display().to_string()),
+    });
+    if !success {
+        data["upstream_is_error"] = serde_json::json!(true);
+    }
     ToolOutput {
-        success: true,
-        data: serde_json::json!({
-            "tool": upstream_tool,
-            "local_path": local_path,
-            "result": result_field,
-            "elapsed_ms": elapsed_ms,
-            "truncated": truncated,
-            "full_output_path": full_output_path.as_ref().map(|p| p.display().to_string()),
-        }),
+        success,
+        data,
         raw_stdout: Some(text.to_string()),
     }
 }
 
-/// ManagerError → 结构化错误输出。Upstream（MAT 业务错误）走透传（无 error code，对齐 jvm_* 惯例）。
-fn manager_error_output(e: ManagerError) -> ToolOutput {
-    match e {
-        ManagerError::JavaMissing(m) => {
-            error_output("java_missing", &format!("本机 Java 21+ 不可用：{m}。请安装 JDK 21+ 后重试。"))
-        }
-        ManagerError::Unavailable(m) => error_output(
-            "analyzer_unavailable",
-            &format!("{m}。可重试一次；连续失败请查看 Friday 日志。"),
-        ),
-        ManagerError::Timeout(t) => error_output(
-            "analyzer_timeout",
-            &format!("分析调用超时（{t}s）。工人进程未受影响，可重试。"),
-        ),
-        ManagerError::NotOpen { warming } => {
-            if warming {
-                error_output("dump_not_open", "该 dump 正在预热（MAT 建索引，GB 级需分钟级）。请稍候后重试 heap_open。")
-            } else {
-                error_output("dump_not_open", "该 dump 尚未打开。请先调用 heap_open(local_path)。")
-            }
-        }
-        ManagerError::Upstream(text) => ToolOutput {
-            success: false,
-            data: serde_json::json!({ "upstream_is_error": true, "result": text }),
-            raw_stdout: Some(text),
-        },
-    }
-}
-
-/// local_path 解析：相对路径以 cwd 补全 + 必须是已存在文件
-fn resolve_local_path(raw: &str) -> Result<PathBuf, String> {
+/// local_path 解析：相对路径以 cwd 补全 + 必须是已存在文件。
+/// Close 例外：dump 可能已被移动/删除，仅规范化绝对路径用于会话主键查找，
+/// 不要求存在（否则会话将泄漏到 idle reaper 才能释放）。
+fn resolve_local_path(raw: &str, kind: HeapToolKind) -> Result<PathBuf, String> {
     if raw.trim().is_empty() {
         return Err("local_path 不能为空".into());
+    }
+    if matches!(kind, HeapToolKind::Close) {
+        return Ok(normalize_dump_path(Path::new(raw)));
     }
     let mut p = PathBuf::from(raw);
     if p.is_relative() {
@@ -598,13 +628,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_upstream_tool_error_passthrough() {
-        let mock = Arc::new(MockHeapAnalyzerClient::with_fn(|name, _args| {
+        // "MAT boom" + 巨量堆栈文本：透传断言与截断/落盘断言同时成立
+        let big = format!("MAT boom\n{}", "x".repeat(70 * 1024));
+        let mock = Arc::new(MockHeapAnalyzerClient::with_fn(move |name, _args| {
             let name = name.to_string();
+            let big = big.clone();
             async move {
                 if name == "open_heap_dump" {
                     Ok(crate::analyzer::client::CallOutcome { text: "S".into(), is_error: false })
                 } else {
-                    Ok(crate::analyzer::client::CallOutcome { text: "MAT boom".into(), is_error: true })
+                    Ok(crate::analyzer::client::CallOutcome { text: big, is_error: true })
                 }
             }
         }));
@@ -623,6 +656,55 @@ mod tests {
         assert_eq!(out.data["error"], serde_json::Value::Null);
         assert_eq!(out.data["upstream_is_error"], true);
         assert!(out.data["result"].as_str().unwrap().contains("MAT boom"));
+        // 超长上游错误同样走 64KB 截断 + 完整落盘
+        assert_eq!(out.data["truncated"], true);
+        assert!(out.data["result"].as_str().unwrap().contains("[truncated"));
+        let full = out.data["full_output_path"].as_str().unwrap();
+        assert!(std::fs::metadata(full).map(|m| m.len() as usize > 70 * 1024).unwrap_or(false));
         drop(tmp);
+    }
+
+    #[tokio::test]
+    async fn test_heap_close_succeeds_after_file_deleted() {
+        // dump 被移动/删除后 close 仍须可用，否则会话泄漏到 idle reaper
+        let mock = Arc::new(MockHeapAnalyzerClient::ok("S"));
+        let (tmp, reg) = registry(mock.clone()).await;
+        let p = dump(tmp.path(), "a.hprof");
+        def(&reg, "heap_open")
+            .handler
+            .execute(serde_json::json!({"local_path": p.to_string_lossy(), "session_id": SID}), &ctx())
+            .await;
+        std::fs::remove_file(&p).unwrap();
+        let out = def(&reg, "heap_close")
+            .handler
+            .execute(serde_json::json!({"local_path": p.to_string_lossy(), "session_id": SID}), &ctx())
+            .await;
+        assert!(out.success, "out: {}", out.data);
+        assert_eq!(out.data["was_open"], true);
+        let calls = mock.calls.lock().await;
+        assert!(calls.iter().any(|(n, _)| n == "close_heap_dump"), "upstream close must fire");
+        drop(tmp);
+    }
+
+    #[test]
+    fn test_resolve_local_path_relative_becomes_absolute() {
+        let cwd = std::env::current_dir().unwrap();
+        let name = format!("friday-resolve-test-{}.hprof", uuid::Uuid::new_v4().simple());
+        let abs = cwd.join(&name);
+        std::fs::write(&abs, "fake").unwrap();
+        let resolved = resolve_local_path(&name, HeapToolKind::Open).unwrap();
+        std::fs::remove_file(&abs).unwrap();
+        assert!(resolved.is_absolute());
+        assert_eq!(resolved, abs);
+    }
+
+    #[test]
+    fn test_resolve_local_path_close_skips_file_check() {
+        // Close 不要求文件存在，但仍解析为绝对路径（会话主键查找）
+        let resolved = resolve_local_path("C:/definitely/gone.hprof", HeapToolKind::Close).unwrap();
+        assert!(resolved.is_absolute());
+        assert!(!resolved.exists());
+        #[cfg(windows)]
+        assert_eq!(resolved.to_string_lossy(), "c:\\definitely\\gone.hprof");
     }
 }

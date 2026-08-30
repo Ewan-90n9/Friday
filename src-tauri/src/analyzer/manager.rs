@@ -83,6 +83,25 @@ pub fn xmx_gb_for(dump_size_bytes: u64) -> u32 {
     ((need / GB).ceil() as u32).clamp(4, 12)
 }
 
+/// 规范化 dump 路径作为会话主键：转绝对路径；Windows 下统一反斜杠分隔符与小写盘符。
+/// 消除调用方复述路径时的变体（正/反斜杠、盘符大小写）导致的会话 miss。
+pub fn normalize_dump_path(p: &Path) -> PathBuf {
+    let abs = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    if cfg!(windows) {
+        let s = abs.to_string_lossy().replace('/', "\\");
+        let bytes = s.as_bytes();
+        if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+            let mut out = String::with_capacity(s.len());
+            out.push((bytes[0] as char).to_ascii_lowercase());
+            out.push_str(&s[1..]);
+            return PathBuf::from(out);
+        }
+        PathBuf::from(s)
+    } else {
+        abs
+    }
+}
+
 impl HeapAnalyzerManager {
     pub fn new(
         client_factory: ClientFactory,
@@ -109,12 +128,15 @@ impl HeapAnalyzerManager {
 
     /// 打开 dump（MAT 建索引）。Ready 命中秒回（缓存 summary）；Warming 合流等待；
     /// Failed 重试。检查与 begin 在同一锁内完成（并发安全去重）。
+    /// 会话主键在入口统一规范化（工具层 / warm_up 传入的路径变体在此归一）。
     pub async fn open(
         &self,
         session_id: &str,
         path: &Path,
         timeout_secs: u64,
     ) -> Result<OpenOutcome, ManagerError> {
+        let normalized = normalize_dump_path(path);
+        let path: &Path = &normalized;
         tracing::info!(session_id, dump = %path.display(), timeout_secs, "heap analyzer open");
 
         enum Step {
@@ -196,6 +218,8 @@ impl HeapAnalyzerManager {
         upstream_args: &serde_json::Value,
         timeout_secs: u64,
     ) -> Result<CallOutcome, ManagerError> {
+        let normalized = normalize_dump_path(path);
+        let path: &Path = &normalized;
         let (analyzer_id, client) = {
             let mut inner = self.inner.lock().await;
             match inner.sessions.phase(path) {
@@ -231,6 +255,8 @@ impl HeapAnalyzerManager {
 
     /// 关闭 dump 会话（幂等，上游错误仅告警）。返回是否原本处于打开（含预热中）状态。
     pub async fn close(&self, path: &Path, timeout_secs: u64) -> Result<bool, ManagerError> {
+        let normalized = normalize_dump_path(path);
+        let path: &Path = &normalized;
         let analyzer_id = {
             let mut inner = self.inner.lock().await;
             inner.last_active = Instant::now();
@@ -283,7 +309,8 @@ impl HeapAnalyzerManager {
 
     /// Friday 会话关闭联动：关闭该会话 artifacts 目录下全部 dump 会话（不主动拉起工人进程）。
     pub async fn close_for_friday_session(&self, session_id: &str) {
-        let dir = crate::tools::builtin::run_command::artifact_dir_for(&self.artifacts_dir, session_id);
+        // 与 open() 的主键规范化保持一致：目录前缀匹配同样基于规范化路径
+        let dir = normalize_dump_path(&crate::tools::builtin::run_command::artifact_dir_for(&self.artifacts_dir, session_id));
         let removed = {
             let mut inner = self.inner.lock().await;
             inner.last_active = Instant::now();
@@ -549,6 +576,69 @@ mod tests {
         assert_eq!(xmx_gb_for(6 * GB), 9);
         assert_eq!(xmx_gb_for(9 * GB), 12); // 13.5 → 14 → clamp 12
         assert_eq!(xmx_gb_for(100 * GB), 12);
+    }
+
+    #[test]
+    fn test_normalize_dump_path_forms() {
+        #[cfg(windows)]
+        {
+            // 正/反斜杠与盘符大小写变体归一为同一主键形式（小写盘符 + 反斜杠）
+            let a = normalize_dump_path(Path::new("C:/Foo/Bar.hprof"));
+            assert_eq!(a.to_string_lossy(), "c:\\Foo\\Bar.hprof");
+            assert_eq!(a, normalize_dump_path(Path::new("c:\\Foo\\Bar.hprof")));
+        }
+        #[cfg(not(windows))]
+        {
+            // 非 Windows：仅转绝对路径，分隔符不动
+            assert!(normalize_dump_path(Path::new("foo/bar.hprof")).is_absolute());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_path_variants_share_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockHeapAnalyzerClient::ok("S"));
+        let (mgr, _s) = manager_with(&mock, tmp.path(), ManagerConfig::default());
+        let a = dump_file(tmp.path(), "a.hprof");
+        open_ready(&mgr, &a).await;
+        // 分隔符风格变体（正/反斜杠互换）必须命中同一会话：第二次 open 走 Ready 缓存
+        let variant = PathBuf::from(a.to_string_lossy().replace('\\', "/"));
+        assert_eq!(open_ready(&mgr, &variant).await.summary, "S");
+        let calls = mock.calls.lock().await;
+        assert_eq!(
+            calls.iter().filter(|(n, _)| *n == "open_heap_dump").count(),
+            1,
+            "path variant must hit the Ready cache instead of starting a second upstream open"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_path_drive_case_variant_shares_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockHeapAnalyzerClient::ok("S"));
+        let (mgr, _s) = manager_with(&mock, tmp.path(), ManagerConfig::default());
+        let a = dump_file(tmp.path(), "a.hprof");
+        open_ready(&mgr, &a).await;
+        let s = a.to_string_lossy().to_string();
+        let bytes = s.as_bytes();
+        if bytes.len() < 2 || bytes[1] != b':' || !bytes[0].is_ascii_alphabetic() {
+            return; // 非「盘符:」形式（如 UNC 路径）无盘符大小写变体可测
+        }
+        let flipped = if bytes[0].is_ascii_uppercase() {
+            bytes[0].to_ascii_lowercase()
+        } else {
+            bytes[0].to_ascii_uppercase()
+        };
+        let variant = format!("{}{}", flipped as char, &s[1..]);
+        assert_ne!(variant, s, "variant must differ from the canonical path");
+        assert_eq!(open_ready(&mgr, Path::new(&variant)).await.summary, "S");
+        let calls = mock.calls.lock().await;
+        assert_eq!(
+            calls.iter().filter(|(n, _)| *n == "open_heap_dump").count(),
+            1,
+            "drive-case variant must hit the Ready cache instead of a second upstream open"
+        );
     }
 
     #[tokio::test]
