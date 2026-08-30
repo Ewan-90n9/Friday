@@ -61,13 +61,30 @@ pub async fn spawn_analyzer_client(
             .spawn()
             .map_err(|e| format!("启动分析器进程失败: {e}"))?;
 
-    // 日志规范：子进程 stderr 必须读取记录（同时防止管道写满阻塞 JVM）
+    // 日志规范：子进程 stderr 必须读取记录（同时防止管道写满阻塞 JVM）。
+    // 不能用 lines()：GBK 等非 UTF-8 字节会使其报错并静默退出 drain 循环，
+    // 导致 stderr 无人读取、管道写满、JVM 阻塞。改用 read_until + from_utf8_lossy。
     if let Some(stderr) = stderr {
         tokio::spawn(async move {
             use tokio::io::{AsyncBufReadExt, BufReader};
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                tracing::info!(target: "heap_analyzer", "worker: {line}");
+            let mut reader = BufReader::new(stderr);
+            let mut buf = Vec::with_capacity(256);
+            loop {
+                buf.clear();
+                match reader.read_until(b'\n', &mut buf).await {
+                    Ok(0) => break, // EOF：进程退出
+                    Ok(_) => {
+                        let line = String::from_utf8_lossy(&buf);
+                        let line = line.trim_end_matches(['\n', '\r']);
+                        if !line.is_empty() {
+                            tracing::info!(target: "heap_analyzer", "worker: {line}");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "heap analyzer stderr drain ended with error");
+                        break;
+                    }
+                }
             }
         });
     }
@@ -99,6 +116,8 @@ impl HeapAnalyzerClient for McpHeapAnalyzerClient {
             for (k, v) in map {
                 arguments.insert(k.clone(), v.clone());
             }
+        } else {
+            tracing::warn!(tool = %name, "non-object args passed to analyzer client, treated as empty");
         }
         // rmcp 3.1.4：CallToolRequestParams 为 non_exhaustive，只能经 Default 构造
         let mut params = rmcp::model::CallToolRequestParams::default();
@@ -122,11 +141,15 @@ impl HeapAnalyzerClient for McpHeapAnalyzerClient {
     async fn shutdown(&self) {
         // cancel 消费 RunningService：取出后优雅关闭传输（关 stdin → 等 3s → kill）
         if let Some(service) = self.service.lock().await.take() {
-            if let Err(e) = service.cancel().await {
-                tracing::warn!(?e, "heap analyzer service cancel failed");
+            match service.cancel().await {
+                Ok(reason) => {
+                    tracing::info!(reason = ?reason, "heap analyzer worker shut down");
+                }
+                Err(e) => {
+                    tracing::warn!(?e, "heap analyzer service cancel failed");
+                }
             }
         }
-        tracing::info!("heap analyzer worker shut down");
     }
 }
 
@@ -202,6 +225,13 @@ mod tests {
         assert_eq!(extract_text(&result), "");
     }
 
+    #[test]
+    fn test_extract_text_from_error_result() {
+        let result = rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text("bad")]);
+        assert_eq!(extract_text(&result), "bad");
+        assert!(result.is_error.unwrap_or(false));
+    }
+
     #[tokio::test]
     async fn test_mock_client_records_calls() {
         let mock = MockHeapAnalyzerClient::ok("S");
@@ -211,5 +241,23 @@ mod tests {
         let calls = mock.calls.lock().await;
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "open_heap_dump");
+    }
+
+    #[tokio::test]
+    async fn test_mock_client_error_and_shutdown_count() {
+        let mock = MockHeapAnalyzerClient::with_fn(|_name, _args| async { Err("boom".to_string()) });
+        let out = mock.call_tool("open_heap_dump", &serde_json::json!({"path": "x"})).await;
+        match out {
+            Err(e) => assert_eq!(e, "boom"),
+            Ok(_) => panic!("expected Err, got Ok"),
+        }
+        mock.shutdown().await;
+        mock.shutdown().await;
+        assert_eq!(
+            mock.shutdown_count.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        let calls = mock.calls.lock().await;
+        assert_eq!(calls[0].1["path"], "x");
     }
 }
