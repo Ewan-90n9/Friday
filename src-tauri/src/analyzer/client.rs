@@ -3,14 +3,15 @@ use serde_json::Value;
 use std::path::Path;
 
 /// 一次上游工具调用结果（上游输出为 markdown 文本）
-// Task 5（manager）接入前暂无调用方，避免 dead_code 告警
+// Task 6（heap 工具接线）前仅测试构造，避免 dead_code 告警
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct CallOutcome {
     pub text: String,
     pub is_error: bool,
 }
 
-// Task 5（manager）接入前暂无调用方，避免 dead_code 告警
+// Task 6（heap 工具接线）前仅测试消费，避免 dead_code 告警
 #[allow(dead_code)]
 #[async_trait]
 pub trait HeapAnalyzerClient: Send + Sync {
