@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 use tokio::time::{timeout, Duration};
 
-// 字段由 Task 3（analyzer manager）读取
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct JavaInfo {
     pub path: PathBuf,
+    // 探测结果版本号：当前生产工厂未读取（仅日志），保留供后续按版本分档/诊断
+    #[allow(dead_code)]
     pub major: u32,
 }
 
@@ -51,8 +51,6 @@ pub fn java_candidates(java_home: Option<&str>) -> Vec<PathBuf> {
 }
 
 /// 探测 Java 21+：逐候选执行 `java -version`。Err 附带可读原因（含探测到的版本号）。
-// Task 3（analyzer manager）接入前暂无调用方，避免 dead_code 告警
-#[allow(dead_code)]
 pub async fn detect_java() -> Result<JavaInfo, String> {
     let candidates = java_candidates(std::env::var("JAVA_HOME").ok().as_deref());
     let mut last_err = String::from("未找到 java 可执行文件（已检查 JAVA_HOME 与 PATH）");

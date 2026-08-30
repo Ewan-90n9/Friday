@@ -271,6 +271,9 @@ pub async fn close_session_cmd(
         .await
         .map_err(|e| e.to_string())?;
 
+    // 关闭该会话 artifacts 下的堆分析会话（释放 MAT 工人进程内存；索引保留）
+    state.analyzer.close_for_friday_session(&session_id).await;
+
     // Emit SessionClosed
     state.bus.emit(
         &session_id,

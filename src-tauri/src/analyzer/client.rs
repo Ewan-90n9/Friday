@@ -3,16 +3,12 @@ use serde_json::Value;
 use std::path::Path;
 
 /// 一次上游工具调用结果（上游输出为 markdown 文本）
-// Task 8（lib.rs 装配）前仅测试构造，避免 dead_code 告警
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct CallOutcome {
     pub text: String,
     pub is_error: bool,
 }
 
-// Task 8（lib.rs 装配）前仅测试消费，避免 dead_code 告警
-#[allow(dead_code)]
 #[async_trait]
 pub trait HeapAnalyzerClient: Send + Sync {
     /// 调用上游 MCP 工具。Err = 传输/进程层错误（进程疑似死亡）；
@@ -23,8 +19,6 @@ pub trait HeapAnalyzerClient: Send + Sync {
 }
 
 /// 从 CallToolResult 提取全部 text 内容块（拼接）
-// Task 8（lib.rs 装配）前暂无调用方，避免 dead_code 告警
-#[allow(dead_code)]
 pub fn extract_text(result: &rmcp::model::CallToolResult) -> String {
     result
         .content
@@ -37,16 +31,12 @@ pub fn extract_text(result: &rmcp::model::CallToolResult) -> String {
 /// rmcp stdio 子进程实现：java -Xmx<n>g -jar <jar>，MCP client 角色。
 /// rmcp 3.1.4 适配：`RunningService::cancel(self)` 消费所有权，故 service 存于
 /// `Mutex<Option<..>>` 供 shutdown 取出取消；工具调用走克隆的 `Peer`。
-// Task 8（analyzer factory）接入前暂无调用方，避免 dead_code 告警
-#[allow(dead_code)]
 pub struct McpHeapAnalyzerClient {
     peer: rmcp::service::Peer<rmcp::RoleClient>,
     service: tokio::sync::Mutex<Option<rmcp::service::RunningService<rmcp::RoleClient, ()>>>,
 }
 
 /// 启动工人进程并完成 MCP 握手（60s 超时）
-// Task 8（analyzer factory）接入前暂无调用方，避免 dead_code 告警
-#[allow(dead_code)]
 pub async fn spawn_analyzer_client(
     java: &crate::analyzer::java::JavaInfo,
     jar_path: &Path,

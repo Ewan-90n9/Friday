@@ -539,12 +539,50 @@ pub fn download_complete_hook(manager: &Arc<HeapAnalyzerManager>) -> crate::tran
         if !is_hprof {
             return;
         }
+        tracing::debug!(transfer_id = %state.id, dump = %state.local_path.display(), session_id = %state.session_id, "heap dump download complete, warming up analysis");
         let mgr = mgr.clone();
         let session_id = state.session_id.clone();
         let path = state.local_path.clone();
         tokio::spawn(async move {
             mgr.warm_up(&session_id, &path).await;
         });
+    })
+}
+
+/// vendored 分析器 JAR 文件名（scripts/fetch-analyzer-jar.ps1 下载）
+pub const ANALYZER_JAR_NAME: &str = "jvm-heap-dump-mcp-0.2.0-all.jar";
+
+/// 生产 client 工厂：Java 探测（Ok 结果进程内缓存）→ stdio 子进程 MCP client。
+/// jar 缺失（未跑 fetch 脚本）→ Unavailable 引导。
+pub fn production_client_factory(jar_path: Option<PathBuf>) -> ClientFactory {
+    Arc::new(move |xmx_gb: u32| {
+        let jar = jar_path.clone();
+        Box::pin(async move {
+            static JAVA_CACHE: std::sync::OnceLock<crate::analyzer::java::JavaInfo> = std::sync::OnceLock::new();
+            let java = match JAVA_CACHE.get() {
+                Some(j) => j.clone(),
+                None => match crate::analyzer::java::detect_java().await {
+                    Ok(info) => {
+                        let _ = JAVA_CACHE.set(info.clone());
+                        info
+                    }
+                    Err(e) => return Err(ManagerError::JavaMissing(e)),
+                },
+            };
+            let jar = jar.ok_or_else(|| {
+                ManagerError::Unavailable(
+                    "分析器 JAR 缺失（resources/analyzer/）。请运行 scripts/fetch-analyzer-jar.ps1 后重启。"
+                        .to_string(),
+                )
+            })?;
+            match crate::analyzer::client::spawn_analyzer_client(&java, &jar, xmx_gb).await {
+                Ok(c) => {
+                    let c: Arc<dyn HeapAnalyzerClient> = Arc::new(c);
+                    Ok(c)
+                }
+                Err(e) => Err(ManagerError::Unavailable(e)),
+            }
+        })
     })
 }
 

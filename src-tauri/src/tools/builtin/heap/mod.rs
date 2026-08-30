@@ -1,6 +1,6 @@
 pub mod mapping;
 
-use crate::analyzer::manager::{normalize_dump_path, HeapAnalyzerManager, ManagerError};
+use crate::analyzer::{normalize_dump_path, HeapAnalyzerManager, ManagerError};
 use crate::tools::builtin::run_command::{artifact_dir_for, truncate_output};
 use crate::tools::registry::{ToolContext, ToolDef, ToolHandler, ToolOutput};
 use crate::tools::risk::RiskLevel;

@@ -27,6 +27,7 @@ pub struct AppState {
     pub embedding: Option<Arc<crate::knowledge::embedding::EmbeddingService>>,
     pub vec_store: Option<Arc<crate::knowledge::vec_store::VecStore>>,
     pub tool_registry: Arc<crate::tools::registry::ToolRegistry>,
+    pub analyzer: Arc<crate::analyzer::HeapAnalyzerManager>,
     pub exec_pool: Arc<Mutex<crate::exec::pool::ExecChannelPool>>,
     pub confirm_registry: Arc<Mutex<crate::tools::confirm::ConfirmRegistry>>,
     pub session_mapper: Arc<Mutex<crate::mcp::session_mapper::SessionMapper>>,
@@ -53,7 +54,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             let embedding = match crate::knowledge::embedding::EmbeddingService::new(
                 paths.models_dir(),
-                resource_dir,
+                resource_dir.clone(),
             ) {
                 Ok(e) => {
                     tracing::info!("embedding model loaded");
@@ -78,14 +79,39 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
             };
 
+            // 堆快照分析：vendored MAT 工人进程（resources/analyzer JAR + 本机 Java 21+）
+            let analyzer_jar = resource_dir.as_ref().and_then(|r| {
+                let candidates = [
+                    r.join("resources").join("analyzer").join(crate::analyzer::ANALYZER_JAR_NAME),
+                    r.join("analyzer").join(crate::analyzer::ANALYZER_JAR_NAME),
+                ];
+                candidates.into_iter().find(|p| p.exists())
+            });
+            if analyzer_jar.is_none() {
+                tracing::warn!(
+                    "heap analyzer JAR missing (resources/analyzer/{}); heap_* tools will report analyzer_unavailable",
+                    crate::analyzer::ANALYZER_JAR_NAME
+                );
+            }
+            let analyzer_manager = Arc::new(crate::analyzer::HeapAnalyzerManager::new(
+                crate::analyzer::production_client_factory(analyzer_jar),
+                EventBus::new(handle.clone()),
+                paths.artifacts_dir(),
+                crate::analyzer::ManagerConfig::default(),
+            ));
+
             // Create shared state for MCP server
             let exec_pool = Arc::new(Mutex::new(crate::exec::pool::ExecChannelPool::new()));
 
-            // 文件传输：TransferManager（后台异步传输引擎）+ 4 个工具
-            let transfer_manager = Arc::new(crate::transfer::TransferManager::new(
+            // 文件传输：TransferManager（后台异步传输引擎）+ 4 个工具；
+            // heap dump 拉回完成 → 自动预热分析（钩子须在 Arc 包装前注入）
+            let mut transfer_manager = crate::transfer::TransferManager::new(
                 pool.clone(),
                 EventBus::new(handle.clone()),
-            ));
+            );
+            transfer_manager
+                .set_download_complete_hook(crate::analyzer::download_complete_hook(&analyzer_manager));
+            let transfer_manager = Arc::new(transfer_manager);
 
             // Build tool registry
             // JVM 语义工具共享内核与 JDK 路径缓存（ensure_tool 与 jvm_* 必须共享同一实例）
@@ -125,6 +151,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 jvm_core,
                 EventBus::new(handle.clone()),
                 transfer_manager.clone(),
+            );
+            crate::tools::builtin::heap::register_all(
+                &mut tool_registry,
+                analyzer_manager.clone(),
+                paths.artifacts_dir(),
             );
             let tool_registry = Arc::new(tool_registry);
 
@@ -193,6 +224,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 embedding,
                 vec_store,
                 tool_registry,
+                analyzer: analyzer_manager,
                 exec_pool,
                 confirm_registry,
                 session_mapper,
