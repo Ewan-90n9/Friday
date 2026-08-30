@@ -71,6 +71,8 @@ struct ManagerInner {
     sessions: DumpSessions,
     inflight: u32,
     last_active: Instant,
+    /// reaper 只在首个工人进程拉起时 spawn 一次（new() 无 runtime 上下文，禁止 tokio::spawn）
+    reaper_spawned: bool,
 }
 
 /// 会话 phase 订阅者类型别名（open 等待用）
@@ -115,6 +117,7 @@ impl HeapAnalyzerManager {
                 sessions: DumpSessions::new(),
                 inflight: 0,
                 last_active: Instant::now(),
+                reaper_spawned: false,
             })),
             spawn_lock: Arc::new(tokio::sync::Mutex::new(())),
             client_factory,
@@ -122,7 +125,6 @@ impl HeapAnalyzerManager {
             artifacts_dir,
             config: config.clone(),
         };
-        mgr.spawn_idle_reaper();
         mgr
     }
 
@@ -433,6 +435,8 @@ impl HeapAnalyzerManager {
         }
     }
 
+    /// 确保 MAT 工人进程客户端存在（不存在则经工厂拉起）。
+    /// 首次拉起时启动 idle reaper（此处必在 async 上下文中运行）。
     async fn ensure_client(&self, xmx_gb: u32) -> Result<Arc<dyn HeapAnalyzerClient>, ManagerError> {
         // 注意（Task 8）：工人 -Xmx 由首个 open 的 dump 大小定档，后续更大的 dump 复用同一进程时可能 OOM（表现为 Upstream 错误），若成为实际问题需支持按需重启/分档。
         {
@@ -450,9 +454,19 @@ impl HeapAnalyzerManager {
         }
         let client = (self.client_factory)(xmx_gb).await?;
         tracing::info!(xmx_gb, "heap analyzer worker process started");
-        let mut inner = self.inner.lock().await;
-        inner.client = Some(client.clone());
-        inner.last_active = Instant::now();
+        let mut spawn_reaper = false;
+        {
+            let mut inner = self.inner.lock().await;
+            inner.client = Some(client.clone());
+            inner.last_active = Instant::now();
+            if !inner.reaper_spawned {
+                inner.reaper_spawned = true;
+                spawn_reaper = true;
+            }
+        }
+        if spawn_reaper {
+            self.spawn_idle_reaper();
+        }
         Ok(client)
     }
 
@@ -502,6 +516,9 @@ impl HeapAnalyzerManager {
         }
     }
 
+    /// 空闲巡检任务：无会话、无调用且超过 idle_timeout 后关闭工人进程。
+    /// 由 ensure_client 在首个客户端拉起后启动（每份共享状态恰一次），
+    /// new() 不再调用——Tauri setup 是同步上下文，无 tokio runtime 可用。
     fn spawn_idle_reaper(&self) {
         let mgr = self.clone();
         tokio::spawn(async move {
@@ -637,6 +654,21 @@ mod tests {
         assert_eq!(xmx_gb_for(6 * GB), 9);
         assert_eq!(xmx_gb_for(9 * GB), 12); // 13.5 → 14 → clamp 12
         assert_eq!(xmx_gb_for(100 * GB), 12);
+    }
+
+    #[test]
+    fn test_manager_new_outside_tokio_runtime_does_not_panic() {
+        // 回归：lib.rs 的 Tauri setup 是同步上下文，new() 不得依赖运行时
+        let factory: ClientFactory = Arc::new(|_xmx| {
+            Box::pin(async { Err(ManagerError::Unavailable("x".into())) })
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let _mgr = HeapAnalyzerManager::new(
+            factory,
+            EventBus::disabled(),
+            tmp.path().to_path_buf(),
+            ManagerConfig::default(),
+        );
     }
 
     #[test]
