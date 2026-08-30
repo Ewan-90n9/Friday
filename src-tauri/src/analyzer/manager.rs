@@ -50,6 +50,7 @@ impl Default for ManagerConfig {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct OpenOutcome {
     pub summary: String,
     pub evicted: Vec<PathBuf>,
@@ -212,6 +213,7 @@ impl HeapAnalyzerManager {
         };
         let client = client.ok_or_else(|| ManagerError::Unavailable("工人进程不在运行".into()))?;
 
+        debug_assert!(upstream_args.get("id").is_none(), "query injects analyzer session id");
         let mut args = upstream_args.clone();
         if let Some(map) = args.as_object_mut() {
             map.insert("id".to_string(), serde_json::json!(analyzer_id));
@@ -292,12 +294,27 @@ impl HeapAnalyzerManager {
         }
         tracing::info!(session_id, count = removed.len(), "closing dump sessions for friday session");
         if let Some(client) = self.existing_client().await {
-            for (_path, analyzer_id) in removed {
-                let _ = tokio::time::timeout(
+            for (path, analyzer_id) in removed {
+                let res = tokio::time::timeout(
                     Duration::from_secs(CLOSE_TIMEOUT_SECS),
                     client.call_tool("close_heap_dump", &serde_json::json!({ "id": analyzer_id })),
                 )
                 .await;
+                match res {
+                    Err(_) => tracing::warn!(
+                        session_id, dump = %path.display(),
+                        "heap analyzer close timed out"
+                    ),
+                    Ok(Err(e)) => tracing::warn!(
+                        session_id, dump = %path.display(), error = %e,
+                        "heap analyzer close failed"
+                    ),
+                    Ok(Ok(o)) if o.is_error => tracing::warn!(
+                        session_id, dump = %path.display(), text = %o.text,
+                        "heap analyzer close upstream error"
+                    ),
+                    _ => {}
+                }
             }
         }
     }
@@ -307,38 +324,60 @@ impl HeapAnalyzerManager {
     /// open 的后台任务：ensure client → 上游 open → 落定 phase。
     async fn run_open_task(&self, path: &Path, analyzer_id: String, dump_size: u64) {
         let xmx_gb = xmx_gb_for(dump_size);
-        let client = match self.ensure_client(xmx_gb).await {
-            Ok(c) => c,
+        let phase = match self.ensure_client(xmx_gb).await {
             Err(e) => {
                 tracing::warn!(dump = %path.display(), error = %e, "heap analyzer open: ensure client failed");
-                self.finish_phase(path, &analyzer_id, EntryPhase::Failed { error: e }).await;
-                return;
+                EntryPhase::Failed { error: e }
             }
-        };
-        let args = serde_json::json!({ "path": path.to_string_lossy(), "id": analyzer_id });
-        let result = tokio::time::timeout(
-            Duration::from_secs(OPEN_TASK_TIMEOUT_SECS),
-            client.call_tool("open_heap_dump", &args),
-        )
-        .await;
-        let phase = match result {
-            Err(_) => EntryPhase::Failed {
-                error: ManagerError::Timeout(OPEN_TASK_TIMEOUT_SECS),
-            },
-            Ok(Err(e)) => {
-                // 传输层错误 = 工人进程疑似死亡：先失效全部，再落定 Failed
-                tracing::error!(dump = %path.display(), error = %e, "heap analyzer open: transport error");
-                self.invalidate().await;
-                EntryPhase::Failed {
-                    error: ManagerError::Unavailable(e),
+            Ok(client) => {
+                let args = serde_json::json!({ "path": path.to_string_lossy(), "id": analyzer_id });
+                let result = tokio::time::timeout(
+                    Duration::from_secs(OPEN_TASK_TIMEOUT_SECS),
+                    client.call_tool("open_heap_dump", &args),
+                )
+                .await;
+                match result {
+                    Err(_) => EntryPhase::Failed {
+                        error: ManagerError::Timeout(OPEN_TASK_TIMEOUT_SECS),
+                    },
+                    Ok(Err(e)) => {
+                        // 传输层错误 = 工人进程疑似死亡：先失效全部，再落定 Failed
+                        tracing::error!(dump = %path.display(), error = %e, "heap analyzer open: transport error");
+                        self.invalidate().await;
+                        EntryPhase::Failed {
+                            error: ManagerError::Unavailable(e),
+                        }
+                    }
+                    Ok(Ok(outcome)) if outcome.is_error => EntryPhase::Failed {
+                        error: ManagerError::Upstream(outcome.text),
+                    },
+                    Ok(Ok(outcome)) => EntryPhase::Ready { summary: outcome.text },
                 }
             }
-            Ok(Ok(outcome)) if outcome.is_error => EntryPhase::Failed {
-                error: ManagerError::Upstream(outcome.text),
-            },
-            Ok(Ok(outcome)) => EntryPhase::Ready { summary: outcome.text },
         };
-        self.finish_phase(path, &analyzer_id, phase).await;
+        self.settle_open_phase(path, &analyzer_id, phase).await;
+    }
+
+    /// open 任务结果落定。条目已消失（close/逐出/被重试覆盖）时：
+    /// Ready 结果对应的上游会话已成孤儿（对 LRU/reaper 不可见），必须主动释放；
+    /// Failed 结果无需释放（上游会话未建立，或已随 invalidate/失败处理）。
+    async fn settle_open_phase(&self, path: &Path, analyzer_id: &str, phase: EntryPhase) {
+        let was_ready = matches!(phase, EntryPhase::Ready { .. });
+        if self.finish_phase(path, analyzer_id, phase).await {
+            return;
+        }
+        if was_ready {
+            tracing::warn!(
+                dump = %path.display(),
+                "open task completed but session was closed meanwhile, releasing orphaned analyzer session"
+            );
+            self.close_upstream_quietly(analyzer_id).await;
+        } else {
+            tracing::debug!(
+                dump = %path.display(),
+                "open task failed but session was closed meanwhile, nothing to release"
+            );
+        }
     }
 
     /// 带超时 + inflight 计数的上游调用
@@ -368,6 +407,7 @@ impl HeapAnalyzerManager {
     }
 
     async fn ensure_client(&self, xmx_gb: u32) -> Result<Arc<dyn HeapAnalyzerClient>, ManagerError> {
+        // 注意（Task 8）：工人 -Xmx 由首个 open 的 dump 大小定档，后续更大的 dump 复用同一进程时可能 OOM（表现为 Upstream 错误），若成为实际问题需支持按需重启/分档。
         {
             let inner = self.inner.lock().await;
             if let Some(c) = &inner.client {
@@ -407,19 +447,31 @@ impl HeapAnalyzerManager {
         }
     }
 
-    async fn finish_phase(&self, path: &Path, analyzer_id: &str, phase: EntryPhase) {
+    /// 落定 phase（见 DumpSessions::set_phase）。返回是否命中条目（false = 条目已被
+    /// close/逐出，或已被重试覆盖，写入被丢弃）。
+    async fn finish_phase(&self, path: &Path, analyzer_id: &str, phase: EntryPhase) -> bool {
         let mut inner = self.inner.lock().await;
-        inner.sessions.set_phase(path, analyzer_id, phase);
+        let matched = inner.sessions.set_phase(path, analyzer_id, phase);
         inner.last_active = Instant::now();
+        matched
     }
 
+    /// 尽力关闭上游会话（不传播错误，但按日志规范记录失败原因）
     async fn close_upstream_quietly(&self, analyzer_id: &str) {
         if let Some(client) = self.existing_client().await {
-            let _ = tokio::time::timeout(
+            let res = tokio::time::timeout(
                 Duration::from_secs(CLOSE_TIMEOUT_SECS),
                 client.call_tool("close_heap_dump", &serde_json::json!({ "id": analyzer_id })),
             )
             .await;
+            match res {
+                Err(_) => tracing::warn!(analyzer_id, "heap analyzer close timed out"),
+                Ok(Err(e)) => tracing::warn!(analyzer_id, error = %e, "heap analyzer close failed"),
+                Ok(Ok(o)) if o.is_error => {
+                    tracing::warn!(analyzer_id, text = %o.text, "heap analyzer close upstream error")
+                }
+                _ => {}
+            }
         }
     }
 
@@ -593,7 +645,7 @@ mod tests {
         let mgr2 = mgr.clone();
         let a2 = a.clone();
         let h = tokio::spawn(async move {
-            mgr2.open(SID, &a2, 30).await;
+            let _ = mgr2.open(SID, &a2, 30).await;
         });
         tokio::time::sleep(std::time::Duration::from_millis(60)).await;
         assert!(matches!(
@@ -835,5 +887,201 @@ mod tests {
             mgr.query(&dir1.join("a.hprof"), "get_leak_suspects", &serde_json::json!({}), 5).await,
             Err(ManagerError::NotOpen { warming: false })
         ));
+    }
+
+    /// 轮询 mock 调用记录直至谓词命中或超时（容忍调度抖动的确定性等待）
+    async fn wait_for_calls(
+        mock: &Arc<MockHeapAnalyzerClient>,
+        pred: impl Fn(&[(String, serde_json::Value)]) -> bool,
+    ) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let hit = {
+                let calls = mock.calls.lock().await;
+                pred(&calls)
+            };
+            if hit {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_open_timeout_then_attach_recovers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockHeapAnalyzerClient::with_fn(|name, _args| {
+            let name = name.to_string();
+            async move {
+                if name == "open_heap_dump" {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    Ok(CallOutcome { text: "SUMMARY".into(), is_error: false })
+                } else {
+                    Ok(CallOutcome { text: "ok".into(), is_error: false })
+                }
+            }
+        }));
+        let (mgr, _s) = manager_with(&mock, tmp.path(), ManagerConfig::default());
+        let a = dump_file(tmp.path(), "a.hprof");
+        // 第一次 open 1s 超时：后台任务继续跑（工人进程保留）
+        assert!(matches!(
+            mgr.open(SID, &a, 1).await,
+            Err(ManagerError::Timeout(1))
+        ));
+        // 第二次 open 合流到仍在运行的 warming 任务，拿到最终结果
+        let o = mgr.open(SID, &a, 30).await.expect("attach to in-flight open should recover");
+        assert_eq!(o.summary, "SUMMARY");
+        let calls = mock.calls.lock().await;
+        assert_eq!(
+            calls.iter().filter(|(n, _)| n == "open_heap_dump").count(),
+            1,
+            "recovery must attach to the still-running task, not start a new upstream open"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_waiter_sees_channel_closed_on_invalidate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockHeapAnalyzerClient::with_fn(|name, _args| {
+            let name = name.to_string();
+            async move {
+                if name == "open_heap_dump" {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    Ok(CallOutcome { text: "S".into(), is_error: false })
+                } else {
+                    Ok(CallOutcome { text: "ok".into(), is_error: false })
+                }
+            }
+        }));
+        let (mgr, _s) = manager_with(&mock, tmp.path(), ManagerConfig::default());
+        let a = dump_file(tmp.path(), "a.hprof");
+        let mgr2 = mgr.clone();
+        let a2 = a.clone();
+        let h = tokio::spawn(async move { mgr2.open(SID, &a2, 30).await });
+        assert!(
+            wait_for_calls(&mock, |cs| cs.iter().any(|(n, _)| n == "open_heap_dump")).await,
+            "upstream open should start"
+        );
+        // warming 期间 close：移除条目 → watch sender drop → 等待者看到通道关闭
+        assert!(mgr.close(&a, 5).await.unwrap(), "dump was warming");
+        let res = h.await.unwrap();
+        assert!(
+            matches!(res, Err(ManagerError::Unavailable(_))),
+            "waiter must see channel closed after close during warming, got {res:?}"
+        );
+        // 孤儿释放（Issue 1）：任务最终 Ready 但条目已消失 → 主动 close_heap_dump。
+        // 显式 close 已发一次（id 相同），孤儿释放补齐第二次。
+        let first_open_id = {
+            let calls = mock.calls.lock().await;
+            calls
+                .iter()
+                .find(|(n, _)| n == "open_heap_dump")
+                .map(|(_, args)| args["id"].as_str().unwrap().to_string())
+                .expect("open call recorded")
+        };
+        assert!(
+            wait_for_calls(&mock, |cs| {
+                cs.iter()
+                    .filter(|(n, args)| {
+                        *n == "close_heap_dump" && args["id"].as_str() == Some(first_open_id.as_str())
+                    })
+                    .count()
+                    >= 2
+            })
+            .await,
+            "explicit close + orphan release must both fire upstream close for the open's id"
+        );
+        let calls = mock.calls.lock().await;
+        assert_eq!(calls.iter().filter(|(n, _)| n == "open_heap_dump").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_warm_up_failure_emits_event_and_open_still_possible() {
+        // EventBus 无测试捕获钩子（emit 仅走 tracing），ProvisionProgress 事件内容不做断言；
+        // 此处验证 warm_up 失败不 wedge 状态：后续 open 仍可重试。
+        let tmp = tempfile::tempdir().unwrap();
+        let factory: ClientFactory = Arc::new(|_xmx| {
+            Box::pin(async { Err(ManagerError::JavaMissing("no java".into())) })
+        });
+        let mgr = HeapAnalyzerManager::new(
+            factory,
+            EventBus::disabled(),
+            tmp.path().to_path_buf(),
+            ManagerConfig::default(),
+        );
+        let a = dump_file(tmp.path(), "a.hprof");
+        // warm_up 吞掉错误（转事件/日志），不 panic
+        mgr.warm_up(SID, &a).await;
+        // 预热失败后 open 重试：begin 覆盖 Failed 条目，返回同一错误而非卡死/不可用
+        assert!(matches!(
+            mgr.open(SID, &a, 5).await,
+            Err(ManagerError::JavaMissing(_))
+        ));
+        assert!(matches!(
+            mgr.open(SID, &a, 5).await,
+            Err(ManagerError::JavaMissing(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_close_during_warming_then_open_retries_cleanly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockHeapAnalyzerClient::with_fn(|name, _args| {
+            let name = name.to_string();
+            async move {
+                if name == "open_heap_dump" {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Ok(CallOutcome { text: "S".into(), is_error: false })
+                } else {
+                    Ok(CallOutcome { text: "ok".into(), is_error: false })
+                }
+            }
+        }));
+        let (mgr, _s) = manager_with(&mock, tmp.path(), ManagerConfig::default());
+        let a = dump_file(tmp.path(), "a.hprof");
+        let mgr2 = mgr.clone();
+        let a2 = a.clone();
+        let h = tokio::spawn(async move { mgr2.open(SID, &a2, 30).await });
+        assert!(
+            wait_for_calls(&mock, |cs| cs.iter().any(|(n, _)| n == "open_heap_dump")).await,
+            "upstream open should start"
+        );
+        assert!(mgr.close(&a, 5).await.unwrap(), "dump was warming");
+        let res = h.await.unwrap();
+        assert!(
+            matches!(res, Err(ManagerError::Unavailable(_))),
+            "first open must fail with channel closed, got {res:?}"
+        );
+        // 重试：全新 begin + 新任务，正常完成
+        let o = mgr.open(SID, &a, 30).await.expect("retry after close should succeed");
+        assert_eq!(o.summary, "S");
+        // 孤儿释放（Issue 1）：第一次 open 的上游会话必须被 close
+        // （显式 close 一次 + 孤儿释放一次，均为第一次 open 的 id；重试会话不受影响）
+        assert!(
+            wait_for_calls(&mock, |cs| {
+                cs.iter().filter(|(n, _)| *n == "close_heap_dump").count() >= 2
+            })
+            .await,
+            "explicit close + orphan release should both fire upstream close"
+        );
+        let calls = mock.calls.lock().await;
+        let opens: Vec<_> = calls.iter().filter(|(n, _)| *n == "open_heap_dump").collect();
+        assert_eq!(opens.len(), 2, "exactly two upstream opens (orphaned + retry)");
+        let first_id = opens[0].1["id"].as_str().unwrap();
+        let second_id = opens[1].1["id"].as_str().unwrap();
+        assert_ne!(first_id, second_id);
+        let closes: Vec<_> = calls.iter().filter(|(n, _)| *n == "close_heap_dump").collect();
+        assert_eq!(
+            closes.len(),
+            2,
+            "explicit close + orphan release (retry session must NOT be closed)"
+        );
+        assert!(
+            closes.iter().all(|(_, args)| args["id"].as_str().unwrap() == first_id),
+            "all closes must target the first (orphaned) open's id"
+        );
     }
 }
