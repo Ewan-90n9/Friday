@@ -254,5 +254,6 @@ agent 自动总结（用户点名的来源）走既有经验管线：诊断完�
 |---|---|
 | 爬虫管线 | 摄入管线抽象为 trait（`KnowledgeIngest`：fetch → extract → draft），爬虫是第三个实现；前两条管线先以该 trait 落地 |
 | 结构化 JVM 工具批次 | ✅ 已落地（见 [JDK 原生命令工具设计](2026-08-28-jdk-native-tools-design.md)）；playbook 步骤中的 run_command 命令模板逐步替换为结构化工具名，模型不用改 |
+| 堆快照分析（MAT） | ✅ 已落地（见 [堆快照分析设计](2026-08-29-heap-analysis-design.md)）：heap_* 工具 + MAT 工人进程（vendored JAR，rmcp client stdio 托管），dump 拉回自动预热 |
 | K8s 场景 | 即"SSH 上跑 kubectl"的 playbook 内容，无新机制 |
 | 经验时间衰减、playbook 使用效果反馈 | 现有演进项维持不变 |

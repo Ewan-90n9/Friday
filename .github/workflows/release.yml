@@ -59,6 +59,10 @@ jobs:
           Write-Host "Model files downloaded:"
           Get-ChildItem -Recurse $model_dir | ForEach-Object { Write-Host "  $($_.FullName) ($($_.Length) bytes)" }
 
+      - name: Download heap analyzer JAR
+        shell: pwsh
+        run: ./scripts/fetch-analyzer-jar.ps1
+
       - name: Inject version from tag
         shell: pwsh
         run: ./scripts/set-version.ps1 -Version ${{ github.ref_name }}

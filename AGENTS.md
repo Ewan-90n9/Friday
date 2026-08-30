@@ -35,6 +35,7 @@ Friday 是面向软件开发人员的**远程环境运行时故障诊断 Agent**
 - **多 Provider 支持**：opencode 和 codeagentcli 同时支持，用户可在设置中切换。spawn 通过 `CommandConfig` 按 provider 分发不同 CLI 参数，stream 解析器同时处理两种 NDJSON 格式（opencode 的 `part.*` 和 codeagentcli 的 Claude API 风格 `message.content[]`）
 - **对话管道**：多轮对话、NDJSON 流式解析、Friday 人格 system prompt、会话列表、流式渲染（文本 + 工具卡片）
 - **文件上传下载**：独立 Agent 工具（file_download / file_upload / transfer_status / transfer_cancel），TransferManager 后台异步传输（专用 SSH 连接、断点续传、5 次重试/2h 预算、1s 进度事件），heap_dump 生成后自动后台拉回，前端聊天流内进度条卡片
+- **堆快照分析**：heap_* 系列 9 个 MCP 工具（MAT 内核，leak suspects/支配树/GC root 链/对象下钻/线程分析）。Friday 作为 MCP client 托管 vendored jvm-heap-dump-mcp JAR 工人进程（stdio，需本机 Java 21+，JAR 由 `scripts/fetch-analyzer-jar.ps1` 构建时获取、随安装包分发）；dump 拉回完成自动预热（MAT 建索引，provision_progress 事件）；会话 LRU（上限 3）、空闲 15min 自动退出、崩溃自动重启、会话关闭联动释放
 
 ## 开发命令
 
