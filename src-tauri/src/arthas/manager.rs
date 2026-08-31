@@ -99,6 +99,9 @@ struct ArthasEntry {
     stop_handle: Option<Arc<dyn ArthasStopHandle>>,
     last_active: Instant,
     inflight: u32,
+    /// 代际令牌：条目创建时由 ManagerInner.next_task_id 分配，
+    /// 仅创建它的 attach 任务在落定时可写入（防 stale 任务覆盖重开后的新条目）
+    task_id: u64,
 }
 
 #[derive(Debug)]
@@ -117,6 +120,7 @@ pub struct ArthasManager {
 struct ManagerInner {
     sessions: HashMap<(String, i64), ArthasEntry>,
     reaper_spawned: bool,
+    next_task_id: u64,
 }
 
 /// 空闲回收判定（纯函数便于单测）
@@ -137,6 +141,7 @@ impl ArthasManager {
             inner: Arc::new(tokio::sync::Mutex::new(ManagerInner {
                 sessions: HashMap::new(),
                 reaper_spawned: false,
+                next_task_id: 0,
             })),
             attach_factory,
             config,
@@ -179,6 +184,8 @@ impl ArthasManager {
                         }
                     }
                 }
+                inner.next_task_id += 1;
+                let task_id = inner.next_task_id;
                 let (tx, rx) = watch::channel(ArthasPhase::Attaching);
                 inner.sessions.insert(
                     key.clone(),
@@ -188,6 +195,7 @@ impl ArthasManager {
                         stop_handle: None,
                         last_active: Instant::now(),
                         inflight: 0,
+                        task_id,
                     },
                 );
                 // spawn attach 任务（对齐 heap analyzer 的 run_open_task 模式）
@@ -200,7 +208,7 @@ impl ArthasManager {
                     java_bin: java_bin.to_string(),
                 };
                 tokio::spawn(async move {
-                    run_attach_task(inner_clone, factory, req).await;
+                    run_attach_task(inner_clone, factory, req, task_id).await;
                 });
                 rx
             }
@@ -373,7 +381,7 @@ impl ArthasManager {
             let mut interval = tokio::time::interval(config.idle_tick);
             loop {
                 interval.tick().await;
-                let stops: Vec<Arc<dyn ArthasStopHandle>> = {
+                let stops: Vec<((String, i64), Arc<dyn ArthasStopHandle>)> = {
                     let mut inner = inner_clone.lock().await;
                     let keys: Vec<(String, i64)> = inner
                         .sessions
@@ -382,12 +390,12 @@ impl ArthasManager {
                         .map(|(k, _)| k.clone())
                         .collect();
                     keys.iter()
-                        .filter_map(|k| inner.sessions.remove(k))
-                        .filter_map(|e| e.stop_handle)
+                        .filter_map(|k| inner.sessions.remove(k).map(|e| (k.clone(), e.stop_handle)))
+                        .filter_map(|(k, stop)| stop.map(|s| (k, s)))
                         .collect()
                 };
-                for stop in stops {
-                    tracing::info!("arthas session idle, stopping");
+                for ((env_id, pid), stop) in stops {
+                    tracing::info!(env_id = %env_id, pid = pid, "arthas session idle, stopping");
                     tokio::spawn(async move { stop.stop().await; });
                 }
             }
@@ -404,11 +412,14 @@ fn lru_ready_victim(sessions: &HashMap<(String, i64), ArthasEntry>) -> Option<(S
         .map(|(k, _)| k.clone())
 }
 
-/// attach 任务：调工厂 → 落定 phase（attach 任务自身有硬超时兜底）
+/// attach 任务：调工厂 → 落定 phase（attach 任务自身有硬超时兜底）。
+/// 落定时按 task_id 代际校验：若条目已被移除或替换（close/invalidate 后重新 open），
+/// 本任务即为 stale —— 不得写入新条目，成功构建的会话资源需自行释放（孤儿回收）。
 async fn run_attach_task(
     inner: Arc<tokio::sync::Mutex<ManagerInner>>,
     factory: AttachFactory,
     req: AttachRequest,
+    task_id: u64,
 ) {
     let key = (req.env_id.clone(), req.pid);
     let result = tokio::time::timeout(
@@ -417,7 +428,16 @@ async fn run_attach_task(
     )
     .await;
     let mut inner = inner.lock().await;
-    let Some(entry) = inner.sessions.get_mut(&key) else { return };
+    let Some(entry) = inner.sessions.get_mut(&key) else {
+        // 条目已被整体移除（close/invalidate 后未重新 open）
+        release_stale_attach(result, &req);
+        return;
+    };
+    if entry.task_id != task_id {
+        // 条目已被替换（close 后重新 open 生成了新条目）
+        release_stale_attach(result, &req);
+        return;
+    }
     match result {
         Ok(Ok(attached)) => {
             entry.client = Some(attached.client);
@@ -436,6 +456,38 @@ async fn run_attach_task(
                     "attach 超时（{ATTACH_TASK_TIMEOUT_SECS}s 硬超时）"
                 )),
             });
+        }
+    }
+}
+
+/// stale 任务落定：成功构建的会话未接入任何条目（无人接管），后台释放资源；
+/// 失败/超时不持有资源，记日志后静默丢弃
+fn release_stale_attach(
+    result: Result<Result<AttachedSession, ManagerError>, tokio::time::error::Elapsed>,
+    req: &AttachRequest,
+) {
+    match result {
+        Ok(Ok(attached)) => {
+            tracing::warn!(
+                env_id = %req.env_id, pid = req.pid,
+                "stale arthas attach task settled after entry removal/replacement, releasing orphaned session"
+            );
+            tokio::spawn(async move {
+                attached.stop_handle.stop().await;
+                attached.client.shutdown().await;
+            });
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(
+                env_id = %req.env_id, pid = req.pid, error = %e,
+                "stale arthas attach task failed, discarding result"
+            );
+        }
+        Err(_) => {
+            tracing::warn!(
+                env_id = %req.env_id, pid = req.pid,
+                "stale arthas attach task timed out, discarding result"
+            );
         }
     }
 }
@@ -739,5 +791,72 @@ mod tests {
         assert!(mgr.query("env-1", 2, "d", &json!({}), 5).await.is_err());
         // 其他环境不受影响
         mgr.query("env-2", 3, "d", &json!({}), 5).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_stale_attach_task_cannot_overwrite_reopened_entry() {
+        // 场景：open#1 挂起（gate1）→ close 移除条目 → open#2（新条目，挂起在 gate2）
+        // → 释放 gate1（task#1 成功）：stale 任务不得把新条目置 Ready，其资源必须被释放
+        let gate1 = Arc::new(tokio::sync::Semaphore::new(0));
+        let gate2 = Arc::new(tokio::sync::Semaphore::new(0));
+        let gate1_for_factory = gate1.clone();
+        let gate2_for_factory = gate2.clone();
+        let stale_stops = Arc::new(AtomicUsize::new(0));
+        let stale_stops_for_factory = stale_stops.clone();
+        // 调用计数器在闭包外创建，跨 factory 调用共享：第 1 次等 gate1，第 2 次等 gate2
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let mgr = Arc::new(ArthasManager::new(
+            Arc::new(move |_req| {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                let gate = if n == 0 { gate1_for_factory.clone() } else { gate2_for_factory.clone() };
+                let stops = stale_stops_for_factory.clone();
+                Box::pin(async move {
+                    gate.acquire().await.unwrap();
+                    Ok(AttachedSession {
+                        client: ok_client(),
+                        stop_handle: Arc::new(MockStop { stops }),
+                    })
+                })
+            }),
+            ArthasConfig::default(),
+        ));
+
+        // open#1（挂起在 gate1）
+        let mgr1 = mgr.clone();
+        let t1 = tokio::spawn(async move { mgr1.open("s1", "env-1", 123, "java", 30).await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // close 移除 Attaching 条目（open#1 的 waiter 随后因 sender drop 得到 Err）
+        mgr.close("env-1", 123).await;
+
+        // open#2（新条目，挂起在 gate2）
+        let mgr2 = mgr.clone();
+        let t2 = tokio::spawn(async move { mgr2.open("s2", "env-1", 123, "java", 30).await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // 释放 gate1：task#1 成功返回 —— 但它是 stale 的，不得把新条目置 Ready
+        gate1.add_permits(1);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // t1 因条目移除而失败（Attach 错误：已回收）
+        assert!(t1.await.unwrap().is_err());
+        // 新条目不得被 stale 任务置 Ready：仍应 Attaching
+        let err = mgr.query("env-1", 123, "dashboard", &json!({}), 1).await.unwrap_err();
+        assert!(
+            matches!(err, ManagerError::NotOpen { attaching: true }),
+            "stale task must not mark the new entry Ready, got: {err:?}"
+        );
+        // stale 任务的资源必须被释放（stop 由后台 spawn，轮询等待）
+        let mut waited = 0;
+        while stale_stops.load(Ordering::SeqCst) == 0 && waited < 50 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            waited += 1;
+        }
+        assert_eq!(stale_stops.load(Ordering::SeqCst), 1, "stale session resources must be released");
+
+        // 释放 gate2：task#2 正常落定
+        gate2.add_permits(1);
+        t2.await.unwrap().unwrap();
+        mgr.query("env-1", 123, "dashboard", &json!({}), 5).await.unwrap();
     }
 }
