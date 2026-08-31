@@ -366,7 +366,7 @@ impl ToolPackage for JdkPackage {
 }
 
 /// 通道 A：目标环境自拉。返回 Ok(()) 或错误描述。
-async fn try_remote_download(ctx: &ProvisionContext, url: &str, tarball: &str) -> Result<(), String> {
+pub(crate) async fn try_remote_download(ctx: &ProvisionContext, url: &str, tarball: &str) -> Result<(), String> {
     let which = ctx
         .channel
         .run("command -v curl || command -v wget")
@@ -398,7 +398,7 @@ async fn try_remote_download(ctx: &ProvisionContext, url: &str, tarball: &str) -
 }
 
 /// 带超时执行远端命令；超时/失败映射 ProvisionError。
-async fn run_remote(
+pub(crate) async fn run_remote(
     ctx: &ProvisionContext,
     cmd: &str,
     timeout: Duration,
