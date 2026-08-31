@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { EventPayload, AgentRow, SessionRow, MessageRow, ToolInfo, EnvironmentRow, EnvCredentialRow, TestConnectionResult } from "@/lib/types";
+import type { EventPayload, AgentRow, SessionRow, MessageRow, ToolInfo, EnvironmentRow, EnvCredentialRow, TestConnectionResult, CredentialInput, SaveEnvironmentResult } from "@/lib/types";
 
 export async function sendMessage(sessionId: string | null, message: string): Promise<string> {
   return invoke<string>("send_message_cmd", { sessionId: sessionId, message: message });
@@ -77,54 +77,13 @@ export async function listEnvironments(): Promise<EnvironmentRow[]> {
   return invoke<EnvironmentRow[]>("list_environments_cmd");
 }
 
-export async function addEnvironment(params: {
-  name: string;
-  host: string;
-  port?: number;
-  user: string;
-  authType: string;
-  privateKeyPath?: string | null;
-  password?: string | null;
-}): Promise<EnvironmentRow> {
-  return invoke<EnvironmentRow>("add_environment_cmd", {
-    name: params.name,
-    host: params.host,
-    port: params.port ?? null,
-    user: params.user,
-    authType: params.authType,
-    privateKeyPath: params.privateKeyPath ?? null,
-    password: params.password ?? null,
-  });
-}
-
-export async function updateEnvironment(params: {
-  id: string;
-  name: string;
-  host: string;
-  port?: number;
-  user: string;
-  authType: string;
-  privateKeyPath?: string | null;
-  password?: string | null;
-}): Promise<void> {
-  return invoke<void>("update_environment_cmd", {
-    id: params.id,
-    name: params.name,
-    host: params.host,
-    port: params.port ?? null,
-    user: params.user,
-    authType: params.authType,
-    privateKeyPath: params.privateKeyPath ?? null,
-    password: params.password ?? null,
-  });
-}
-
 export async function deleteEnvironment(id: string): Promise<void> {
   return invoke<void>("delete_environment_cmd", { id });
 }
 
 export async function testConnection(params: {
   environmentId?: string | null;
+  credentialId?: string | null;
   host: string;
   port?: number;
   user: string;
@@ -134,6 +93,7 @@ export async function testConnection(params: {
 }): Promise<TestConnectionResult> {
   return invoke<TestConnectionResult>("test_connection_params_cmd", {
     environmentId: params.environmentId ?? null,
+    credentialId: params.credentialId ?? null,
     host: params.host,
     port: params.port ?? null,
     user: params.user,
@@ -155,31 +115,20 @@ export async function listEnvCredentials(environmentId: string): Promise<EnvCred
   return invoke<EnvCredentialRow[]>("list_env_credentials_cmd", { environmentId });
 }
 
-export async function addEnvCredential(params: {
-  environmentId: string;
-  username: string;
-  authType: string;
-  privateKeyPath?: string | null;
-  password?: string | null;
-  makeDefault?: boolean;
-}): Promise<EnvCredentialRow> {
-  return invoke<EnvCredentialRow>("add_env_credential_cmd", {
-    environmentId: params.environmentId,
-    username: params.username,
-    authType: params.authType,
-    privateKeyPath: params.privateKeyPath ?? null,
-    password: params.password ?? null,
-    makeDefault: params.makeDefault ?? false,
-  });
-}
-
-export async function deleteEnvCredential(environmentId: string, credentialId: string): Promise<void> {
-  return invoke<void>("delete_env_credential_cmd", { environmentId, credentialId });
-}
-
-export async function setDefaultEnvCredential(environmentId: string, credentialId: string): Promise<EnvCredentialRow> {
-  return invoke<EnvCredentialRow>("set_default_env_credential_cmd", {
-    environmentId,
-    credentialId,
+export async function saveEnvironment(params: {
+  environmentId?: string | null;
+  name: string;
+  host: string;
+  port?: number;
+  credentials: CredentialInput[];
+}): Promise<SaveEnvironmentResult> {
+  return invoke<SaveEnvironmentResult>("save_environment_cmd", {
+    params: {
+      environmentId: params.environmentId ?? null,
+      name: params.name,
+      host: params.host,
+      port: params.port ?? null,
+      credentials: params.credentials,
+    },
   });
 }

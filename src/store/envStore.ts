@@ -1,9 +1,8 @@
 import { create } from "zustand";
-import type { EnvironmentRow, TestConnectionResult } from "@/lib/types";
+import type { CredentialInput, EnvironmentRow, TestConnectionResult } from "@/lib/types";
 import {
   listEnvironments as ipcList,
-  addEnvironment as ipcAdd,
-  updateEnvironment as ipcUpdate,
+  saveEnvironment as ipcSave,
   deleteEnvironment as ipcDelete,
   testConnection as ipcTest,
 } from "@/lib/ipc";
@@ -13,8 +12,13 @@ interface EnvStore {
   loading: boolean;
   error: string | null;
   load: () => Promise<void>;
-  add: (params: Parameters<typeof ipcAdd>[0]) => Promise<boolean>;
-  update: (params: Parameters<typeof ipcUpdate>[0]) => Promise<boolean>;
+  save: (params: {
+    environmentId?: string | null;
+    name: string;
+    host: string;
+    port?: number;
+    credentials: CredentialInput[];
+  }) => Promise<boolean>;
   remove: (id: string) => Promise<boolean>;
   test: (params: Parameters<typeof ipcTest>[0]) => Promise<TestConnectionResult | null>;
 }
@@ -40,22 +44,10 @@ export const useEnvStore = create<EnvStore>((set, get) => ({
     }
   },
 
-  add: async (params) => {
+  save: async (params) => {
     set({ error: null });
     try {
-      await ipcAdd(params);
-      await get().load();
-      return true;
-    } catch (e) {
-      set({ error: errMsg(e) });
-      return false;
-    }
-  },
-
-  update: async (params) => {
-    set({ error: null });
-    try {
-      await ipcUpdate(params);
+      await ipcSave(params);
       await get().load();
       return true;
     } catch (e) {

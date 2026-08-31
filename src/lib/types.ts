@@ -139,6 +139,23 @@ export interface EnvCredentialRow {
   created_at: string;
 }
 
+/** saveEnvironment 入参：暂存区中的单条凭证 */
+export interface CredentialInput {
+  /** null = 新增的凭证 */
+  id: string | null;
+  username: string;
+  authType: EnvironmentAuthType;
+  privateKeyPath?: string | null;
+  /** null/空 = 不修改已有 secret */
+  secret?: string | null;
+  isDefault: boolean;
+}
+
+export interface SaveEnvironmentResult {
+  environment: EnvironmentRow;
+  credentials: EnvCredentialRow[];
+}
+
 export interface TestConnectionResult {
   ok: boolean;
   latency_ms: number;
