@@ -8,10 +8,6 @@ use crate::exec::channel::ExecChannel;
 pub enum EnvironmentError {
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
-    #[error("validation error: {0}")]
-    Validation(String),
-    #[error("keychain error: {0}")]
-    Keychain(String),
     #[error("environment not found: {0}")]
     NotFound(String),
 }
@@ -26,10 +22,6 @@ pub struct EnvironmentRow {
     pub auth_type: String,
     pub private_key_path: Option<String>,
     pub created_at: String,
-}
-
-fn now_iso8601() -> String {
-    chrono::Utc::now().to_rfc3339()
 }
 
 fn row_to_env(r: &sqlx::sqlite::SqliteRow) -> EnvironmentRow {

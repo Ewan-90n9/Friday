@@ -5,12 +5,6 @@ use sqlx::{Row, SqlitePool};
 pub enum EnvCredentialError {
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
-    #[error("validation error: {0}")]
-    Validation(String),
-    #[error("credential not found: {0}")]
-    NotFound(String),
-    #[error("keychain error: {0}")]
-    Keychain(String),
 }
 
 #[derive(Serialize, Clone, Debug)]

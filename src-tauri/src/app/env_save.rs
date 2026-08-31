@@ -79,9 +79,6 @@ impl From<crate::app::env_credentials::EnvCredentialError> for SaveError {
         use crate::app::env_credentials::EnvCredentialError as E;
         match e {
             E::Db(e) => SaveError::Db(e),
-            E::Validation(s) => SaveError::Validation(s),
-            E::NotFound(s) => SaveError::NotFound(s),
-            E::Keychain(s) => SaveError::Keychain(s),
         }
     }
 }
@@ -91,9 +88,7 @@ impl From<crate::app::environments::EnvironmentError> for SaveError {
         use crate::app::environments::EnvironmentError as E;
         match e {
             E::Db(e) => SaveError::Db(e),
-            E::Validation(s) => SaveError::Validation(s),
             E::NotFound(s) => SaveError::NotFound(s),
-            E::Keychain(s) => SaveError::Keychain(s),
         }
     }
 }

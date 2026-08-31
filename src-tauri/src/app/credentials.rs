@@ -7,30 +7,6 @@ fn entry(env_id: &str) -> Result<Entry, keyring::Error> {
     keyring::Entry::new(SERVICE, &format!("env/{env_id}/secret"))
 }
 
-/// 存储环境密钥（密码或私钥 passphrase）。空值时删除条目。
-pub async fn store_secret(
-    env_id: &str,
-    value: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let entry = entry(env_id).map_err(|e| {
-        tracing::error!(?e, env_id = %env_id, "failed to create keyring entry");
-        e
-    })?;
-    if value.is_empty() {
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(e) => tracing::warn!(?e, env_id = %env_id, "failed to delete stale secret"),
-        }
-        return Ok(());
-    }
-    entry.set_password(value).map_err(|e| {
-        tracing::error!(?e, env_id = %env_id, "failed to store secret in keychain");
-        e
-    })?;
-    tracing::info!(env_id = %env_id, "secret stored in keychain");
-    Ok(())
-}
-
 /// 读取环境密钥。无条目返回 None。
 pub async fn load_secret(
     env_id: &str,
@@ -137,24 +113,24 @@ pub async fn delete_cred_secret(
 mod tests {
     use super::*;
 
-    /// 真实 keychain 往返验证：store → load → 存空值删除 → load 为 None → 删除幂等。
+    /// 真实 keychain 往返验证：store → load → delete → load 为 None。
     /// 触碰真实 OS 凭证库（Windows Credential Manager），CI 不跑；
-    /// 本地验证：`cargo test --manifest-path src-tauri/Cargo.toml test_keyring_roundtrip -- --ignored`
+    /// 本地验证：`cargo test --manifest-path src-tauri/Cargo.toml test_cred_keyring_roundtrip -- --ignored`
     #[tokio::test]
     #[ignore]
-    async fn test_keyring_roundtrip() {
-        let env_id = "friday-test-keyring";
+    async fn test_cred_keyring_roundtrip() {
+        let env_id = "test-env-roundtrip";
+        let cred_id = "test-cred-roundtrip";
         // 清理历史残留（若上次测试中断）
-        let _ = delete_secret(env_id).await;
+        let _ = delete_cred_secret(env_id, cred_id).await;
 
-        store_secret(env_id, "s3cret-value").await.unwrap();
-        assert_eq!(load_secret(env_id).await.unwrap().as_deref(), Some("s3cret-value"));
+        store_cred_secret(env_id, cred_id, "s3cret-value").await.unwrap();
+        assert_eq!(
+            load_cred_secret(env_id, cred_id).await.unwrap().as_deref(),
+            Some("s3cret-value")
+        );
 
-        // 存空值 → 条目被删除
-        store_secret(env_id, "").await.unwrap();
-        assert_eq!(load_secret(env_id).await.unwrap(), None);
-
-        // 无条目时删除静默成功
-        delete_secret(env_id).await.unwrap();
+        delete_cred_secret(env_id, cred_id).await.unwrap();
+        assert_eq!(load_cred_secret(env_id, cred_id).await.unwrap(), None);
     }
 }
