@@ -1,3 +1,4 @@
+pub mod arthas;
 pub mod ensure_tool;
 pub mod file_transfer;
 pub mod heap;
