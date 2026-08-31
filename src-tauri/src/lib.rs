@@ -1,6 +1,7 @@
 mod agent;
 mod analyzer;
 mod app;
+mod arthas;
 mod exec;
 mod infra;
 mod knowledge;
