@@ -64,8 +64,9 @@ pub fn validate_credentials(creds: &[CredentialInput]) -> Result<(), SaveError> 
                 "auth_type 必须是 private_key 或 password".to_string(),
             ));
         }
+        // 复用 bound_key_path 绑定规则：private_key 时路径必须 trim 后非空
         if c.auth_type == "private_key"
-            && c.private_key_path.as_deref().map(str::trim).filter(|p| !p.is_empty()).is_none()
+            && bound_key_path(&c.auth_type, c.private_key_path.as_deref()).is_none()
         {
             return Err(SaveError::Validation("私钥认证需要填写私钥路径".to_string()));
         }
@@ -98,7 +99,6 @@ impl From<crate::app::environments::EnvironmentError> for SaveError {
 }
 
 /// keychain 操作（事务提交后执行；owned 避免 clone 生命周期问题）
-#[derive(Clone)]
 enum KeychainOp {
     Write { cred_id: String, secret: String },
     Delete { cred_id: String },
@@ -175,10 +175,14 @@ pub async fn save_environment(
     let now = chrono::Utc::now().to_rfc3339();
 
     // ── DB 事务 ──
+    // 默认凭证镜像进 environments 行（validate_credentials 保证恰好一个）
+    let def = credentials
+        .iter()
+        .find(|c| c.is_default)
+        .expect("validate_credentials guarantees exactly one default");
     let mut tx = pool.begin().await?;
     if environment_id.is_none() {
-        // 默认凭证镜像进 environments 行
-        let def = credentials.iter().find(|c| c.is_default).unwrap();
+        // 新增：环境行 + 默认凭证镜像
         sqlx::query(
             "INSERT INTO environments (id, name, host, port, user, transport_type, auth_type, private_key_path, created_at) \
              VALUES (?, ?, ?, ?, ?, 'ssh', ?, ?, ?)",
@@ -195,7 +199,6 @@ pub async fn save_environment(
         .await?;
     } else {
         // 编辑：环境行基本信息 + 默认凭证镜像
-        let def = credentials.iter().find(|c| c.is_default).unwrap();
         let updated = sqlx::query(
             "UPDATE environments SET name = ?, host = ?, port = ?, user = ?, auth_type = ?, private_key_path = ? WHERE id = ?",
         )
@@ -257,7 +260,7 @@ pub async fn save_environment(
             Some(cred_id) => {
                 // 更新凭证（认证切换且未提供新 secret → 清旧条目）
                 let old = existing.iter().find(|e| e.id == cred_id);
-                sqlx::query(
+                let updated = sqlx::query(
                     "UPDATE env_credentials SET username = ?, auth_type = ?, private_key_path = ?, is_default = ? WHERE id = ? AND environment_id = ?",
                 )
                 .bind(input.username.trim())
@@ -268,6 +271,13 @@ pub async fn save_environment(
                 .bind(&env_id)
                 .execute(&mut *tx)
                 .await?;
+                // 事务内校验：id 失配（前端状态过期 / id 重复）时凭证会静默丢失，
+                // 必须报错中止事务（return 发生在 commit 前，tx drop 时回滚）
+                if updated.rows_affected() == 0 {
+                    return Err(SaveError::Validation(format!(
+                        "凭证 {cred_id} 不存在或已失效，请刷新后重试"
+                    )));
+                }
                 if secret_provided {
                     keychain_ops.push(KeychainOp::Write {
                         cred_id: cred_id.to_string(),
@@ -292,29 +302,14 @@ pub async fn save_environment(
     tx.commit().await?;
 
     // ── keychain（事务提交后；失败补偿回滚 DB）──
-    let mut done: Vec<KeychainOp> = Vec::new();
-    for op in keychain_ops {
-        let result = match &op {
-            KeychainOp::Write { cred_id, secret } => {
-                crate::app::credentials::store_cred_secret(&env_id, cred_id, secret).await
-            }
-            KeychainOp::Delete { cred_id } => {
-                crate::app::credentials::delete_cred_secret(&env_id, cred_id).await
-            }
-        };
-        if let Err(e) = result {
-            tracing::error!(env_id = %env_id, ?e, "keychain op failed, rolling back save");
-            // 补偿：删除本次已写条目
-            for d in &done {
-                if let KeychainOp::Write { cred_id, .. } = d {
-                    let _ = crate::app::credentials::delete_cred_secret(&env_id, cred_id).await;
-                }
-            }
-            rollback_saved_state(pool, &env_id, environment_id.is_none(), &existing).await;
-            return Err(SaveError::Keychain(e.to_string()));
-        }
-        done.push(op);
-    }
+    execute_keychain_ops(
+        pool,
+        &env_id,
+        keychain_ops,
+        environment_id.is_none(),
+        &existing,
+    )
+    .await?;
 
     let environment = crate::app::environments::get_environment(pool, &env_id)
         .await?
@@ -326,8 +321,50 @@ pub async fn save_environment(
     })
 }
 
+/// 事务提交后执行 keychain 操作；任一失败时补偿已写条目并回滚 DB。
+/// 顺序：先执行全部 Write，再执行全部 Delete——
+/// Write 是易失败操作（keychain 不可用/被锁），若先 Delete 后 Write，
+/// Write 失败时已删除的旧 secret 无法恢复（DB 回滚后旧凭证行引用的密钥已丢）；
+/// 先写后删则 Write 失败时旧条目原封未动。Delete 幂等（NoEntry 视为成功），
+/// 残留条目（如 Delete 失败）无害且与 DB 行无引用关系。
+async fn execute_keychain_ops(
+    pool: &SqlitePool,
+    env_id: &str,
+    ops: Vec<KeychainOp>,
+    env_is_new: bool,
+    existing_snapshot: &[EnvCredentialRow],
+) -> Result<(), SaveError> {
+    let (writes, deletes): (Vec<KeychainOp>, Vec<KeychainOp>) =
+        ops.into_iter().partition(|op| matches!(op, KeychainOp::Write { .. }));
+    let mut done: Vec<KeychainOp> = Vec::new();
+    for op in writes.into_iter().chain(deletes) {
+        let result = match &op {
+            KeychainOp::Write { cred_id, secret } => {
+                crate::app::credentials::store_cred_secret(env_id, cred_id, secret).await
+            }
+            KeychainOp::Delete { cred_id } => {
+                crate::app::credentials::delete_cred_secret(env_id, cred_id).await
+            }
+        };
+        if let Err(e) = result {
+            tracing::error!(env_id = %env_id, ?e, "keychain op failed, rolling back save");
+            // 补偿：删除本次已写条目
+            for d in &done {
+                if let KeychainOp::Write { cred_id, .. } = d {
+                    let _ = crate::app::credentials::delete_cred_secret(env_id, cred_id).await;
+                }
+            }
+            rollback_saved_state(pool, env_id, env_is_new, existing_snapshot).await;
+            return Err(SaveError::Keychain(e.to_string()));
+        }
+        done.push(op);
+    }
+    Ok(())
+}
+
 /// keychain 失败后的 DB 补偿：新增路径删环境；编辑路径还原旧凭证全量。
-/// 简化策略：编辑路径凭证行还原旧全量；环境行 name/host/port 残留为已保存值可接受——
+/// 简化策略：编辑路径凭证行还原旧全量；环境行的 name/host/port/user/auth_type/
+/// private_key_path（含默认凭证镜像列）残留为已保存值可接受——
 /// keychain 失败极罕见，且 UI 报错后用户重试会用同一表单值覆盖。
 async fn rollback_saved_state(
     pool: &SqlitePool,
@@ -395,7 +432,8 @@ mod tests {
             username: username.to_string(),
             auth_type: "password".to_string(),
             private_key_path: None,
-            secret: Some("pass-1".to_string()),
+            // None = 不触达真实 OS keychain（测试不校验 secret 存储）
+            secret: None,
             is_default,
         }
     }
@@ -428,6 +466,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_edit_with_unknown_credential_id_rejected() {
+        let (_tmp, pool) = setup().await;
+        // 先建环境拿真实 cred id，再传入一个不存在的 id
+        let outcome = save_environment(
+            &pool, None, "prod", "10.0.0.1", 22,
+            vec![cred("opc", true)],
+        ).await.unwrap();
+        let err = save_environment(
+            &pool, Some(&outcome.environment.id), "prod", "10.0.0.1", 22,
+            vec![CredentialInput {
+                id: Some("no-such-cred-id".to_string()),
+                username: "ghost".to_string(),
+                auth_type: "password".to_string(),
+                private_key_path: None,
+                secret: None,
+                is_default: true,
+            }],
+        ).await.unwrap_err();
+        assert!(matches!(err, SaveError::Validation(_)));
+        // 保存前状态未被破坏
+        let creds = crate::app::env_credentials::list_credentials(&pool, &outcome.environment.id).await.unwrap();
+        assert_eq!(creds.len(), 1);
+    }
+
+    #[tokio::test]
     async fn test_save_validates_zero_and_multi_default() {
         let (_tmp, pool) = setup().await;
         let err = save_environment(&pool, None, "prod", "10.0.0.1", 22, vec![]).await.unwrap_err();
@@ -438,5 +501,43 @@ mod tests {
             vec![cred("a", true), cred("b", true)],
         ).await.unwrap_err();
         assert!(matches!(err, SaveError::Validation(_)));
+    }
+
+    // ── validate_credentials 纯函数规则回归测试 ──
+
+    fn validate_one(input: CredentialInput) -> Result<(), SaveError> {
+        validate_credentials(&[input])
+    }
+
+    #[test]
+    fn test_validate_rejects_empty_and_whitespace_username() {
+        let mut input = cred("opc", true);
+        input.username = String::new();
+        assert!(matches!(validate_one(input), Err(SaveError::Validation(_))));
+
+        let mut input = cred("opc", true);
+        input.username = "   \t ".to_string();
+        assert!(matches!(validate_one(input), Err(SaveError::Validation(_))));
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_auth_type() {
+        let mut input = cred("opc", true);
+        input.auth_type = "kerberos".to_string();
+        assert!(matches!(validate_one(input), Err(SaveError::Validation(_))));
+    }
+
+    #[test]
+    fn test_validate_rejects_private_key_without_path() {
+        let mut input = cred("opc", true);
+        input.auth_type = "private_key".to_string();
+        input.private_key_path = None;
+        assert!(matches!(validate_one(input), Err(SaveError::Validation(_))));
+
+        // 空白路径同样视为缺失
+        let mut input = cred("opc", true);
+        input.auth_type = "private_key".to_string();
+        input.private_key_path = Some("   ".to_string());
+        assert!(matches!(validate_one(input), Err(SaveError::Validation(_))));
     }
 }
