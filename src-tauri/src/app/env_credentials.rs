@@ -298,6 +298,65 @@ pub async fn migrate_legacy(pool: &SqlitePool) {
     }
 }
 
+// ── Tauri commands ──
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn list_env_credentials_cmd(
+    state: tauri::State<'_, crate::AppState>,
+    environment_id: String,
+) -> Result<Vec<EnvCredentialRow>, String> {
+    list_credentials(&state.db, &environment_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn add_env_credential_cmd(
+    state: tauri::State<'_, crate::AppState>,
+    environment_id: String,
+    username: String,
+    auth_type: String,
+    private_key_path: Option<String>,
+    password: Option<String>,
+    make_default: Option<bool>,
+) -> Result<EnvCredentialRow, String> {
+    add_credential(
+        &state.db,
+        &environment_id,
+        username.trim(),
+        &auth_type,
+        private_key_path.as_deref(),
+        password.as_deref(),
+        make_default.unwrap_or(false),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn delete_env_credential_cmd(
+    state: tauri::State<'_, crate::AppState>,
+    environment_id: String,
+    credential_id: String,
+) -> Result<(), String> {
+    delete_credential(&state.db, &environment_id, &credential_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn set_default_env_credential_cmd(
+    state: tauri::State<'_, crate::AppState>,
+    environment_id: String,
+    credential_id: String,
+) -> Result<EnvCredentialRow, String> {
+    set_default_credential(&state.db, &environment_id, &credential_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

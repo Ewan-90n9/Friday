@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { X, CircleNotch, Plug, CheckCircle, XCircle } from "@phosphor-icons/react";
-import type { EnvironmentRow, TestConnectionResult } from "@/lib/types";
+import type { EnvironmentRow, EnvCredentialRow, TestConnectionResult } from "@/lib/types";
+import { listEnvCredentials, addEnvCredential, deleteEnvCredential, setDefaultEnvCredential } from "@/lib/ipc";
 import { useEnvStore } from "@/store/envStore";
 
 interface EnvironmentDialogProps {
@@ -36,6 +37,17 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
   const [testResult, setTestResult] = useState<TestConnectionResult | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
+  const [creds, setCreds] = useState<EnvCredentialRow[]>([]);
+  const [credForm, setCredForm] = useState({
+    username: "",
+    authType: "password" as "private_key" | "password",
+    privateKeyPath: "",
+    password: "",
+    makeDefault: false,
+  });
+  const [credError, setCredError] = useState<string | null>(null);
+  const [credBusy, setCredBusy] = useState(false);
+
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
@@ -55,6 +67,12 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
       );
       setTestResult(null);
       setFormError(null);
+      setCreds([]);
+      setCredError(null);
+      setCredForm({ username: "", authType: "password", privateKeyPath: "", password: "", makeDefault: false });
+      if (editing) {
+        listEnvCredentials(editing.id).then(setCreds).catch(() => setCreds([]));
+      }
       if (!dialog.open) dialog.showModal();
     } else if (dialog.open) {
       dialog.close();
@@ -129,6 +147,56 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
       );
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleAddCred = async () => {
+    if (!editing) return;
+    if (!credForm.username.trim()) {
+      setCredError("用户名不能为空");
+      return;
+    }
+    if (credForm.authType === "private_key" && !credForm.privateKeyPath.trim()) {
+      setCredError("私钥认证需要填写私钥路径");
+      return;
+    }
+    setCredBusy(true);
+    setCredError(null);
+    try {
+      await addEnvCredential({
+        environmentId: editing.id,
+        username: credForm.username.trim(),
+        authType: credForm.authType,
+        privateKeyPath: credForm.authType === "private_key" ? credForm.privateKeyPath.trim() : null,
+        password: credForm.password || null,
+        makeDefault: credForm.makeDefault,
+      });
+      setCreds(await listEnvCredentials(editing.id));
+      setCredForm({ username: "", authType: "password", privateKeyPath: "", password: "", makeDefault: false });
+    } catch (e) {
+      setCredError(String(e));
+    } finally {
+      setCredBusy(false);
+    }
+  };
+
+  const handleDeleteCred = async (cred: EnvCredentialRow) => {
+    if (!editing) return;
+    try {
+      await deleteEnvCredential(editing.id, cred.id);
+      setCreds(await listEnvCredentials(editing.id));
+    } catch (e) {
+      setCredError(String(e));
+    }
+  };
+
+  const handleSetDefaultCred = async (cred: EnvCredentialRow) => {
+    if (!editing) return;
+    try {
+      await setDefaultEnvCredential(editing.id, cred.id);
+      setCreds(await listEnvCredentials(editing.id));
+    } catch (e) {
+      setCredError(String(e));
     }
   };
 
@@ -238,6 +306,108 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
               存入操作系统密钥链（Windows 凭据管理器），不写入数据库。
             </p>
           </Field>
+
+          {editing && (
+            <div className="pt-2 border-t border-border space-y-2">
+              <p className="text-xs text-muted-foreground">
+                多用户凭证：目标 JVM 以其他用户运行时（arthas attach 需要同用户），为该环境录入对应用户的
+                SSH 凭证。默认凭证即日常连接使用的用户。
+              </p>
+              {creds.length > 0 && (
+                <ul className="space-y-1">
+                  {creds.map((cred) => (
+                    <li
+                      key={cred.id}
+                      className="flex items-center gap-2 text-xs px-3 py-1.5 rounded-md border border-border bg-surface-2"
+                    >
+                      <span className="font-mono">{cred.username}</span>
+                      <span className="text-muted-foreground">
+                        {cred.auth_type === "private_key" ? "私钥" : "密码"}
+                      </span>
+                      {cred.is_default && (
+                        <span className="px-1.5 py-0.5 rounded bg-accent/15 text-accent text-[10px]">默认</span>
+                      )}
+                      <span className="flex-1" />
+                      {!cred.is_default && (
+                        <button
+                          onClick={() => handleSetDefaultCred(cred)}
+                          className="text-muted-foreground hover:text-foreground cursor-pointer"
+                        >
+                          设为默认
+                        </button>
+                      )}
+                      {!cred.is_default && (
+                        <button
+                          onClick={() => handleDeleteCred(cred)}
+                          className="text-muted-foreground hover:text-destructive cursor-pointer"
+                        >
+                          删除
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  aria-label="凭证用户名"
+                  placeholder="用户名（如 svcapp）"
+                  value={credForm.username}
+                  onChange={(e) => setCredForm({ ...credForm, username: e.target.value })}
+                  className={`${inputCls} flex-1`}
+                />
+                <select
+                  aria-label="凭证认证方式"
+                  value={credForm.authType}
+                  onChange={(e) =>
+                    setCredForm({ ...credForm, authType: e.target.value as "private_key" | "password" })
+                  }
+                  className={`${inputCls} w-28 cursor-pointer`}
+                >
+                  <option value="password">密码</option>
+                  <option value="private_key">私钥</option>
+                </select>
+              </div>
+              {credForm.authType === "private_key" && (
+                <input
+                  type="text"
+                  aria-label="凭证私钥路径"
+                  placeholder="私钥路径（~/.ssh/...）"
+                  value={credForm.privateKeyPath}
+                  onChange={(e) => setCredForm({ ...credForm, privateKeyPath: e.target.value })}
+                  className={inputCls}
+                  style={{ fontFamily: "var(--font-mono)" }}
+                />
+              )}
+              <div className="flex gap-2 items-center">
+                <input
+                  type="password"
+                  aria-label="凭证密钥"
+                  placeholder={credForm.authType === "private_key" ? "私钥口令（可选）" : "密码"}
+                  value={credForm.password}
+                  onChange={(e) => setCredForm({ ...credForm, password: e.target.value })}
+                  className={`${inputCls} flex-1`}
+                />
+                <label className="flex items-center gap-1 text-xs text-muted-foreground whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={credForm.makeDefault}
+                    onChange={(e) => setCredForm({ ...credForm, makeDefault: e.target.checked })}
+                  />
+                  设为默认
+                </label>
+                <button
+                  onClick={handleAddCred}
+                  disabled={credBusy}
+                  className="px-3 py-1.5 rounded-md border border-border bg-surface-2 text-xs hover:bg-surface-3 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                >
+                  添加凭证
+                </button>
+              </div>
+              {credError && <p className="text-xs text-destructive break-words">{credError}</p>}
+            </div>
+          )}
 
           {testResult && (
             <div

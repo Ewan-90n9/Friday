@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { EventPayload, AgentRow, SessionRow, MessageRow, ToolInfo, EnvironmentRow, TestConnectionResult } from "@/lib/types";
+import type { EventPayload, AgentRow, SessionRow, MessageRow, ToolInfo, EnvironmentRow, EnvCredentialRow, TestConnectionResult } from "@/lib/types";
 
 export async function sendMessage(sessionId: string | null, message: string): Promise<string> {
   return invoke<string>("send_message_cmd", { sessionId: sessionId, message: message });
@@ -149,4 +149,37 @@ export async function getArtifactoryBaseUrl(): Promise<string> {
 
 export async function setArtifactoryBaseUrl(url: string): Promise<void> {
   return invoke<void>("set_artifactory_base_url_cmd", { url });
+}
+
+export async function listEnvCredentials(environmentId: string): Promise<EnvCredentialRow[]> {
+  return invoke<EnvCredentialRow[]>("list_env_credentials_cmd", { environmentId });
+}
+
+export async function addEnvCredential(params: {
+  environmentId: string;
+  username: string;
+  authType: string;
+  privateKeyPath?: string | null;
+  password?: string | null;
+  makeDefault?: boolean;
+}): Promise<EnvCredentialRow> {
+  return invoke<EnvCredentialRow>("add_env_credential_cmd", {
+    environmentId: params.environmentId,
+    username: params.username,
+    authType: params.authType,
+    privateKeyPath: params.privateKeyPath ?? null,
+    password: params.password ?? null,
+    makeDefault: params.makeDefault ?? false,
+  });
+}
+
+export async function deleteEnvCredential(environmentId: string, credentialId: string): Promise<void> {
+  return invoke<void>("delete_env_credential_cmd", { environmentId, credentialId });
+}
+
+export async function setDefaultEnvCredential(environmentId: string, credentialId: string): Promise<EnvCredentialRow> {
+  return invoke<EnvCredentialRow>("set_default_env_credential_cmd", {
+    environmentId,
+    credentialId,
+  });
 }

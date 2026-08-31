@@ -129,6 +129,16 @@ export interface EnvironmentRow {
   created_at: string;
 }
 
+export interface EnvCredentialRow {
+  id: string;
+  environment_id: string;
+  username: string;
+  auth_type: "private_key" | "password";
+  private_key_path: string | null;
+  is_default: boolean;
+  created_at: string;
+}
+
 export interface TestConnectionResult {
   ok: boolean;
   latency_ms: number;
