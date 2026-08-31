@@ -85,10 +85,26 @@ pub fn xmx_gb_for(dump_size_bytes: u64) -> u32 {
     ((need / GB).ceil() as u32).clamp(4, 12)
 }
 
+/// 去除 Windows verbatim 路径前缀（`\\?\` 与 `\\?\UNC\`）。
+/// Java/MAT 的文件 API 不支持 verbatim 前缀（`java -jar \\?\...` 会
+/// ClassNotFoundException，见 issue #6）；Tauri 的 resource_dir() 在
+/// Windows 上可能返回 verbatim 路径，任何要传给 JVM 工人进程的路径都须先归一化。
+pub fn strip_verbatim_prefix(p: &Path) -> PathBuf {
+    let s = p.as_os_str().to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        p.to_path_buf()
+    }
+}
+
 /// 规范化 dump 路径作为会话主键：转绝对路径；Windows 下统一反斜杠分隔符与小写盘符。
-/// 消除调用方复述路径时的变体（正/反斜杠、盘符大小写）导致的会话 miss。
+/// 消除调用方复述路径时的变体（正/反斜杠、盘符大小写、verbatim 前缀）导致的会话 miss。
 pub fn normalize_dump_path(p: &Path) -> PathBuf {
-    let abs = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    let stripped = strip_verbatim_prefix(p);
+    let abs = std::path::absolute(&stripped).unwrap_or(stripped);
     if cfg!(windows) {
         let s = abs.to_string_lossy().replace('/', "\\");
         let bytes = s.as_bytes();
@@ -679,12 +695,46 @@ mod tests {
             let a = normalize_dump_path(Path::new("C:/Foo/Bar.hprof"));
             assert_eq!(a.to_string_lossy(), "c:\\Foo\\Bar.hprof");
             assert_eq!(a, normalize_dump_path(Path::new("c:\\Foo\\Bar.hprof")));
+            // verbatim 前缀（Tauri resource_dir 等 API 可能返回）必须剥掉：
+            // Java/MAT 文件 API 不支持 \\?\ 前缀
+            assert_eq!(
+                normalize_dump_path(Path::new(r"\\?\C:\Foo\Bar.hprof")).to_string_lossy(),
+                "c:\\Foo\\Bar.hprof"
+            );
+            assert_eq!(
+                normalize_dump_path(Path::new(r"\\?\UNC\server\share\Bar.hprof")).to_string_lossy(),
+                "\\\\server\\share\\Bar.hprof"
+            );
         }
         #[cfg(not(windows))]
         {
             // 非 Windows：仅转绝对路径，分隔符不动
             assert!(normalize_dump_path(Path::new("foo/bar.hprof")).is_absolute());
         }
+    }
+
+    #[test]
+    fn test_strip_verbatim_prefix_forms() {
+        // 普通路径原样返回
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"C:\foo\bar.jar")),
+            PathBuf::from(r"C:\foo\bar.jar")
+        );
+        // 盘符 verbatim → 去前缀
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\C:\foo\bar.jar")),
+            PathBuf::from(r"C:\foo\bar.jar")
+        );
+        // UNC verbatim → 还原为 \\server\share 形式
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share\bar.jar")),
+            PathBuf::from(r"\\server\share\bar.jar")
+        );
+        // 非 Windows 分隔符路径不受影响
+        assert_eq!(
+            strip_verbatim_prefix(Path::new("/foo/bar.jar")),
+            PathBuf::from("/foo/bar.jar")
+        );
     }
 
     #[tokio::test]

@@ -44,8 +44,11 @@ pub async fn spawn_analyzer_client(
 ) -> Result<McpHeapAnalyzerClient, String> {
     use rmcp::ServiceExt;
 
+    // verbatim 前缀（\\?\）会导致 java -jar ClassNotFound（issue #6），传入前必须剥掉
+    let jar_path = crate::analyzer::manager::strip_verbatim_prefix(jar_path);
+
     let mut cmd = tokio::process::Command::new(&java.path);
-    cmd.arg(format!("-Xmx{xmx_gb}g")).arg("-jar").arg(jar_path);
+    cmd.arg(format!("-Xmx{xmx_gb}g")).arg("-jar").arg(&jar_path);
     let (transport, stderr) =
         rmcp::transport::child_process::TokioChildProcess::builder(cmd)
             .stderr(std::process::Stdio::piped())
@@ -250,5 +253,31 @@ mod tests {
         );
         let calls = mock.calls.lock().await;
         assert_eq!(calls[0].1["path"], "x");
+    }
+
+    /// issue #6 回归：verbatim（\\?\）前缀的 JAR 路径必须仍能完成 MCP 握手。
+    /// 需要本机 Java 21+ 与已下载的 JAR（scripts/fetch-analyzer-jar.ps1），
+    /// 不进常规测试（CI 无 java），显式 `--ignored` 运行。
+    #[tokio::test]
+    #[ignore = "requires local Java 21+ and vendored JAR"]
+    async fn test_spawn_analyzer_client_with_verbatim_jar_path() {
+        let java = crate::analyzer::java::detect_java()
+            .await
+            .expect("Java 21+ required for this test");
+        let jar = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/analyzer/jvm-heap-dump-mcp-0.2.0-all.jar");
+        assert!(jar.is_file(), "JAR missing: {} (run scripts/fetch-analyzer-jar.ps1)", jar.display());
+        // 复现 Tauri resource_dir() 返回的 verbatim 形式
+        let verbatim = std::path::PathBuf::from(format!(r"\\?\{}", jar.display()));
+        let client = spawn_analyzer_client(&java, &verbatim, 4)
+            .await
+            .expect("MCP handshake must succeed with verbatim jar path");
+        let out = client
+            .call_tool("open_heap_dump", &serde_json::json!({"path": "nonexistent.hprof", "id": "regress"}))
+            .await
+            .expect("tools/call must work");
+        // 文件不存在 → 上游工具级错误（is_error=true），但传输层正常
+        assert!(out.is_error, "expected tool-level error for nonexistent dump, got: {}", out.text);
+        client.shutdown().await;
     }
 }
