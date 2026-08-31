@@ -36,6 +36,24 @@ pub struct McpHeapAnalyzerClient {
     service: tokio::sync::Mutex<Option<rmcp::service::RunningService<rmcp::RoleClient, ()>>>,
 }
 
+/// 构造工人进程 JVM 参数（纯函数，单独可测）。
+/// - `-Dfile.encoding=UTF-8`：zh-CN Windows 上 JVM 默认 GBK 输出（stderr 里的中文
+///   被 Friday 按 UTF-8 lossy 读取后永久丢失，见 issue #6 日志乱码），强制 UTF-8
+///   使 stderr 与 MCP stdio 协议编码一致
+/// - `-Dstdout.encoding/stderr.encoding=UTF-8`：JDK 19+ 的流编码属性，
+///   覆盖 Windows 控制台 codepage 跟随行为（JDK 21 认识；早于 19 的 JVM 会
+///   警告未知系统属性但不影响启动——本项目要求 Java 21+，安全）
+pub fn analyzer_jvm_args(jar_path: &Path, xmx_gb: u32) -> Vec<String> {
+    vec![
+        format!("-Xmx{xmx_gb}g"),
+        "-Dfile.encoding=UTF-8".to_string(),
+        "-Dstdout.encoding=UTF-8".to_string(),
+        "-Dstderr.encoding=UTF-8".to_string(),
+        "-jar".to_string(),
+        jar_path.to_string_lossy().into_owned(),
+    ]
+}
+
 /// 启动工人进程并完成 MCP 握手（60s 超时）
 pub async fn spawn_analyzer_client(
     java: &crate::analyzer::java::JavaInfo,
@@ -48,7 +66,7 @@ pub async fn spawn_analyzer_client(
     let jar_path = crate::analyzer::manager::strip_verbatim_prefix(jar_path);
 
     let mut cmd = tokio::process::Command::new(&java.path);
-    cmd.arg(format!("-Xmx{xmx_gb}g")).arg("-jar").arg(&jar_path);
+    cmd.args(analyzer_jvm_args(&jar_path, xmx_gb));
     let (transport, stderr) =
         rmcp::transport::child_process::TokioChildProcess::builder(cmd)
             .stderr(std::process::Stdio::piped())
@@ -205,6 +223,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_analyzer_jvm_args_force_utf8() {
+        // issue #6：zh-CN Windows JVM 默认 GBK 输出 → stderr 中文被 UTF-8 lossy
+        // 读取后永久丢失。JVM 参数必须强制 UTF-8。
+        let args = analyzer_jvm_args(Path::new(r"C:\opt\analyzer.jar"), 4);
+        assert!(args.contains(&"-Dfile.encoding=UTF-8".to_string()), "args: {args:?}");
+        assert!(args.contains(&"-Dstdout.encoding=UTF-8".to_string()));
+        assert!(args.contains(&"-Dstderr.encoding=UTF-8".to_string()));
+        assert_eq!(args.first().unwrap(), "-Xmx4g");
+        assert_eq!(args.last().unwrap(), r"C:\opt\analyzer.jar");
+    }
+
+    #[test]
     fn test_extract_text_joins_text_blocks() {
         let result = rmcp::model::CallToolResult::success(vec![
             rmcp::model::ContentBlock::text("hello"),
@@ -279,5 +309,69 @@ mod tests {
         // 文件不存在 → 上游工具级错误（is_error=true），但传输层正常
         assert!(out.is_error, "expected tool-level error for nonexistent dump, got: {}", out.text);
         client.shutdown().await;
+    }
+
+    /// issue #6 日志乱码回归：工人 JVM 必须以 UTF-8 输出 stderr。
+    /// 用真实工人进程（MAT bootstrap 自身就会输出「信息:」中文日志）验证：
+    /// 读取其 stderr 必须 strict UTF-8 可解码且不含 U+FFFD 替换字符。
+    /// 需要本机 Java 21+ 与已下载的 JAR；CI 无 java，显式 `--ignored` 运行。
+    #[tokio::test]
+    #[ignore = "requires local Java 21+ and vendored JAR"]
+    async fn test_worker_stderr_is_utf8() {
+        let java = crate::analyzer::java::detect_java()
+            .await
+            .expect("Java 21+ required for this test");
+        let jar = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/analyzer/jvm-heap-dump-mcp-0.2.0-all.jar");
+        assert!(jar.is_file(), "JAR missing: {} (run scripts/fetch-analyzer-jar.ps1)", jar.display());
+
+        // 与 spawn_analyzer_client 完全一致的命令行，但 stderr 由本测试直接消费
+        let mut child = tokio::process::Command::new(&java.path)
+            .args(analyzer_jvm_args(&jar, 4))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("worker must spawn");
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // MCP initialize 请求触发工具注册与 MAT bootstrap（输出中文日志）
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"regress\",\"version\":\"0\"}}}\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n")
+            .await
+            .unwrap();
+        // 读 stderr 到进程结束（或读够内容）
+        let mut stderr_bytes = Vec::new();
+        let mut buf = [0u8; 4096];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if stderr_bytes.len() > 200 || std::time::Instant::now() > deadline {
+                break;
+            }
+            tokio::select! {
+                n = child.stderr.as_mut().unwrap().read(&mut buf) => {
+                    match n {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => stderr_bytes.extend_from_slice(&buf[..n]),
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
+                    if stderr_bytes.len() > 50 { break; }
+                }
+            }
+        }
+        let _ = child.kill().await;
+        let text = String::from_utf8(stderr_bytes.clone())
+            .unwrap_or_else(|_| panic!("stderr must be valid UTF-8, bytes: {stderr_bytes:?}"));
+        assert!(
+            !text.contains('\u{FFFD}'),
+            "stderr must not contain U+FFFD replacement chars, text: {text:?}"
+        );
+        // zh-CN 环境下 MAT bootstrap 输出「信息:」前缀；非中文环境无中文也无妨（编码断言已过）
+        if text.contains('\u{4fe1}') && text.contains('\u{606f}') {
+            // 包含「信息」且 strict UTF-8 解码成功——乱码修复确认
+        }
     }
 }
