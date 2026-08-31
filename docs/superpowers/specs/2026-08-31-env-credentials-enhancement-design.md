@@ -69,11 +69,11 @@ CredentialInput {
   auth_type: "private_key" | "password",
   private_key_path: Option<String>,
   secret: Option<String>,    // None/空 = 不修改已有 secret；新凭证按需可空（私钥无口令）
+  is_default: bool           // 恰好一条为 true
 }
 ```
 
 - 被移除的凭证不出现在 `credentials` 里，后端 diff 得出删除集。
-- 默认凭证：`credentials[0]`（或显式 `is_default` 标记——实现取其一，文档以 `is_default: bool` 显式标记为准）。
 
 ### 后端处理流程
 
@@ -125,6 +125,6 @@ Rust 单元测试（`env_credentials.rs` / `environments.rs` 现有测试旁）�
 ## 不做的事（YAGNI）
 
 - 不改 `env_credentials` 表结构与 `environments` 镜像列机制；
-- 不做凭证用户名修改（编辑凭证改认证/secret/路径，用户名錯了移除重加）；
+- 不做凭证用户名修改（编辑凭证改认证/secret/路径，用户名错了移除重加）；
 - 不做批量导入凭证 / 凭证备注 / 有效期等扩展字段；
 - 不做连接池外的凭证引用（arthas attach 用户对齐仍按用户名查非默认凭证，行为不变）。
