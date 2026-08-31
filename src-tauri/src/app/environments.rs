@@ -16,7 +16,7 @@ pub enum EnvironmentError {
     NotFound(String),
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct EnvironmentRow {
     pub id: String,
     pub name: String,
