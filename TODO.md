@@ -49,6 +49,7 @@
 ## 后续批次（阶段 4 之后）
 
 - [ ] 结构化 JVM 工具：jvm_gc_stats（jstat）、jcmd、arthas、read_log、read_dump——逐步替换 playbook 中的 run_command 命令模板
+- [ ] jvm_* 工具接入用户对齐/多凭证能力（pre-flight 用户检查 + 按 jvm_user 查凭证的通用工具函数，arthas 批次已落地基础设施，见 [arthas 对接设计](docs/superpowers/specs/2026-08-31-arthas-mcp-integration-design.md)）
 - [ ] 爬虫管线（摄入管线抽象为 `KnowledgeIngest` trait，前两条管线先按 trait 落地）
 - [ ] K8s 诊断 playbook 内容（SSH 上跑 kubectl 的知识条目，无新机制）
 - [ ] 经验时间衰减 / playbook 使用效果反馈（视用户反馈）
