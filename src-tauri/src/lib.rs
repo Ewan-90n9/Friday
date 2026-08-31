@@ -284,6 +284,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             app::agents::set_active_agent_cmd,
             app::agents::remove_agent_cmd,
             app::environments::list_environments_cmd,
+            app::env_save::save_environment_cmd,
             app::environments::add_environment_cmd,
             app::environments::update_environment_cmd,
             app::environments::delete_environment_cmd,

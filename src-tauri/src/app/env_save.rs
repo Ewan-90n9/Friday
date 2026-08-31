@@ -416,6 +416,55 @@ async fn rollback_saved_state(
     }
 }
 
+// ── Tauri command ──
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveEnvironmentParams {
+    /// None = 新增
+    pub environment_id: Option<String>,
+    pub name: String,
+    pub host: String,
+    pub port: Option<u16>,
+    pub credentials: Vec<CredentialInput>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveEnvironmentResult {
+    pub environment: crate::app::environments::EnvironmentRow,
+    pub credentials: Vec<EnvCredentialRow>,
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn save_environment_cmd(
+    state: tauri::State<'_, crate::AppState>,
+    params: SaveEnvironmentParams,
+) -> Result<SaveEnvironmentResult, String> {
+    let outcome = save_environment(
+        &state.db,
+        params.environment_id.as_deref(),
+        params.name.trim(),
+        params.host.trim(),
+        params.port.unwrap_or(22),
+        params.credentials,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // 凭证/host/port 可能变化 → 断开该环境池化连接（下次使用按新配置重连）
+    {
+        let mut exec_pool = state.exec_pool.lock().await;
+        exec_pool.disconnect(&outcome.environment.id).await;
+    }
+
+    Ok(SaveEnvironmentResult {
+        environment: outcome.environment,
+        credentials: outcome.credentials,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
