@@ -78,7 +78,9 @@
 │   list_processes / jvm_gc_stats / jvm_thread_dump    │
 │   / jvm_heap_info / jvm_vm_info / jvm_class_histogram     │
 │   / jvm_heap_dump；堆快照分析 heap_* 系列（MAT 引擎，   │
-│   自动预热）已落地；arthas/读日志/读dump 后续批次）        │
+│   自动预热）已落地；arthas 动态诊断 arthas_* 系列       │
+│   （官方 MCP Server 对接，SSH 隧道代理）已落地；         │
+│   读日志/读dump 后续批次）                                 │
 │ - 风险分级拦截：                                          │
 │     只读自主 → 直接执行                                    │
 │     低风险 → 推 confirm_required 事件，等前端确认           │

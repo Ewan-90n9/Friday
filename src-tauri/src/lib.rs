@@ -29,6 +29,8 @@ pub struct AppState {
     pub vec_store: Option<Arc<crate::knowledge::vec_store::VecStore>>,
     pub tool_registry: Arc<crate::tools::registry::ToolRegistry>,
     pub analyzer: Arc<crate::analyzer::HeapAnalyzerManager>,
+    pub arthas: Arc<crate::arthas::manager::ArthasManager>,
+    pub tunnels: Arc<crate::exec::tunnel::TunnelManager>,
     pub exec_pool: Arc<Mutex<crate::exec::pool::ExecChannelPool>>,
     pub confirm_registry: Arc<Mutex<crate::tools::confirm::ConfirmRegistry>>,
     pub session_mapper: Arc<Mutex<crate::mcp::session_mapper::SessionMapper>>,
@@ -107,6 +109,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // Create shared state for MCP server
             let exec_pool = Arc::new(Mutex::new(crate::exec::pool::ExecChannelPool::new()));
 
+            // SSH 隧道（direct-tcpip 本地转发）：arthas MCP 通路，后续 JMX 等复用
+            let tunnels = Arc::new(crate::exec::tunnel::TunnelManager::new(pool.clone()));
+
             // 文件传输：TransferManager（后台异步传输引擎）+ 4 个工具；
             // heap dump 拉回完成 → 自动预热分析（钩子须在 Arc 包装前注入）
             let mut transfer_manager = crate::transfer::TransferManager::new(
@@ -126,6 +131,20 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 jdk_cache: jdk_cache.clone(),
                 artifacts_dir: paths.artifacts_dir(),
             });
+
+            // arthas 动态诊断：attach 编排依赖 jdk_cache / 连接池 / 隧道 / artifactory
+            let attach_deps = crate::arthas::attach::AttachDeps {
+                db: pool.clone(),
+                exec_pool: exec_pool.clone(),
+                tunnels: tunnels.clone(),
+                jdk_cache: jdk_cache.clone(),
+                cache_dir: paths.cache_dir(),
+                bus: EventBus::new(handle.clone()),
+            };
+            let arthas_manager = Arc::new(crate::arthas::manager::ArthasManager::new(
+                crate::arthas::attach::production_attach_factory(attach_deps),
+                crate::arthas::manager::ArthasConfig::default(),
+            ));
 
             let mut tool_registry = crate::tools::registry::ToolRegistry::new();
             tool_registry.register(crate::tools::builtin::echo_tool_def());
@@ -159,6 +178,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             crate::tools::builtin::heap::register_all(
                 &mut tool_registry,
                 analyzer_manager.clone(),
+                paths.artifacts_dir(),
+            );
+            crate::tools::builtin::arthas::register_all(
+                &mut tool_registry,
+                arthas_manager.clone(),
+                pool.clone(),
                 paths.artifacts_dir(),
             );
             let tool_registry = Arc::new(tool_registry);
@@ -229,6 +254,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 vec_store,
                 tool_registry,
                 analyzer: analyzer_manager,
+                arthas: arthas_manager,
+                tunnels,
                 exec_pool,
                 confirm_registry,
                 session_mapper,

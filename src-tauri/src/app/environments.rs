@@ -280,6 +280,9 @@ pub async fn delete_environment_cmd(
         let mut exec_pool = state.exec_pool.lock().await;
         exec_pool.disconnect(&id).await;
     }
+    // 停掉该环境的 arthas 会话并拆除隧道（agent 卸载 best-effort）
+    state.arthas.close_for_environment(&id).await;
+    state.tunnels.close_all_for_env(&id).await;
     // 删除该环境全部凭证（keychain 条目 + DB 行）与环境级 keychain（失败仅告警，不阻塞删除）
     match crate::app::env_credentials::list_credentials(&state.db, &id).await {
         Ok(creds) => {
