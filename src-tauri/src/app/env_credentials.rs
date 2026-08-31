@@ -134,17 +134,23 @@ pub async fn add_credential(
         if !secret.is_empty() {
             if let Err(e) = crate::app::credentials::store_cred_secret(environment_id, &id, secret).await {
                 tracing::error!(environment_id, cred_id = %id, ?e, "keychain store failed, rolling back credential insert");
-                let _ = sqlx::query("DELETE FROM env_credentials WHERE id = ?")
+                if let Err(del_err) = sqlx::query("DELETE FROM env_credentials WHERE id = ?")
                     .bind(&id)
                     .execute(pool)
-                    .await;
+                    .await
+                {
+                    tracing::error!(environment_id, cred_id = %id, ?del_err, "rollback delete failed, orphaned credential row remains");
+                }
                 return Err(EnvCredentialError::Keychain(e.to_string()));
             }
         }
     }
     if make_default {
-        sqlx::query("UPDATE environments SET user = ? WHERE id = ?")
+        // 与 set_default_credential 一致：镜像 user/auth_type/private_key_path 三列
+        sqlx::query("UPDATE environments SET user = ?, auth_type = ?, private_key_path = ? WHERE id = ?")
             .bind(username.trim())
+            .bind(auth_type)
+            .bind(private_key_path)
             .bind(environment_id)
             .execute(pool)
             .await?;
@@ -219,12 +225,19 @@ pub async fn set_default_credential(
         .bind(environment_id)
         .execute(pool)
         .await?;
-    Ok(cred)
+    // 重新读取行，返回新默认状态（同 add_credential 模式）
+    let fresh = sqlx::query(&format!("SELECT {CRED_COLUMNS} FROM env_credentials WHERE id = ?"))
+        .bind(cred_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| EnvCredentialError::NotFound(cred_id.to_string()))?;
+    Ok(row_to_cred(&fresh))
 }
 
 /// 一次性迁移：为没有凭证行的环境从 environments 列 + 旧 keychain 条目生成默认凭证。
-/// 幂等（已有凭证行的环境跳过）；keychain 移动失败仅告警并保留旧条目，下次启动重试。
-/// 由 lib.rs setup 在 db init 后调用。
+/// 幂等（已有凭证行的环境跳过）。keychain 移动先于插入：读取/移动失败的环境跳过
+/// （不插入凭证行），下次启动因行不存在而重试；插入成功后才删除旧条目，删除失败
+/// 仅告警并保留（无引用，无害）。由 lib.rs setup 在 db init 后调用。
 pub async fn migrate_legacy(pool: &SqlitePool) {
     let envs: Vec<(String, String, String, Option<String>)> = match sqlx::query_as(
         "SELECT e.id, e.user, e.auth_type, e.private_key_path FROM environments e \
@@ -240,7 +253,24 @@ pub async fn migrate_legacy(pool: &SqlitePool) {
         }
     };
     for (env_id, user, auth_type, key_path) in envs {
+        // 1. 先读旧密钥：读取失败无法判断是否有密钥，跳过该环境，下次启动重试
+        let legacy_secret = match crate::app::credentials::load_secret(&env_id).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(env_id = %env_id, ?e, "legacy secret read failed, skipping env, will retry next start");
+                continue;
+            }
+        };
         let id = uuid::Uuid::new_v4().to_string();
+        // 2. 有密钥 → 先移动到新路径 friday/env/{id}/cred/{cred_id}；
+        //    失败则跳过该环境（不插行，下次启动重试），避免密钥滞留旧路径
+        if let Some(secret) = &legacy_secret {
+            if let Err(e) = crate::app::credentials::store_cred_secret(&env_id, &id, secret).await {
+                tracing::warn!(env_id = %env_id, ?e, "keychain move failed, skipping env, will retry next start");
+                continue;
+            }
+        }
+        // 3. 密钥已就位（或本无密钥）→ 插入凭证行
         let now = chrono::Utc::now().to_rfc3339();
         let inserted = sqlx::query(
             "INSERT INTO env_credentials (id, environment_id, username, auth_type, private_key_path, is_default, created_at) \
@@ -258,22 +288,11 @@ pub async fn migrate_legacy(pool: &SqlitePool) {
             tracing::error!(env_id = %env_id, ?e, "env_credentials legacy migration insert failed");
             continue;
         }
-        // keychain 移动：friday/env/{id}/secret → friday/env/{id}/cred/{cred_id}
-        match crate::app::credentials::load_secret(&env_id).await {
-            Ok(Some(secret)) => {
-                match crate::app::credentials::store_cred_secret(&env_id, &id, &secret).await {
-                    Ok(()) => {
-                        if let Err(e) = crate::app::credentials::delete_secret(&env_id).await {
-                            tracing::warn!(env_id = %env_id, ?e, "legacy secret cleanup failed, will retry next start");
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(env_id = %env_id, ?e, "keychain move failed, keeping legacy entry")
-                    }
-                }
+        // 4. 移动成功且行已插入 → 删除旧条目；失败仅告警（无引用，无害）
+        if legacy_secret.is_some() {
+            if let Err(e) = crate::app::credentials::delete_secret(&env_id).await {
+                tracing::warn!(env_id = %env_id, ?e, "legacy secret cleanup failed, orphaned legacy entry remains");
             }
-            Ok(None) => {}
-            Err(e) => tracing::warn!(env_id = %env_id, ?e, "legacy secret read failed"),
         }
         tracing::info!(env_id = %env_id, cred_id = %id, "migrated legacy environment credential");
     }
@@ -372,5 +391,36 @@ mod tests {
                 .fetch_one(&pool).await.unwrap();
         assert_eq!(auth, "private_key");
         assert_eq!(key_path.as_deref(), Some("~/.ssh/svc"));
+    }
+
+    #[tokio::test]
+    async fn test_set_default_returns_fresh_row() {
+        let (_tmp, pool) = setup().await;
+        add_env(&pool, "env-1", "opc").await;
+        add_credential(&pool, "env-1", "opc", "password", None, None, true).await.unwrap();
+        let svc = add_credential(&pool, "env-1", "svcapp", "password", None, None, false).await.unwrap();
+        assert!(!svc.is_default);
+        let updated = set_default_credential(&pool, "env-1", &svc.id).await.unwrap();
+        assert!(updated.is_default, "returned row must reflect the new default state");
+        assert_eq!(updated.username, "svcapp");
+    }
+
+    #[tokio::test]
+    async fn test_add_default_credential_mirrors_auth_columns() {
+        let (_tmp, pool) = setup().await;
+        add_env(&pool, "env-1", "opc").await;
+        add_credential(&pool, "env-1", "opc", "password", None, None, true).await.unwrap();
+        // 新默认凭证是 private_key：environments 行必须镜像 auth_type + private_key_path
+        add_credential(&pool, "env-1", "svcapp", "private_key", Some("~/.ssh/svc"), None, true).await.unwrap();
+        let (auth, key_path): (String, Option<String>) =
+            sqlx::query_as("SELECT auth_type, private_key_path FROM environments WHERE id = 'env-1'")
+                .fetch_one(&pool).await.unwrap();
+        assert_eq!(auth, "private_key");
+        assert_eq!(key_path.as_deref(), Some("~/.ssh/svc"));
+        // 只剩一个默认
+        let defaults: Vec<EnvCredentialRow> = list_credentials(&pool, "env-1").await.unwrap()
+            .into_iter().filter(|c| c.is_default).collect();
+        assert_eq!(defaults.len(), 1);
+        assert_eq!(defaults[0].username, "svcapp");
     }
 }
