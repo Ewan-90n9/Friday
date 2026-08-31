@@ -46,6 +46,9 @@ pub struct SshTransport {
     pub auth: SshAuth,
     /// 密钥直供（测试连接等未落库场景）；None 时从 OS 密钥链按 env_id 读取
     secret_override: Option<String>,
+    /// 凭证维度密钥链条目 id（env_credentials.id）；
+    /// None = 旧路径 friday/env/{env_id}/secret（迁移前兜底）
+    cred_id: Option<String>,
     /// interior mutability: ExecChannel trait 方法都是 &self
     conn: Mutex<Option<SshConn>>,
 }
@@ -112,6 +115,7 @@ impl SshTransport {
             user: user.to_string(),
             auth,
             secret_override: None,
+            cred_id: None,
             conn: Mutex::new(None),
         }
     }
@@ -128,6 +132,36 @@ impl SshTransport {
         Self {
             secret_override: secret,
             ..Self::new(env_id, host, port, user, auth)
+        }
+    }
+
+    /// 使用 env_credentials 凭证构造（密钥从 friday/env/{env_id}/cred/{cred_id} 读取）
+    pub fn with_cred(
+        env_id: &str,
+        host: &str,
+        port: u16,
+        user: &str,
+        auth: SshAuth,
+        cred_id: &str,
+    ) -> Self {
+        Self {
+            cred_id: Some(cred_id.to_string()),
+            ..Self::new(env_id, host, port, user, auth)
+        }
+    }
+
+    /// 测试用：读取 cred_id
+    pub fn cred_id_as_ref(&self) -> Option<&str> {
+        self.cred_id.as_deref()
+    }
+
+    /// 密钥链读取：cred_id 存在走凭证路径，否则旧路径（迁移前兜底）
+    async fn load_keychain_secret(
+        &self,
+    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+        match &self.cred_id {
+            Some(cid) => crate::app::credentials::load_cred_secret(&self.env_id, cid).await,
+            None => crate::app::credentials::load_secret(&self.env_id).await,
         }
     }
 
@@ -149,7 +183,7 @@ impl SshTransport {
 
         let authed = match &self.auth {
             SshAuth::PrivateKey { key_path } => {
-                let keychain = crate::app::credentials::load_secret(&self.env_id).await?;
+                let keychain = self.load_keychain_secret().await?;
                 let passphrase = effective_secret(&self.secret_override, keychain);
                 let key_pair = load_key_pair(key_path, passphrase.as_deref())?;
                 handle
@@ -157,7 +191,7 @@ impl SshTransport {
                     .await?
             }
             SshAuth::Password => {
-                let keychain = crate::app::credentials::load_secret(&self.env_id).await?;
+                let keychain = self.load_keychain_secret().await?;
                 let secret = effective_secret(&self.secret_override, keychain)
                     .ok_or("password not found in keychain")?;
                 handle.authenticate_password(self.user.clone(), secret).await?

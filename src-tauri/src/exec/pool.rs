@@ -131,6 +131,8 @@ pub struct EnvironmentInfo {
     pub user: Option<String>,
     pub auth_type: Option<String>,
     pub private_key_path: Option<String>,
+    /// 默认凭证 id（env_credentials.id）；无凭证行时 None（退回 environments 列）
+    pub default_cred_id: Option<String>,
 }
 
 pub fn build_transport(
@@ -146,13 +148,24 @@ pub fn build_transport(
             .ok_or_else(|| PoolError::TransportNotImplemented(format!(
                 "invalid auth config for environment {environment_id}"
             )))?;
-            Ok(super::ssh::SshTransport::new(
-                environment_id,
-                env.host.as_deref().unwrap_or_default(),
-                env.port.unwrap_or(22),
-                env.user.as_deref().unwrap_or_default(),
-                auth,
-            ))
+            let transport = match &env.default_cred_id {
+                Some(cred_id) => super::ssh::SshTransport::with_cred(
+                    environment_id,
+                    env.host.as_deref().unwrap_or_default(),
+                    env.port.unwrap_or(22),
+                    env.user.as_deref().unwrap_or_default(),
+                    auth,
+                    cred_id,
+                ),
+                None => super::ssh::SshTransport::new(
+                    environment_id,
+                    env.host.as_deref().unwrap_or_default(),
+                    env.port.unwrap_or(22),
+                    env.user.as_deref().unwrap_or_default(),
+                    auth,
+                ),
+            };
+            Ok(transport)
         }
         other => Err(PoolError::TransportNotImplemented(other.to_string())),
     }
@@ -162,15 +175,29 @@ pub async fn fetch_environment(
     pool: &sqlx::SqlitePool,
     environment_id: &str,
 ) -> Result<EnvironmentInfo, PoolError> {
-    let row: Option<(Option<String>, Option<i64>, Option<String>, String, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            "SELECT host, port, user, transport_type, auth_type, private_key_path \
-             FROM environments WHERE id = ?",
-        )
-        .bind(environment_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| PoolError::Connection(e.to_string()))?;
+    let row: Option<(
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT e.host, e.port, e.user, e.transport_type, \
+                COALESCE(c.auth_type, e.auth_type), \
+                COALESCE(c.private_key_path, e.private_key_path), \
+                COALESCE(c.username, e.user), \
+                c.id \
+         FROM environments e \
+         LEFT JOIN env_credentials c ON c.environment_id = e.id AND c.is_default = 1 \
+         WHERE e.id = ?",
+    )
+    .bind(environment_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| PoolError::Connection(e.to_string()))?;
 
     let row = row.ok_or(PoolError::EnvironmentNotFound {
         env_id: environment_id.to_string(),
@@ -180,9 +207,10 @@ pub async fn fetch_environment(
         transport_type: row.3,
         host: row.0,
         port: row.1.map(|p| p as u16),
-        user: row.2,
+        user: row.6,
         auth_type: row.4,
         private_key_path: row.5,
+        default_cred_id: row.7,
     })
 }
 
@@ -320,5 +348,40 @@ mod tests {
         let removed = pool.cleanup_idle(std::time::Duration::from_secs(600)).await;
         assert_eq!(removed, 0);
         assert_eq!(pool.connection_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_environment_prefers_default_credential() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
+        insert_test_environment(&db_pool, "env-1", "prod").await;
+        // 环境行：user=root/password；凭证行：svcapp/private_key
+        sqlx::query(
+            "INSERT INTO env_credentials (id, environment_id, username, auth_type, private_key_path, is_default, created_at) \
+             VALUES ('c1', 'env-1', 'svcapp', 'private_key', '~/.ssh/svc', 1, '2026-01-01T00:00:00Z')",
+        )
+        .execute(&db_pool).await.unwrap();
+
+        let info = fetch_environment(&db_pool, "env-1").await.unwrap();
+        assert_eq!(info.user.as_deref(), Some("svcapp"));
+        assert_eq!(info.auth_type.as_deref(), Some("private_key"));
+        assert_eq!(info.private_key_path.as_deref(), Some("~/.ssh/svc"));
+        assert_eq!(info.default_cred_id.as_deref(), Some("c1"));
+
+        let transport = build_transport("env-1", &info).unwrap();
+        assert_eq!(transport.user, "svcapp");
+        assert_eq!(transport.cred_id_as_ref(), Some("c1"));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_environment_falls_back_to_env_columns() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
+        insert_test_environment(&db_pool, "env-1", "prod").await;
+
+        let info = fetch_environment(&db_pool, "env-1").await.unwrap();
+        assert_eq!(info.user.as_deref(), Some("root"));
+        assert_eq!(info.auth_type.as_deref(), Some("password"));
+        assert!(info.default_cred_id.is_none());
     }
 }
