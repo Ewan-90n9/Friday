@@ -29,6 +29,9 @@ pub async fn init(db_path: PathBuf) -> Result<SqlitePool, sqlx::Error> {
     // Migration (provisioning): global app settings (key-value)
     let schema8 = include_str!("../../migrations/0008_app_settings.sql");
     sqlx::query(schema8).execute(&pool).await?;
+    // Migration (arthas)：环境多用户凭证表
+    let schema9 = include_str!("../../migrations/0009_env_credentials.sql");
+    sqlx::query(schema9).execute(&pool).await?;
     tracing::info!(?db_path, "SQLite initialized");
     Ok(pool)
 }

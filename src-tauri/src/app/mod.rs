@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod credentials;
+pub mod env_credentials;
 pub mod environments;
 pub mod events;
 pub mod lifecycle;

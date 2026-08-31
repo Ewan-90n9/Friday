@@ -66,6 +66,73 @@ pub async fn delete_secret(
     }
 }
 
+/// 凭证维度条目（环境多用户）：friday/env/{env_id}/cred/{cred_id}
+fn cred_entry(env_id: &str, cred_id: &str) -> Result<Entry, keyring::Error> {
+    keyring::Entry::new(SERVICE, &format!("env/{env_id}/cred/{cred_id}"))
+}
+
+/// 存储用户凭证密钥（密码或私钥 passphrase）。空值时删除条目。
+pub async fn store_cred_secret(
+    env_id: &str,
+    cred_id: &str,
+    value: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let entry = cred_entry(env_id, cred_id).map_err(|e| {
+        tracing::error!(env_id = %env_id, cred_id = %cred_id, ?e, "failed to create cred keyring entry");
+        e
+    })?;
+    if value.is_empty() {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(e) => tracing::warn!(env_id = %env_id, cred_id = %cred_id, ?e, "failed to delete stale cred secret"),
+        }
+        return Ok(());
+    }
+    entry.set_password(value).map_err(|e| {
+        tracing::error!(env_id = %env_id, cred_id = %cred_id, ?e, "failed to store cred secret in keychain");
+        e
+    })?;
+    tracing::info!(env_id = %env_id, cred_id = %cred_id, "cred secret stored in keychain");
+    Ok(())
+}
+
+/// 读取用户凭证密钥。无条目返回 None。
+pub async fn load_cred_secret(
+    env_id: &str,
+    cred_id: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let entry = cred_entry(env_id, cred_id).map_err(|e| {
+        tracing::error!(env_id = %env_id, cred_id = %cred_id, ?e, "failed to create cred keyring entry");
+        e
+    })?;
+    match entry.get_password() {
+        Ok(v) => Ok(Some(v)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => {
+            tracing::error!(env_id = %env_id, cred_id = %cred_id, ?e, "failed to load cred secret from keychain");
+            Err(e.into())
+        }
+    }
+}
+
+/// 删除用户凭证密钥。无条目时静默成功。
+pub async fn delete_cred_secret(
+    env_id: &str,
+    cred_id: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let entry = cred_entry(env_id, cred_id).map_err(|e| {
+        tracing::error!(env_id = %env_id, cred_id = %cred_id, ?e, "failed to create cred keyring entry");
+        e
+    })?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => {
+            tracing::error!(env_id = %env_id, cred_id = %cred_id, ?e, "failed to delete cred secret from keychain");
+            Err(e.into())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
