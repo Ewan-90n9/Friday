@@ -114,7 +114,7 @@ ArthasManager
 │                  last_active, inflight }   // watch channel 通知等待者
 ├─ spawn_lock 双检锁：同一 (env,pid) 并发 open 去重为一次 attach
 ├─ ClientFactory seam（注入 mock 测试，同 heap analyzer）
-└─ 空闲回收任务：30s tick，无引用且无 inflight 超过 15min
+└─ 空闲回收任务：30s tick，距最后工具调用超过 15min 且 inflight == 0
      → HTTP API stop arthas + 拆隧道 + 移除会话
 ```
 
@@ -151,7 +151,7 @@ ArthasManager
 ### 输出处理与超时
 
 - 复用 heap 工具模式：64KB 截断返回 agent，全文落 `artifacts/<session>/arthas-<uuid>.md`
-- per-tool `(default_secs, max_secs)` 元组：dashboard 类 30/60；watch / trace / monitor 流式类 120/600；profiler 更长（实现期定标）
+- per-tool `(default_secs, max_secs)` 元组：dashboard 类 30/60；watch / trace / monitor 流式类 120/600；profiler 300/1800（火焰图采样周期长，允许 agent 显式传 `timeout_secs` 上浮）
 
 ### TOOL_GUIDANCE 更新（agent/prompt.rs）
 
