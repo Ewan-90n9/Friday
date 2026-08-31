@@ -171,6 +171,7 @@ impl SshTransport {
 
     /// 打开 direct-tcpip 转发 channel（SSH 本地端口转发的底层原语）。
     /// 未连接时返回错误；channel 的读写与关闭由调用方负责。
+    /// 注意：返回的 channel 生命周期与当前 SSH 连接绑定——连接被 disconnect()/重连替换后 channel 即失效（静默 EOF），调用方须自行处理。
     pub async fn open_direct_tcpip(
         &self,
         host: &str,
@@ -178,12 +179,19 @@ impl SshTransport {
     ) -> Result<russh::Channel<russh::client::Msg>, Box<dyn std::error::Error + Send + Sync>> {
         let mut conn = self.conn.lock().await;
         let Some(c) = conn.as_mut() else {
-            return Err(format!("ssh connection to {} not established", self.host).into());
+            tracing::warn!(host = %self.host, "open_direct_tcpip without established connection");
+            return Err(format!("ssh not connected (call connect first): {}", self.host).into());
         };
-        c.handle
-            .channel_open_direct_tcpip(host, port as u32, "127.0.0.1", 0)
-            .await
-            .map_err(|e| format!("open direct-tcpip {host}:{port} failed: {e}").into())
+        match c.handle.channel_open_direct_tcpip(host, port as u32, "127.0.0.1", 0).await {
+            Ok(channel) => {
+                tracing::info!(host, port, "direct-tcpip channel opened");
+                Ok(channel)
+            }
+            Err(e) => {
+                tracing::warn!(host = %self.host, port, error = %e, "open direct-tcpip channel failed");
+                Err(format!("open direct-tcpip {host}:{port} failed: {e}").into())
+            }
+        }
     }
 }
 
@@ -736,6 +744,7 @@ mod tests {
     async fn test_open_direct_tcpip_without_connection_errors() {
         let t = SshTransport::new("env-1", "h", 22, "u", SshAuth::Password);
         let r = t.open_direct_tcpip("127.0.0.1", 8563).await;
-        assert!(r.is_err());
+        let err = r.unwrap_err().to_string();
+        assert!(err.contains("ssh not connected (call connect first)"), "got: {err}");
     }
 }
