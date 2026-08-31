@@ -131,14 +131,23 @@ pub enum TestSecret {
     Provided(Option<String>),
     /// 编辑已有环境且未填新密钥 → 从密钥链按环境 id 读取
     FromKeychain(String),
+    /// 编辑已有凭证且未填新密钥 → 按 env/cred 双 id 读密钥链
+    FromKeychainCred(String, String),
 }
 
-pub fn resolve_test_secret(environment_id: Option<&str>, password: Option<&str>) -> TestSecret {
+pub fn resolve_test_secret(
+    environment_id: Option<&str>,
+    credential_id: Option<&str>,
+    password: Option<&str>,
+) -> TestSecret {
     match password {
         Some(p) if !p.trim().is_empty() => TestSecret::Provided(Some(p.to_string())),
-        _ => match environment_id {
-            Some(id) => TestSecret::FromKeychain(id.to_string()),
-            None => TestSecret::Provided(None),
+        _ => match (environment_id, credential_id) {
+            (Some(env), Some(cred)) => {
+                TestSecret::FromKeychainCred(env.to_string(), cred.to_string())
+            }
+            (Some(env), None) => TestSecret::FromKeychain(env.to_string()),
+            _ => TestSecret::Provided(None),
         },
     }
 }
@@ -150,6 +159,7 @@ pub fn resolve_test_secret(environment_id: Option<&str>, password: Option<&str>)
 pub async fn test_connection_params_cmd(
     state: State<'_, crate::AppState>,
     environment_id: Option<String>,
+    credential_id: Option<String>,
     host: String,
     port: Option<u16>,
     user: String,
@@ -163,9 +173,17 @@ pub async fn test_connection_params_cmd(
     let auth = crate::exec::ssh::SshAuth::from_row(&auth_type, private_key_path.as_deref())
         .ok_or("认证配置无效（私钥认证需要私钥路径）".to_string())?;
 
-    let secret_override = match resolve_test_secret(environment_id.as_deref(), password.as_deref())
-    {
+    let secret_override = match resolve_test_secret(
+        environment_id.as_deref(),
+        credential_id.as_deref(),
+        password.as_deref(),
+    ) {
         TestSecret::Provided(s) => s,
+        TestSecret::FromKeychainCred(env_id, cred_id) => {
+            crate::app::credentials::load_cred_secret(&env_id, &cred_id)
+                .await
+                .map_err(|e| e.to_string())?
+        }
         TestSecret::FromKeychain(env_id) => {
             get_environment(&state.db, &env_id)
                 .await
@@ -259,13 +277,32 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_test_secret_with_credential_id() {
+        // 有 credential_id → FromKeychainCred（按凭证条目读）
+        assert_eq!(
+            resolve_test_secret(Some("env-1"), Some("cred-9"), None),
+            TestSecret::FromKeychainCred("env-1".to_string(), "cred-9".to_string())
+        );
+        // 表单密钥优先于 credential_id
+        assert_eq!(
+            resolve_test_secret(Some("env-1"), Some("cred-9"), Some("pw")),
+            TestSecret::Provided(Some("pw".to_string()))
+        );
+        // 无 credential_id 保持旧行为
+        assert_eq!(
+            resolve_test_secret(Some("env-1"), None, None),
+            TestSecret::FromKeychain("env-1".to_string())
+        );
+    }
+
+    #[test]
     fn test_resolve_test_secret_uses_form_password_when_provided() {
         assert_eq!(
-            resolve_test_secret(None, Some("form-pass")),
+            resolve_test_secret(None, None, Some("form-pass")),
             TestSecret::Provided(Some("form-pass".to_string()))
         );
         assert_eq!(
-            resolve_test_secret(Some("env-1"), Some("form-pass")),
+            resolve_test_secret(Some("env-1"), None, Some("form-pass")),
             TestSecret::Provided(Some("form-pass".to_string()))
         );
     }
@@ -273,19 +310,25 @@ mod tests {
     #[test]
     fn test_resolve_test_secret_edit_blank_password_falls_back_to_keychain() {
         assert_eq!(
-            resolve_test_secret(Some("env-1"), None),
+            resolve_test_secret(Some("env-1"), None, None),
             TestSecret::FromKeychain("env-1".to_string())
         );
         assert_eq!(
-            resolve_test_secret(Some("env-1"), Some("  ")),
+            resolve_test_secret(Some("env-1"), None, Some("  ")),
             TestSecret::FromKeychain("env-1".to_string())
         );
     }
 
     #[test]
     fn test_resolve_test_secret_new_blank_password_is_none() {
-        assert_eq!(resolve_test_secret(None, None), TestSecret::Provided(None));
-        assert_eq!(resolve_test_secret(None, Some("")), TestSecret::Provided(None));
+        assert_eq!(
+            resolve_test_secret(None, None, None),
+            TestSecret::Provided(None)
+        );
+        assert_eq!(
+            resolve_test_secret(None, None, Some("")),
+            TestSecret::Provided(None)
+        );
     }
 
     #[tokio::test]
