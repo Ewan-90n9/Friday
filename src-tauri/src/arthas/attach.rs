@@ -94,9 +94,10 @@ pub fn write_properties_command(home: &str, content: &str) -> String {
 
 /// attach 命令：cd 到 arthas home（arthas-boot 从当前目录读 arthas.properties），
 /// nohup 后台驻留，stdin 接 /dev/null 防交互等待。java 为可执行文件完整路径（已做字符集校验）。
+/// 日志重定向到 /tmp（跨用户 attach 时 home 目录对 jvm_user 不可写，/tmp 才能保证可写）。
 pub fn attach_command(java: &str, home: &str, pid: i64) -> String {
     format!(
-        "cd {home} && nohup {java} -jar arthas-boot.jar --pid {pid} < /dev/null >> {home}/arthas-attach-{pid}.log 2>&1 & echo attach-started"
+        "cd {home} && nohup {java} -jar arthas-boot.jar --pid {pid} < /dev/null >> /tmp/arthas-friday-{pid}.log 2>&1 & echo attach-started"
     )
 }
 
@@ -267,11 +268,12 @@ struct ProductionStopHandle {
 impl ArthasStopHandle for ProductionStopHandle {
     async fn stop(&self) {
         // HTTP stop（尽力而为，失败仅告警——残留 agent 由用户 arthas_close 重试或目标机重启解决）
-        if let Ok(channel) = get_default_channel_raw(&self.db, &self.exec_pool, &self.env_id).await {
-            match run_with_timeout(channel.as_ref(), &stop_command(self.remote_port, &self.token), 15).await {
+        match get_default_channel_raw(&self.db, &self.exec_pool, &self.env_id).await {
+            Ok(channel) => match run_with_timeout(channel.as_ref(), &stop_command(self.remote_port, &self.token), 15).await {
                 Ok(_) => tracing::info!(env_id = %self.env_id, port = self.remote_port, "arthas stopped via http api"),
                 Err(e) => tracing::warn!(env_id = %self.env_id, port = self.remote_port, error = %e, "arthas http stop failed (best-effort)"),
-            }
+            },
+            Err(e) => tracing::warn!(env_id = %self.env_id, port = self.remote_port, error = %e, "failed to get exec channel for arthas http stop (best-effort skip)"),
         }
         self.tunnels.close(&self.env_id, "127.0.0.1", self.remote_port).await;
         self.client.shutdown().await;
@@ -357,8 +359,8 @@ async fn resolve_attach_java(
         }
         Err(e) => Err(ManagerError::Attach(format!(
             "目标机找不到可用的 java（{}）。可用 run_command 确认目标服务的 java 路径后，\
-             用 java_bin 参数重试 arthas_open。原始错误: {}",
-            e.message, e.message
+             用 java_bin 参数重试 arthas_open",
+            e.message
         ))),
     }
 }
@@ -442,7 +444,7 @@ async fn wait_http_ready(
 }
 
 /// attach 日志位置提示（错误消息用）
-const ARTHAS_LOG_HINT: &str = "arthas home 下 arthas-attach-<pid>.log";
+const ARTHAS_LOG_HINT: &str = "/tmp/arthas-friday-<pid>.log";
 
 /// 临时 attach 连接：jvm_user 凭证 → 独立 SshTransport（用后由调用方 disconnect）
 async fn build_temp_transport(
@@ -453,11 +455,22 @@ async fn build_temp_transport(
     let env = crate::exec::pool::fetch_environment(&deps.db, env_id)
         .await
         .map_err(|e| ManagerError::Attach(format!("环境查询失败: {e}")))?;
+    let auth = crate::exec::ssh::SshAuth::from_row(&cred.auth_type, cred.private_key_path.as_deref())
+        .ok_or_else(|| ManagerError::Attach(format!("用户 {} 的认证配置无效", cred.username)))?;
     let secret = crate::app::credentials::load_cred_secret(env_id, &cred.id)
         .await
         .map_err(|e| ManagerError::Attach(format!("读取用户 {} 密钥失败: {e}", cred.username)))?;
-    let auth = crate::exec::ssh::SshAuth::from_row(&cred.auth_type, cred.private_key_path.as_deref())
-        .ok_or_else(|| ManagerError::Attach(format!("用户 {} 的认证配置无效", cred.username)))?;
+    let secret = match (&auth, secret) {
+        // 密码认证但未存储密码（None/空串）→ 明确报错（不能回落到默认用户的旧密钥）；
+        // 私钥认证的 None 合法（无口令私钥），原样透传
+        (crate::exec::ssh::SshAuth::Password, s) if s.as_deref().map_or(true, |v| v.trim().is_empty()) => {
+            return Err(ManagerError::Attach(format!(
+                "用户 {} 的凭证未存储密码，请在环境管理中补录该用户的密码后重试",
+                cred.username
+            )));
+        }
+        (_, s) => s,
+    };
     let transport = crate::exec::ssh::SshTransport::with_secret(
         env_id,
         env.host.as_deref().unwrap_or_default(),
@@ -569,6 +582,9 @@ mod tests {
         assert!(cmd.contains("nohup /tmp/friday-tools/jdk-21/bin/java -jar arthas-boot.jar --pid 123"));
         assert!(cmd.contains("< /dev/null"));
         assert!(cmd.contains("&"));
+        // 日志重定向到 /tmp（跨用户 attach 时 home 目录对 jvm_user 不可写）
+        assert!(cmd.contains(">> /tmp/arthas-friday-123.log 2>&1"));
+        assert!(!cmd.contains("{home}/arthas-attach-"));
     }
 
     #[test]
