@@ -29,7 +29,7 @@ interface CredentialListProps {
     privateKeyPath: string,
     secret: string,
     makeDefault: boolean,
-  ) => void;
+  ) => boolean;
 }
 
 export function CredentialList(props: CredentialListProps) {
@@ -49,14 +49,16 @@ export function CredentialList(props: CredentialListProps) {
   } | null>(null);
 
   const handleAdd = () => {
-    props.onAdd(
+    const ok = props.onAdd(
       addForm.username.trim(),
       addForm.authType,
       addForm.privateKeyPath.trim(),
       addForm.secret,
       addForm.makeDefault,
     );
-    setAddForm({ username: "", authType: "password", privateKeyPath: "", secret: "", makeDefault: false });
+    if (ok) {
+      setAddForm({ username: "", authType: "password", privateKeyPath: "", secret: "", makeDefault: false });
+    }
   };
 
   return (

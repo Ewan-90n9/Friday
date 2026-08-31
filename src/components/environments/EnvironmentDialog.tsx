@@ -27,6 +27,7 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
 
   const [staged, setStaged] = useState<StagedCredential[]>([]);
   const [stagedLoaded, setStagedLoaded] = useState(false);
+  const [credLoadFailed, setCredLoadFailed] = useState(false);
   const [snapshot, setSnapshot] = useState<string>("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [testingKey, setTestingKey] = useState<string | null>(null);
@@ -35,23 +36,35 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
+    let active = true;
     if (open) {
       setForm(editing ? { name: editing.name, host: editing.host, port: String(editing.port) } : { ...EMPTY_FORM });
       setFormError(null);
       setStaged([]);
       setStagedLoaded(!editing);
+      setCredLoadFailed(false);
       setTestResults({});
       setConfirmDiscard(false);
       if (editing) {
         listEnvCredentials(editing.id)
-          .then((creds) => setStaged(fromStored(creds)))
-          .catch(() => setStaged([]))
-          .finally(() => setStagedLoaded(true));
+          .then((creds) => {
+            if (active) setStaged(fromStored(creds));
+          })
+          .catch(() => {
+            if (active) setCredLoadFailed(true);
+          })
+          .finally(() => {
+            if (active) setStagedLoaded(true);
+          });
       }
       if (!dialog.open) dialog.showModal();
-    } else if (dialog.open) {
-      dialog.close();
+    } else {
+      if (dialog.open) dialog.close();
+      setStagedLoaded(false);
     }
+    return () => {
+      active = false;
+    };
   }, [open, editing]);
 
   useEffect(() => {
@@ -77,6 +90,10 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
   };
 
   const handleSave = async () => {
+    if (credLoadFailed) {
+      setFormError("凭证加载失败，请关闭后重试");
+      return;
+    }
     if (!form.name.trim() || !form.host.trim()) {
       setFormError("名称 / 主机不能为空");
       return;
@@ -203,7 +220,11 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
                 登录凭证：★ 为默认登录用户（日常连接使用）。目标 JVM 以其他用户运行时（arthas attach
                 需要同用户），为该用户录入 SSH 凭证。
               </p>
-              {stagedLoaded ? (
+              {credLoadFailed ? (
+                <p role="alert" className="text-xs text-destructive py-2">
+                  凭证加载失败，请关闭后重试
+                </p>
+              ) : stagedLoaded ? (
                 <CredentialList
                   staged={staged}
                   testingId={testingKey}
@@ -229,18 +250,19 @@ export function EnvironmentDialog({ open, onClose, editing }: EnvironmentDialogP
                   onAdd={(username, authType, privateKeyPath, secret, makeDefault) => {
                     if (!username) {
                       setFormError("凭证用户名不能为空");
-                      return;
+                      return false;
                     }
                     if (authType === "private_key" && !privateKeyPath) {
                       setFormError("私钥认证需要填写私钥路径");
-                      return;
+                      return false;
                     }
                     if (staged.some((c) => c.username.trim() === username)) {
                       setFormError(`凭证用户名已存在：${username}`);
-                      return;
+                      return false;
                     }
                     setFormError(null);
                     setStaged((prev) => addStaged(prev, username, authType, privateKeyPath, secret, makeDefault));
+                    return true;
                   }}
                 />
               ) : (
