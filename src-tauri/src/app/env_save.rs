@@ -540,4 +540,133 @@ mod tests {
         input.private_key_path = Some("   ".to_string());
         assert!(matches!(validate_one(input), Err(SaveError::Validation(_))));
     }
+
+    // ── 编辑路径 diff + secret 语义回归测试 ──
+    // keychain 卫生：所有 secret 一律 None，测试不触达真实 OS keychain
+
+    async fn seed_env_with_creds(pool: &SqlitePool) -> String {
+        // 用 save_environment 走新增路径造初始数据
+        let outcome = save_environment(
+            pool, None, "prod", "10.0.0.1", 22,
+            vec![cred("opc", true), cred("svcapp", false)],
+        ).await.unwrap();
+        outcome.environment.id
+    }
+
+    #[tokio::test]
+    async fn test_edit_diff_add_update_delete() {
+        let (_tmp, pool) = setup().await;
+        let env_id = seed_env_with_creds(&pool).await;
+        let existing = crate::app::env_credentials::list_credentials(&pool, &env_id).await.unwrap();
+        let opc = existing.iter().find(|c| c.username == "opc").unwrap().clone();
+        let _svcapp = existing.iter().find(|c| c.username == "svcapp").unwrap().clone();
+
+        // 改 opc 认证为私钥（secret 留空 = 不变）、删 svcapp、加 deploy
+        let outcome = save_environment(
+            &pool, Some(&env_id), "prod", "10.0.0.2", 2222,
+            vec![
+                CredentialInput {
+                    id: Some(opc.id.clone()),
+                    username: "opc".to_string(),
+                    auth_type: "private_key".to_string(),
+                    private_key_path: Some("~/.ssh/opc".to_string()),
+                    secret: None,
+                    is_default: true,
+                },
+                CredentialInput {
+                    id: None,
+                    username: "deploy".to_string(),
+                    auth_type: "password".to_string(),
+                    private_key_path: None,
+                    secret: None,
+                    is_default: false,
+                },
+            ],
+        ).await.unwrap();
+
+        assert_eq!(outcome.environment.host, "10.0.0.2");
+        assert_eq!(outcome.environment.port, 2222);
+        assert_eq!(outcome.environment.user, "opc");
+        assert_eq!(outcome.environment.auth_type, "private_key");
+        let names: Vec<&str> = outcome.credentials.iter().map(|c| c.username.as_str()).collect();
+        assert_eq!(names, vec!["opc", "deploy"]); // svcapp 已删，默认排前
+        assert!(crate::app::env_credentials::find_credential_by_username(&pool, &env_id, "svcapp").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_edit_switch_default_flips_flag_and_mirrors() {
+        let (_tmp, pool) = setup().await;
+        let env_id = seed_env_with_creds(&pool).await;
+        let existing = crate::app::env_credentials::list_credentials(&pool, &env_id).await.unwrap();
+        let svcapp = existing.iter().find(|c| c.username == "svcapp").unwrap().clone();
+        let opc = existing.iter().find(|c| c.username == "opc").unwrap().clone();
+
+        // svcapp 设为默认（secret 留空 = 不变）
+        let outcome = save_environment(
+            &pool, Some(&env_id), "prod", "10.0.0.1", 22,
+            vec![
+                CredentialInput {
+                    id: Some(svcapp.id.clone()),
+                    username: "svcapp".to_string(),
+                    auth_type: "password".to_string(),
+                    private_key_path: None,
+                    secret: None,
+                    is_default: true,
+                },
+                CredentialInput {
+                    id: Some(opc.id.clone()),
+                    username: "opc".to_string(),
+                    auth_type: "password".to_string(),
+                    private_key_path: None,
+                    secret: None,
+                    is_default: false,
+                },
+            ],
+        ).await.unwrap();
+
+        assert_eq!(outcome.environment.user, "svcapp");
+        let defs: Vec<&EnvCredentialRow> = outcome.credentials.iter().filter(|c| c.is_default).collect();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].username, "svcapp");
+    }
+
+    #[tokio::test]
+    async fn test_edit_rename_duplicate_name_rejected() {
+        let (_tmp, pool) = setup().await;
+        let _a = seed_env_with_creds(&pool).await;
+        let b = save_environment(&pool, None, "staging", "10.0.0.9", 22, vec![cred("opc", true)]).await.unwrap();
+        let err = save_environment(
+            &pool, Some(&b.environment.id), "prod", "10.0.0.9", 22, vec![cred("opc", true)],
+        ).await.unwrap_err();
+        assert!(matches!(err, SaveError::Validation(_)));
+        // 改回自己的名字则通过
+        save_environment(
+            &pool, Some(&b.environment.id), "staging", "10.0.0.9", 22, vec![cred("opc", true)],
+        ).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_edit_auth_switch_without_secret_clears_keychain_entry() {
+        let (_tmp, pool) = setup().await;
+        let env_id = seed_env_with_creds(&pool).await;
+        let existing = crate::app::env_credentials::list_credentials(&pool, &env_id).await.unwrap();
+        let opc = existing.iter().find(|c| c.username == "opc").unwrap().clone();
+
+        // opc 从 password 切 private_key，secret 留空 → 旧 keychain 条目被清（DB 语义：不报错、行更新成功）
+        let outcome = save_environment(
+            &pool, Some(&env_id), "prod", "10.0.0.1", 22,
+            vec![CredentialInput {
+                id: Some(opc.id.clone()),
+                username: "opc".to_string(),
+                auth_type: "private_key".to_string(),
+                private_key_path: Some("~/.ssh/opc".to_string()),
+                secret: None,
+                is_default: true,
+            }],
+        ).await.unwrap();
+
+        let saved = outcome.credentials.iter().find(|c| c.id == opc.id).unwrap();
+        assert_eq!(saved.auth_type, "private_key");
+        assert_eq!(saved.private_key_path.as_deref(), Some("~/.ssh/opc"));
+    }
 }
