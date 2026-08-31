@@ -65,8 +65,17 @@ mod tests {
     async fn test_list_environments_returns_rows() {
         let tmp = tempfile::tempdir().unwrap();
         let db = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
-        crate::app::environments::add_environment(&db, "prod", "10.0.0.1", 22, "root", "password", None, None)
-            .await.unwrap();
+        crate::app::env_save::save_environment(
+            &db, None, "prod", "10.0.0.1", 22,
+            vec![crate::app::env_save::CredentialInput {
+                id: None,
+                username: "root".to_string(),
+                auth_type: "password".to_string(),
+                private_key_path: None,
+                secret: None,
+                is_default: true,
+            }],
+        ).await.unwrap();
 
         let handler = ListEnvironmentsHandler { db };
         let ctx = ToolContext { session_id: "s1".to_string(), channel: None };

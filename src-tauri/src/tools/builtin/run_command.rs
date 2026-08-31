@@ -290,8 +290,17 @@ mod tests {
     async fn setup_with_env() -> (tempfile::TempDir, sqlx::SqlitePool, Arc<tokio::sync::Mutex<crate::exec::pool::ExecChannelPool>>, std::path::PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let db = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
-        crate::app::environments::add_environment(&db, "prod", "10.0.0.1", 22, "root", "password", None, None)
-            .await.unwrap();
+        crate::app::env_save::save_environment(
+            &db, None, "prod", "10.0.0.1", 22,
+            vec![crate::app::env_save::CredentialInput {
+                id: None,
+                username: "root".to_string(),
+                auth_type: "password".to_string(),
+                private_key_path: None,
+                secret: None,
+                is_default: true,
+            }],
+        ).await.unwrap();
         let exec_pool = Arc::new(tokio::sync::Mutex::new(crate::exec::pool::ExecChannelPool::new()));
         let artifacts = tmp.path().join("artifacts");
         std::fs::create_dir_all(&artifacts).unwrap();

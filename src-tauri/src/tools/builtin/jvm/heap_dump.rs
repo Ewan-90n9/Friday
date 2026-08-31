@@ -253,8 +253,17 @@ mod tests {
     async fn setup(channel: Arc<dyn ExecChannel>) -> (tempfile::TempDir, Arc<JvmExecCore>, Arc<crate::transfer::TransferManager>) {
         let tmp = tempfile::tempdir().unwrap();
         let db = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
-        crate::app::environments::add_environment(&db, "prod", "10.0.0.1", 22, "root", "password", None, None).await.unwrap();
-        let env_id = crate::app::environments::find_by_name(&db, "prod").await.unwrap().unwrap().id;
+        let env_id = crate::app::env_save::save_environment(
+            &db, None, "prod", "10.0.0.1", 22,
+            vec![crate::app::env_save::CredentialInput {
+                id: None,
+                username: "root".to_string(),
+                auth_type: "password".to_string(),
+                private_key_path: None,
+                secret: None,
+                is_default: true,
+            }],
+        ).await.unwrap().environment.id;
         let exec_pool = Arc::new(tokio::sync::Mutex::new(crate::exec::pool::ExecChannelPool::new()));
         exec_pool.lock().await.insert_channel(env_id.clone(), channel).await;
         let mut bins = HashMap::new();
