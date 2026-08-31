@@ -281,16 +281,21 @@ pub async fn delete_environment_cmd(
         exec_pool.disconnect(&id).await;
     }
     // 删除该环境全部凭证（keychain 条目 + DB 行）与环境级 keychain（失败仅告警，不阻塞删除）
-    if let Ok(creds) = crate::app::env_credentials::list_credentials(&state.db, &id).await {
-        for cred in creds {
-            if let Err(e) = crate::app::credentials::delete_cred_secret(&id, &cred.id).await {
-                tracing::warn!(env_id = %id, cred_id = %cred.id, ?e, "failed to delete credential secret");
+    match crate::app::env_credentials::list_credentials(&state.db, &id).await {
+        Ok(creds) => {
+            for cred in creds {
+                if let Err(e) = crate::app::credentials::delete_cred_secret(&id, &cred.id).await {
+                    tracing::warn!(env_id = %id, cred_id = %cred.id, ?e, "failed to delete credential secret");
+                }
+            }
+            if let Err(e) = sqlx::query("DELETE FROM env_credentials WHERE environment_id = ?")
+                .bind(&id).execute(&state.db).await
+            {
+                tracing::warn!(env_id = %id, ?e, "failed to delete credential rows");
             }
         }
-        if let Err(e) = sqlx::query("DELETE FROM env_credentials WHERE environment_id = ?")
-            .bind(&id).execute(&state.db).await
-        {
-            tracing::warn!(env_id = %id, ?e, "failed to delete credential rows");
+        Err(e) => {
+            tracing::warn!(env_id = %id, ?e, "failed to list credentials during environment deletion; credential keychain entries may be orphaned");
         }
     }
     if let Err(e) = crate::app::credentials::delete_secret(&id).await {
@@ -358,7 +363,11 @@ pub async fn test_connection_params_cmd(
                     .await
                     .map_err(|e| e.to_string())?
                     .or(crate::app::credentials::load_secret(&env_id).await.map_err(|e| e.to_string())?),
-                _ => crate::app::credentials::load_secret(&env_id).await.map_err(|e| e.to_string())?,
+                Ok(None) => crate::app::credentials::load_secret(&env_id).await.map_err(|e| e.to_string())?,
+                Err(e) => {
+                    tracing::warn!(env_id = %env_id, ?e, "default credential lookup failed, falling back to legacy secret");
+                    crate::app::credentials::load_secret(&env_id).await.map_err(|e| e.to_string())?
+                }
             }
         }
     };
