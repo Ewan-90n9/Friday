@@ -426,9 +426,9 @@ mod tests {
         (tmp, pool)
     }
 
-    fn cred(username: &str, is_default: bool) -> CredentialInput {
+    fn cred_with_id(id: Option<String>, username: &str, is_default: bool) -> CredentialInput {
         CredentialInput {
-            id: None,
+            id,
             username: username.to_string(),
             auth_type: "password".to_string(),
             private_key_path: None,
@@ -436,6 +436,10 @@ mod tests {
             secret: None,
             is_default,
         }
+    }
+
+    fn cred(username: &str, is_default: bool) -> CredentialInput {
+        cred_with_id(None, username, is_default)
     }
 
     #[tokio::test]
@@ -475,14 +479,7 @@ mod tests {
         ).await.unwrap();
         let err = save_environment(
             &pool, Some(&outcome.environment.id), "prod", "10.0.0.1", 22,
-            vec![CredentialInput {
-                id: Some("no-such-cred-id".to_string()),
-                username: "ghost".to_string(),
-                auth_type: "password".to_string(),
-                private_key_path: None,
-                secret: None,
-                is_default: true,
-            }],
+            vec![cred_with_id(Some("no-such-cred-id".to_string()), "ghost", true)],
         ).await.unwrap_err();
         assert!(matches!(err, SaveError::Validation(_)));
         // 保存前状态未被破坏
@@ -559,7 +556,6 @@ mod tests {
         let env_id = seed_env_with_creds(&pool).await;
         let existing = crate::app::env_credentials::list_credentials(&pool, &env_id).await.unwrap();
         let opc = existing.iter().find(|c| c.username == "opc").unwrap().clone();
-        let _svcapp = existing.iter().find(|c| c.username == "svcapp").unwrap().clone();
 
         // 改 opc 认证为私钥（secret 留空 = 不变）、删 svcapp、加 deploy
         let outcome = save_environment(
@@ -573,14 +569,7 @@ mod tests {
                     secret: None,
                     is_default: true,
                 },
-                CredentialInput {
-                    id: None,
-                    username: "deploy".to_string(),
-                    auth_type: "password".to_string(),
-                    private_key_path: None,
-                    secret: None,
-                    is_default: false,
-                },
+                cred("deploy", false),
             ],
         ).await.unwrap();
 
@@ -605,22 +594,8 @@ mod tests {
         let outcome = save_environment(
             &pool, Some(&env_id), "prod", "10.0.0.1", 22,
             vec![
-                CredentialInput {
-                    id: Some(svcapp.id.clone()),
-                    username: "svcapp".to_string(),
-                    auth_type: "password".to_string(),
-                    private_key_path: None,
-                    secret: None,
-                    is_default: true,
-                },
-                CredentialInput {
-                    id: Some(opc.id.clone()),
-                    username: "opc".to_string(),
-                    auth_type: "password".to_string(),
-                    private_key_path: None,
-                    secret: None,
-                    is_default: false,
-                },
+                cred_with_id(Some(svcapp.id.clone()), "svcapp", true),
+                cred_with_id(Some(opc.id.clone()), "opc", false),
             ],
         ).await.unwrap();
 
@@ -639,20 +614,25 @@ mod tests {
             &pool, Some(&b.environment.id), "prod", "10.0.0.9", 22, vec![cred("opc", true)],
         ).await.unwrap_err();
         assert!(matches!(err, SaveError::Validation(_)));
-        // 改回自己的名字则通过
-        save_environment(
-            &pool, Some(&b.environment.id), "staging", "10.0.0.9", 22, vec![cred("opc", true)],
+        // 改回自己的名字则通过：带上已有凭证 id 做真正的自重命名（保持行身份，而非删旧建新）
+        let existing = crate::app::env_credentials::list_credentials(&pool, &b.environment.id).await.unwrap();
+        let opc_id = existing.iter().find(|c| c.username == "opc").unwrap().id.clone();
+        let saved = save_environment(
+            &pool, Some(&b.environment.id), "staging", "10.0.0.9", 22,
+            vec![cred_with_id(Some(opc_id.clone()), "opc", true)],
         ).await.unwrap();
+        assert!(saved.credentials.iter().any(|c| c.id == opc_id));
     }
 
     #[tokio::test]
-    async fn test_edit_auth_switch_without_secret_clears_keychain_entry() {
+    async fn test_edit_auth_switch_without_secret_updates_row() {
         let (_tmp, pool) = setup().await;
         let env_id = seed_env_with_creds(&pool).await;
         let existing = crate::app::env_credentials::list_credentials(&pool, &env_id).await.unwrap();
         let opc = existing.iter().find(|c| c.username == "opc").unwrap().clone();
 
-        // opc 从 password 切 private_key，secret 留空 → 旧 keychain 条目被清（DB 语义：不报错、行更新成功）
+        // opc 从 password 切 private_key，secret 留空 → 行更新成功（keychain 清除逻辑
+        // 无法在单测中验证，此处只断言 DB 列语义：不报错、认证方式与路径已更新）
         let outcome = save_environment(
             &pool, Some(&env_id), "prod", "10.0.0.1", 22,
             vec![CredentialInput {
@@ -668,5 +648,40 @@ mod tests {
         let saved = outcome.credentials.iter().find(|c| c.id == opc.id).unwrap();
         assert_eq!(saved.auth_type, "private_key");
         assert_eq!(saved.private_key_path.as_deref(), Some("~/.ssh/opc"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_private_key_path_change_keeps_secret_semantics() {
+        let (_tmp, pool) = setup().await;
+        // 建一个私钥凭证环境（走 create 路径）
+        let outcome = save_environment(
+            &pool, None, "prod", "10.0.0.1", 22,
+            vec![CredentialInput {
+                id: None,
+                username: "opc".to_string(),
+                auth_type: "private_key".to_string(),
+                private_key_path: Some("~/.ssh/old".to_string()),
+                secret: None,
+                is_default: true,
+            }],
+        ).await.unwrap();
+        let env_id = &outcome.environment.id;
+        let opc = crate::app::env_credentials::default_credential(&pool, env_id).await.unwrap().unwrap();
+
+        // 仅改私钥路径，secret 留空 → 行更新成功（secret 保持，不触发清除）
+        let saved = save_environment(
+            &pool, Some(env_id), "prod", "10.0.0.1", 22,
+            vec![CredentialInput {
+                id: Some(opc.id.clone()),
+                username: "opc".to_string(),
+                auth_type: "private_key".to_string(),
+                private_key_path: Some("~/.ssh/new".to_string()),
+                secret: None,
+                is_default: true,
+            }],
+        ).await.unwrap();
+
+        let row = saved.credentials.iter().find(|c| c.id == opc.id).unwrap();
+        assert_eq!(row.private_key_path.as_deref(), Some("~/.ssh/new"));
     }
 }
