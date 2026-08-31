@@ -67,21 +67,18 @@ pub async fn add_environment(
     .bind(auth_type).bind(private_key_path).bind(&now)
     .execute(pool).await?;
 
-    // 密码/私钥 passphrase 入密钥链；失败则回滚刚插入的行（保持 DB 与密钥链一致）
-    if let Some(secret) = password {
-        if !secret.is_empty() {
-            if let Err(e) = crate::app::credentials::store_secret(&id, secret).await {
-                tracing::error!(env_id = %id, ?e, "keychain store failed, rolling back environment insert");
-                if let Err(del_err) = sqlx::query("DELETE FROM environments WHERE id = ?")
-                    .bind(&id)
-                    .execute(pool)
-                    .await
-                {
-                    tracing::error!(env_id = %id, ?del_err, "rollback delete failed, orphaned environment row remains");
-                }
-                return Err(EnvironmentError::Keychain(e.to_string()));
-            }
+    // 创建默认凭证行（keychain 走 env/{id}/cred/{cred_id} 新路径）；
+    // keychain 失败回滚（env 行 + 凭证行一起删，保持一致）
+    if let Err(e) = crate::app::env_credentials::add_credential(
+        pool, &id, user, auth_type, private_key_path, password, true,
+    ).await {
+        tracing::error!(env_id = %id, ?e, "default credential creation failed, rolling back environment insert");
+        if let Err(del_err) = sqlx::query("DELETE FROM environments WHERE id = ?")
+            .bind(&id).execute(pool).await
+        {
+            tracing::error!(env_id = %id, ?del_err, "rollback delete failed, orphaned environment row remains");
         }
+        return Err(EnvironmentError::Keychain(e.to_string()));
     }
 
     get_environment(pool, &id).await?.ok_or(EnvironmentError::NotFound(id.clone()))
@@ -158,11 +155,6 @@ pub async fn update_environment(
     // 读取旧行以检测认证方式切换（切认证方式且未提供新密钥时，清除旧密钥，避免跨认证模式残留）
     let old = get_environment(pool, id).await?.ok_or(EnvironmentError::NotFound(id.to_string()))?;
     let new_secret_provided = password.map(|p| !p.is_empty()).unwrap_or(false);
-    if should_clear_secret_on_update(&old.auth_type, auth_type, new_secret_provided) {
-        tracing::info!(env_id = %id, "auth_type switched without new secret, clearing keychain entry");
-        crate::app::credentials::delete_secret(id).await
-            .map_err(|e| EnvironmentError::Keychain(e.to_string()))?;
-    }
 
     let result = sqlx::query(
         "UPDATE environments SET name = ?, host = ?, port = ?, user = ?, auth_type = ?, private_key_path = ? \
@@ -175,10 +167,42 @@ pub async fn update_environment(
         return Err(EnvironmentError::NotFound(id.to_string()));
     }
 
-    if let Some(secret) = password {
-        if !secret.is_empty() {
-            crate::app::credentials::store_secret(id, secret).await
-                .map_err(|e| EnvironmentError::Keychain(e.to_string()))?;
+    // 默认凭证行同步（environments.user/auth 与默认凭证保持一致）
+    match crate::app::env_credentials::default_credential(pool, id).await {
+        Ok(Some(cred)) => {
+            // 认证切换且未提供新密钥 → 清除该凭证密钥（旧密钥不能跨认证模式残留）
+            if should_clear_secret_on_update(&old.auth_type, auth_type, new_secret_provided) {
+                tracing::info!(env_id = %id, cred_id = %cred.id, "auth_type switched without new secret, clearing cred keychain entry");
+                if let Err(e) = crate::app::credentials::delete_cred_secret(id, &cred.id).await {
+                    tracing::warn!(env_id = %id, ?e, "failed to clear cred secret");
+                }
+            }
+            sqlx::query("UPDATE env_credentials SET username = ?, auth_type = ?, private_key_path = ? WHERE id = ?")
+                .bind(user).bind(auth_type).bind(private_key_path).bind(&cred.id)
+                .execute(pool).await?;
+            if let Some(secret) = password {
+                if !secret.is_empty() {
+                    crate::app::credentials::store_cred_secret(id, &cred.id, secret).await
+                        .map_err(|e| EnvironmentError::Keychain(e.to_string()))?;
+                }
+            }
+        }
+        Ok(None) => {
+            // 无凭证行（迁移未跑）：退回旧路径行为
+            if should_clear_secret_on_update(&old.auth_type, auth_type, new_secret_provided) {
+                tracing::info!(env_id = %id, "auth_type switched without new secret, clearing legacy keychain entry");
+                crate::app::credentials::delete_secret(id).await
+                    .map_err(|e| EnvironmentError::Keychain(e.to_string()))?;
+            }
+            if let Some(secret) = password {
+                if !secret.is_empty() {
+                    crate::app::credentials::store_secret(id, secret).await
+                        .map_err(|e| EnvironmentError::Keychain(e.to_string()))?;
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(env_id = %id, ?e, "default credential lookup failed, keychain not updated");
         }
     }
     Ok(())
@@ -256,9 +280,21 @@ pub async fn delete_environment_cmd(
         let mut exec_pool = state.exec_pool.lock().await;
         exec_pool.disconnect(&id).await;
     }
-    // 删 keychain 条目（失败仅告警，不阻塞删除）
+    // 删除该环境全部凭证（keychain 条目 + DB 行）与环境级 keychain（失败仅告警，不阻塞删除）
+    if let Ok(creds) = crate::app::env_credentials::list_credentials(&state.db, &id).await {
+        for cred in creds {
+            if let Err(e) = crate::app::credentials::delete_cred_secret(&id, &cred.id).await {
+                tracing::warn!(env_id = %id, cred_id = %cred.id, ?e, "failed to delete credential secret");
+            }
+        }
+        if let Err(e) = sqlx::query("DELETE FROM env_credentials WHERE environment_id = ?")
+            .bind(&id).execute(&state.db).await
+        {
+            tracing::warn!(env_id = %id, ?e, "failed to delete credential rows");
+        }
+    }
     if let Err(e) = crate::app::credentials::delete_secret(&id).await {
-        tracing::warn!(env_id = %id, ?e, "failed to delete keychain secret");
+        tracing::warn!(env_id = %id, ?e, "failed to delete legacy keychain secret");
     }
     delete_environment(&state.db, &id).await.map_err(|e| e.to_string())
 }
@@ -317,9 +353,13 @@ pub async fn test_connection_params_cmd(
                 .await
                 .map_err(|e| e.to_string())?
                 .ok_or("环境不存在".to_string())?;
-            crate::app::credentials::load_secret(&env_id)
-                .await
-                .map_err(|e| e.to_string())?
+            match crate::app::env_credentials::default_credential(&state.db, &env_id).await {
+                Ok(Some(cred)) => crate::app::credentials::load_cred_secret(&env_id, &cred.id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .or(crate::app::credentials::load_secret(&env_id).await.map_err(|e| e.to_string())?),
+                _ => crate::app::credentials::load_secret(&env_id).await.map_err(|e| e.to_string())?,
+            }
         }
     };
 
@@ -544,5 +584,48 @@ mod tests {
         add_environment(&pool, "b", "10.0.0.2", 22, "root", "password", None, None).await.unwrap();
         let err = validate_environment(&pool, "b", "10.0.0.1", "root", "password", None, Some(&a.id)).await.unwrap_err();
         assert!(matches!(err, EnvironmentError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn test_add_environment_creates_default_credential_row() {
+        let (_tmp, pool) = setup().await;
+        let env = add_environment(&pool, "prod", "10.0.0.1", 22, "opc", "password", None, None).await.unwrap();
+        let cred = crate::app::env_credentials::default_credential(&pool, &env.id).await.unwrap().unwrap();
+        assert_eq!(cred.username, "opc");
+        assert_eq!(cred.auth_type, "password");
+    }
+
+    #[tokio::test]
+    async fn test_update_environment_syncs_default_credential() {
+        let (_tmp, pool) = setup().await;
+        let env = add_environment(&pool, "prod", "10.0.0.1", 22, "opc", "password", None, None).await.unwrap();
+        update_environment(&pool, &env.id, "prod", "10.0.0.1", 22, "deploy", "private_key", Some("~/.ssh/deploy"), None).await.unwrap();
+        let cred = crate::app::env_credentials::default_credential(&pool, &env.id).await.unwrap().unwrap();
+        assert_eq!(cred.username, "deploy");
+        assert_eq!(cred.auth_type, "private_key");
+        assert_eq!(cred.private_key_path.as_deref(), Some("~/.ssh/deploy"));
+        // 额外凭证不受影响
+        crate::app::env_credentials::add_credential(&pool, &env.id, "svcapp", "password", None, None, false).await.unwrap();
+        update_environment(&pool, &env.id, "prod2", "10.0.0.1", 22, "deploy", "private_key", Some("~/.ssh/deploy"), None).await.unwrap();
+        assert!(crate::app::env_credentials::find_credential_by_username(&pool, &env.id, "svcapp").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_migrate_legacy_creates_default_credential() {
+        let (_tmp, pool) = setup().await;
+        // 直接走 SQL 模拟一个未迁移的旧环境（绕过新的 add_environment）
+        sqlx::query(
+            "INSERT INTO environments (id, name, host, port, user, transport_type, auth_type, created_at) \
+             VALUES ('old-1', 'old', '10.0.0.1', 22, 'opc', 'ssh', 'password', '2026-01-01T00:00:00Z')",
+        ).execute(&pool).await.unwrap();
+
+        crate::app::env_credentials::migrate_legacy(&pool).await;
+        let cred = crate::app::env_credentials::default_credential(&pool, "old-1").await.unwrap().unwrap();
+        assert_eq!(cred.username, "opc");
+
+        // 幂等：再跑一次不重复插入
+        crate::app::env_credentials::migrate_legacy(&pool).await;
+        let all = crate::app::env_credentials::list_credentials(&pool, "old-1").await.unwrap();
+        assert_eq!(all.len(), 1);
     }
 }

@@ -50,6 +50,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let pool = tauri::async_runtime::block_on(infra::db::init(paths.db_path()))?;
             tauri::async_runtime::block_on(app::agents::detect_and_persist(&pool))?;
 
+            // 环境多用户凭证：旧单用户数据迁移为默认凭证行（幂等）
+            tauri::async_runtime::block_on(app::env_credentials::migrate_legacy(&pool));
+
             let resource_dir = handle.path().resource_dir().ok();
 
             let embedding = match crate::knowledge::embedding::EmbeddingService::new(
