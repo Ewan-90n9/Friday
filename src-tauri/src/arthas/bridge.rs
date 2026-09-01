@@ -1025,7 +1025,7 @@ mod tests {
             .await
             .expect("mcp handshake via exec bridge (real curl)");
 
-        // tools/call dashboard（POST 经真 curl，SSE 单事件响应解析）
+        // tools/call dashboard（POST 经真 curl，多事件 SSE 流解析：progress 通知 + 最终结果）
         let dashboard = client
             .call_tool("dashboard", &serde_json::json!({}))
             .await
