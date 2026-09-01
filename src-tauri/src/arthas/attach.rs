@@ -266,7 +266,7 @@ async fn attach_arthas(deps: AttachDeps, req: AttachRequest) -> Result<AttachedS
         token,
         client: client.clone(),
     });
-    Ok(AttachedSession { client, stop_handle })
+    Ok(AttachedSession { client, stop_handle, remote_port: port })
 }
 
 /// best-effort stop：HTTP stop arthas（卸载 agent）+ 拆隧道 + 关 MCP client

@@ -49,6 +49,8 @@ pub trait ArthasStopHandle: Send + Sync {
 pub struct AttachedSession {
     pub client: Arc<dyn ArthasClient>,
     pub stop_handle: Arc<dyn ArthasStopHandle>,
+    /// attach 成功的远端 arthas HTTP 端口
+    pub remote_port: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -102,6 +104,8 @@ struct ArthasEntry {
     /// 代际令牌：条目创建时由 ManagerInner.next_task_id 分配，
     /// 仅创建它的 attach 任务在落定时可写入（防 stale 任务覆盖重开后的新条目）
     task_id: u64,
+    /// attach 成功的远端 arthas HTTP 端口，残留清理时排除活跃会话
+    remote_port: Option<u16>,
 }
 
 #[derive(Debug)]
@@ -196,6 +200,7 @@ impl ArthasManager {
                         last_active: Instant::now(),
                         inflight: 0,
                         task_id,
+                        remote_port: None,
                     },
                 );
                 // spawn attach 任务（对齐 heap analyzer 的 run_open_task 模式）
@@ -355,6 +360,23 @@ impl ArthasManager {
         }
     }
 
+    /// 当前环境 Ready 会话占用的远端 arthas 端口（残留清理排除用）
+    pub async fn active_remote_ports(&self, env_id: &str) -> Vec<u16> {
+        let inner = self.inner.lock().await;
+        inner
+            .sessions
+            .iter()
+            .filter(|((e, _), _)| e == env_id)
+            .filter_map(|(_, entry)| {
+                if matches!(*entry.phase_tx.borrow(), ArthasPhase::Ready) {
+                    entry.remote_port
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// 传输错误 → 移除会话 + best-effort stop（下次 open 重新 attach）
     async fn invalidate(&self, env_id: &str, pid: i64) {
         let stop = {
@@ -442,6 +464,7 @@ async fn run_attach_task(
         Ok(Ok(attached)) => {
             entry.client = Some(attached.client);
             entry.stop_handle = Some(attached.stop_handle);
+            entry.remote_port = Some(attached.remote_port);
             entry.last_active = Instant::now();
             entry.phase_tx.send_replace(ArthasPhase::Ready);
         }
@@ -546,6 +569,7 @@ mod tests {
                     Ok(AttachedSession {
                         client: ok_client(),
                         stop_handle: Arc::new(MockStop { stops: Arc::new(AtomicUsize::new(0)) }),
+                        remote_port: 18563,
                     })
                 })
             })
@@ -558,6 +582,7 @@ mod tests {
                 Ok(AttachedSession {
                     client: ok_client(),
                     stop_handle: Arc::new(MockStop { stops: Arc::new(AtomicUsize::new(0)) }),
+                    remote_port: 18563,
                 })
             })
         })
@@ -586,6 +611,7 @@ mod tests {
                     Ok(AttachedSession {
                         client: ok_client(),
                         stop_handle: Arc::new(MockStop { stops: Arc::new(AtomicUsize::new(0)) }),
+                        remote_port: 18563,
                     })
                 })
             }),
@@ -621,6 +647,7 @@ mod tests {
                     Ok(AttachedSession {
                         client: ok_client(),
                         stop_handle: Arc::new(MockStop { stops: Arc::new(AtomicUsize::new(0)) }),
+                        remote_port: 18563,
                     })
                 })
             }),
@@ -650,6 +677,7 @@ mod tests {
                     Ok(AttachedSession {
                         client,
                         stop_handle: Arc::new(MockStop { stops: Arc::new(AtomicUsize::new(0)) }),
+                        remote_port: 18563,
                     })
                 })
             }),
@@ -686,6 +714,7 @@ mod tests {
                     Ok(AttachedSession {
                         client: ok_client(),
                         stop_handle: Arc::new(MockStop { stops }),
+                        remote_port: 18563,
                     })
                 })
             }),
@@ -735,6 +764,7 @@ mod tests {
                     Ok(AttachedSession {
                         client: ok_client(),
                         stop_handle: Arc::new(MockStop { stops }),
+                        remote_port: 18563,
                     })
                 })
             }),
@@ -770,6 +800,7 @@ mod tests {
                     Ok(AttachedSession {
                         client: Arc::new(SlowClient),
                         stop_handle: Arc::new(MockStop { stops: Arc::new(AtomicUsize::new(0)) }),
+                        remote_port: 18563,
                     })
                 })
             }),
@@ -816,6 +847,7 @@ mod tests {
                     Ok(AttachedSession {
                         client: ok_client(),
                         stop_handle: Arc::new(MockStop { stops }),
+                        remote_port: 18563,
                     })
                 })
             }),
@@ -858,5 +890,55 @@ mod tests {
         gate2.add_permits(1);
         t2.await.unwrap().unwrap();
         mgr.query("env-1", 123, "dashboard", &json!({}), 5).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_active_remote_ports_lists_ready_sessions_only() {
+        // pid 123 → 立即 attach 成功（remote_port 18563，Ready）；
+        // 其他 pid → 挂在 gate 上保持 Attaching（remote_port 不得计入活跃端口）
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let gate_for_factory = gate.clone();
+        let mgr = Arc::new(ArthasManager::new(
+            Arc::new(move |req| {
+                let gate = gate_for_factory.clone();
+                Box::pin(async move {
+                    if req.pid == 123 {
+                        return Ok(AttachedSession {
+                            client: ok_client(),
+                            stop_handle: Arc::new(MockStop { stops: Arc::new(AtomicUsize::new(0)) }),
+                            remote_port: 18563,
+                        });
+                    }
+                    gate.acquire().await.unwrap();
+                    Ok(AttachedSession {
+                        client: ok_client(),
+                        stop_handle: Arc::new(MockStop { stops: Arc::new(AtomicUsize::new(0)) }),
+                        remote_port: 18564,
+                    })
+                })
+            }),
+            ArthasConfig::default(),
+        ));
+
+        // pid 123 → Ready
+        mgr.open("sess-1", "env-1", 123, "java", 30).await.unwrap();
+        // pid 456 → Attaching（挂起在 gate 上）
+        let mgr_for_task = mgr.clone();
+        let attaching_task =
+            tokio::spawn(async move { mgr_for_task.open("sess-2", "env-1", 456, "java", 30).await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // 只有 Ready 会话的端口计入
+        assert_eq!(mgr.active_remote_ports("env-1").await, vec![18563]);
+        // 其他环境为空
+        assert!(mgr.active_remote_ports("other-env").await.is_empty());
+
+        // 收尾：释放 gate 让挂起的 open 完成
+        gate.add_permits(1);
+        attaching_task.await.unwrap().unwrap();
+        // 两个会话都 Ready 后，两个端口都在
+        let mut ports = mgr.active_remote_ports("env-1").await;
+        ports.sort();
+        assert_eq!(ports, vec![18563, 18564]);
     }
 }
