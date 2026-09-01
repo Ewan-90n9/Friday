@@ -128,6 +128,7 @@ pub struct AttachDeps {
     pub tunnels: Arc<crate::exec::tunnel::TunnelManager>,
     pub jdk_cache: Arc<crate::tools::builtin::jvm::jdk_cache::JdkCache>,
     pub cache_dir: PathBuf,
+    pub arthas_zip: Option<PathBuf>,
     pub bus: EventBus,
 }
 
@@ -316,6 +317,7 @@ async fn provision_context(
         channel,
         cache_dir: deps.cache_dir.clone(),
         artifactory_base_url: base,
+        arthas_zip: deps.arthas_zip.clone(),
         timeouts: crate::provision::package::StageTimeouts::default(),
         bus: deps.bus.clone(),
     })

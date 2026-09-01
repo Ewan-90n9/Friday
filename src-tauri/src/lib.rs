@@ -132,6 +132,21 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 artifacts_dir: paths.artifacts_dir(),
             });
 
+            // arthas 工具包（vendored zip 随包分发，attach 时 SFTP 直传目标机）
+            let arthas_zip = resource_dir.as_ref().and_then(|r| {
+                let candidates = [
+                    r.join("resources").join("arthas").join(format!("arthas-bin-{}.zip", crate::provision::arthas::ARTHAS_VERSION)),
+                    r.join("arthas").join(format!("arthas-bin-{}.zip", crate::provision::arthas::ARTHAS_VERSION)),
+                ];
+                candidates.into_iter().find(|p| p.exists())
+            });
+            if arthas_zip.is_none() {
+                tracing::warn!(
+                    "arthas package missing (resources/arthas/arthas-bin-{}.zip); arthas attach will report vendored_package_missing",
+                    crate::provision::arthas::ARTHAS_VERSION
+                );
+            }
+
             // arthas 动态诊断：attach 编排依赖 jdk_cache / 连接池 / 隧道 / artifactory
             let attach_deps = crate::arthas::attach::AttachDeps {
                 db: pool.clone(),
@@ -139,6 +154,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 tunnels: tunnels.clone(),
                 jdk_cache: jdk_cache.clone(),
                 cache_dir: paths.cache_dir(),
+                arthas_zip,
                 bus: EventBus::new(handle.clone()),
             };
             let arthas_manager = Arc::new(crate::arthas::manager::ArthasManager::new(

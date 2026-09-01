@@ -26,6 +26,8 @@ pub struct ProvisionContext {
     pub channel: Arc<dyn ExecChannel>,
     pub cache_dir: std::path::PathBuf,
     pub artifactory_base_url: String,
+    /// vendored arthas zip（随应用分发）；None = 未随包分发，arthas ensure 时报结构化错误
+    pub arthas_zip: Option<std::path::PathBuf>,
     pub timeouts: StageTimeouts,
     pub bus: EventBus,
 }

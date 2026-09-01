@@ -76,6 +76,7 @@ impl ToolHandler for EnsureToolHandler {
             channel,
             cache_dir: self.cache_dir.clone(),
             artifactory_base_url: base_url,
+            arthas_zip: None,
             timeouts: StageTimeouts::default(),
             bus: self.bus.clone(),
         };

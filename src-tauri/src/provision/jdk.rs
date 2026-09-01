@@ -666,6 +666,7 @@ mod tests {
             channel,
             cache_dir: std::path::PathBuf::from("/tmp/unused-cache"),
             artifactory_base_url: "https://artifactory.example.com/artifactory/release".into(),
+            arthas_zip: None,
             timeouts: StageTimeouts::default(),
             bus: crate::app::events::EventBus::disabled(),
         }
