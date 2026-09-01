@@ -147,7 +147,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 );
             }
 
-            // arthas 动态诊断：attach 编排依赖 jdk_cache / 连接池 / 隧道 / artifactory
+            // arthas 动态诊断：共享状态先行（active_ports_fn 进 AttachDeps，manager 后接管同一份 inner；
+            // 构造顺序 shared → deps → factory → manager，避免 manager↔factory 循环依赖）
+            let arthas_shared = crate::arthas::manager::ArthasSharedState::new();
             let attach_deps = crate::arthas::attach::AttachDeps {
                 db: pool.clone(),
                 exec_pool: exec_pool.clone(),
@@ -156,10 +158,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 cache_dir: paths.cache_dir(),
                 arthas_zip,
                 bus: EventBus::new(handle.clone()),
+                active_ports_fn: arthas_shared.active_ports_fn(),
             };
-            let arthas_manager = Arc::new(crate::arthas::manager::ArthasManager::new(
+            let arthas_manager = Arc::new(crate::arthas::manager::ArthasManager::with_shared_state(
                 crate::arthas::attach::production_attach_factory(attach_deps),
                 crate::arthas::manager::ArthasConfig::default(),
+                arthas_shared,
             ));
 
             let mut tool_registry = crate::tools::registry::ToolRegistry::new();

@@ -68,6 +68,13 @@ pub type AttachFactory = Arc<
         + Sync,
 >;
 
+/// 活跃端口查询句柄：返回 env_id 下 Ready 会话占用的远端 arthas 端口。
+/// attach 编排（残留清理）用它排除活跃会话；以闭包形式共享 manager 内部状态，
+/// 避免 manager↔factory 循环依赖（manager 持有 factory，factory 的 AttachDeps 持有本句柄）。
+pub type ActivePortsFn = Arc<
+    dyn Fn(&str) -> Pin<Box<dyn Future<Output = Vec<u16>> + Send>> + Send + Sync,
+>;
+
 #[derive(Clone, Debug)]
 pub struct ArthasConfig {
     /// 距最后调用超过该时长且无 inflight → 自动 stop
@@ -127,6 +134,61 @@ struct ManagerInner {
     next_task_id: u64,
 }
 
+/// ArthasManager 共享内部状态句柄：生产装配时先独立创建，
+/// `active_ports_fn()` 交给 AttachDeps（残留清理排除活跃会话），
+/// 再连同 attach factory 一起交给 `ArthasManager::with_shared_state` 构造 manager。
+/// 构造顺序 shared → deps → factory → manager，解决 manager↔factory 循环依赖。
+pub struct ArthasSharedState {
+    inner: Arc<tokio::sync::Mutex<ManagerInner>>,
+}
+
+impl Default for ArthasSharedState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ArthasSharedState {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(tokio::sync::Mutex::new(ManagerInner {
+                sessions: HashMap::new(),
+                reaper_spawned: false,
+                next_task_id: 0,
+            })),
+        }
+    }
+
+    /// 活跃端口查询句柄（与接管本状态的 manager 实时同源）
+    pub fn active_ports_fn(&self) -> ActivePortsFn {
+        let inner = self.inner.clone();
+        Arc::new(move |env_id| {
+            let inner = inner.clone();
+            let env_id = env_id.to_string();
+            Box::pin(async move {
+                let inner = inner.lock().await;
+                collect_active_ports(&inner, &env_id)
+            })
+        })
+    }
+}
+
+/// 收集 env_id 下 Ready 会话占用的远端端口（active_remote_ports 与 ActivePortsFn 共用）
+fn collect_active_ports(inner: &ManagerInner, env_id: &str) -> Vec<u16> {
+    inner
+        .sessions
+        .iter()
+        .filter(|((e, _), _)| e == env_id)
+        .filter_map(|(_, entry)| {
+            if matches!(*entry.phase_tx.borrow(), ArthasPhase::Ready) {
+                entry.remote_port
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// 空闲回收判定（纯函数便于单测）
 fn is_reapable(entry: &ArthasEntry, idle_timeout: Duration) -> bool {
     if entry.last_active.elapsed() <= idle_timeout {
@@ -141,12 +203,18 @@ fn is_reapable(entry: &ArthasEntry, idle_timeout: Duration) -> bool {
 
 impl ArthasManager {
     pub fn new(attach_factory: AttachFactory, config: ArthasConfig) -> Self {
+        Self::with_shared_state(attach_factory, config, ArthasSharedState::new())
+    }
+
+    /// 生产装配入口：接管 ArthasSharedState 的 inner（与它的 active_ports_fn 同源，
+    /// attach 编排经 AttachDeps 查询的活跃端口即本 manager 的会话）
+    pub fn with_shared_state(
+        attach_factory: AttachFactory,
+        config: ArthasConfig,
+        shared: ArthasSharedState,
+    ) -> Self {
         Self {
-            inner: Arc::new(tokio::sync::Mutex::new(ManagerInner {
-                sessions: HashMap::new(),
-                reaper_spawned: false,
-                next_task_id: 0,
-            })),
+            inner: shared.inner,
             attach_factory,
             config,
         }
@@ -363,18 +431,7 @@ impl ArthasManager {
     /// 当前环境 Ready 会话占用的远端 arthas 端口（残留清理排除用）
     pub async fn active_remote_ports(&self, env_id: &str) -> Vec<u16> {
         let inner = self.inner.lock().await;
-        inner
-            .sessions
-            .iter()
-            .filter(|((e, _), _)| e == env_id)
-            .filter_map(|(_, entry)| {
-                if matches!(*entry.phase_tx.borrow(), ArthasPhase::Ready) {
-                    entry.remote_port
-                } else {
-                    None
-                }
-            })
-            .collect()
+        collect_active_ports(&inner, env_id)
     }
 
     /// 传输错误 → 移除会话 + best-effort stop（下次 open 重新 attach）
@@ -940,5 +997,24 @@ mod tests {
         let mut ports = mgr.active_remote_ports("env-1").await;
         ports.sort();
         assert_eq!(ports, vec![18563, 18564]);
+    }
+
+    #[tokio::test]
+    async fn test_shared_state_ports_fn_sees_manager_sessions() {
+        // 生产装配路径：shared → active_ports_fn（进 AttachDeps）→ factory → manager 接管 shared。
+        // ports_fn 必须与 manager 看到同一份会话状态（循环依赖解法：共享 inner）
+        let shared = ArthasSharedState::new();
+        let ports_fn = shared.active_ports_fn();
+        let mgr = ArthasManager::with_shared_state(always_ok_factory(), ArthasConfig::default(), shared);
+
+        assert!(ports_fn("env-1").await.is_empty());
+        mgr.open("sess-1", "env-1", 123, "java", 30).await.unwrap();
+        assert_eq!(ports_fn("env-1").await, vec![18563]);
+        assert_eq!(mgr.active_remote_ports("env-1").await, vec![18563]);
+        assert!(ports_fn("other-env").await.is_empty());
+
+        // close 后端口即释放（残留清理不再排除它）
+        mgr.close("env-1", 123).await;
+        assert!(ports_fn("env-1").await.is_empty());
     }
 }

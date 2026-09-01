@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use super::manager::{ArthasClient, ArthasStopHandle, AttachFactory, AttachRequest, AttachedSession, ManagerError};
+use super::manager::{
+    ActivePortsFn, ArthasClient, ArthasStopHandle, AttachFactory, AttachRequest, AttachedSession, ManagerError,
+};
 
 /// 远端 arthas HTTP 端口分配起点（顺序向上探测）
 pub const ARTHAS_PORT_START: u16 = 18563;
@@ -145,6 +147,8 @@ pub struct AttachDeps {
     pub cache_dir: PathBuf,
     pub arthas_zip: Option<PathBuf>,
     pub bus: EventBus,
+    /// 活跃会话端口查询（manager 共享；残留清理排除活跃会话）
+    pub active_ports_fn: ActivePortsFn,
 }
 
 pub fn production_attach_factory(deps: AttachDeps) -> AttachFactory {
@@ -212,6 +216,11 @@ async fn attach_arthas(deps: AttachDeps, req: AttachRequest) -> Result<AttachedS
         }
     };
 
+    // 3.5 残留实例清理：上次失败 attach 留下的 arthas 会占住端口并因 already-bind 守卫挡死重试
+    progress("cleanup", "清理残留 arthas 实例".to_string());
+    let active_ports = (deps.active_ports_fn)(&req.env_id).await;
+    cleanup_stale_instances(channel.as_ref(), &active_ports).await?;
+
     // 4. 分配远端端口（http + telnet 预检各一）+ 写 arthas.properties
     progress("allocate_port", "分配 arthas 端口".to_string());
     let (port, telnet_det_port) = find_free_remote_port(channel.as_ref()).await?;
@@ -235,23 +244,30 @@ async fn attach_arthas(deps: AttachDeps, req: AttachRequest) -> Result<AttachedS
         tokio::spawn(async move { t.disconnect().await; });
     }
 
-    // 6. 探活（端口可连 = arthas HTTP server 就绪）
+    // 6. 探活（端口可连 = arthas HTTP server 就绪）。失败先停掉可能已起的 arthas
+    //    再报错（防 already-bind 残留挡死后续重试）
     progress("probe", "等待 arthas HTTP 服务就绪".to_string());
-    wait_http_ready(channel.as_ref(), port, std::time::Duration::from_secs(60)).await?;
+    if let Err(e) = wait_http_ready(channel.as_ref(), port, std::time::Duration::from_secs(60)).await {
+        cleanup_partial_attach(channel.as_ref(), port, &token).await;
+        return Err(e);
+    }
 
-    // 7. 隧道 + MCP 握手（失败要拆隧道）
+    // 7. 隧道 + MCP 握手（失败要先停 arthas、拆隧道）
     progress("tunnel", "建立 SSH 隧道".to_string());
-    let lease = deps
-        .tunnels
-        .open(&req.env_id, "127.0.0.1", port)
-        .await
-        .map_err(|e| ManagerError::Attach(format!("SSH 隧道建立失败: {e}")))?;
+    let lease = match deps.tunnels.open(&req.env_id, "127.0.0.1", port).await {
+        Ok(lease) => lease,
+        Err(e) => {
+            cleanup_partial_attach(channel.as_ref(), port, &token).await;
+            return Err(ManagerError::Attach(format!("SSH 隧道建立失败: {e}")));
+        }
+    };
     let url = format!("http://127.0.0.1:{}/mcp", lease.local_port);
     progress("handshake", format!("MCP 握手（{url}）"));
     let client: Arc<dyn ArthasClient> = match crate::arthas::client::connect_arthas_client(&url, &token).await {
         Ok(c) => Arc::new(c),
         Err(e) => {
             deps.tunnels.close(&req.env_id, "127.0.0.1", port).await;
+            cleanup_partial_attach(channel.as_ref(), port, &token).await;
             return Err(ManagerError::Attach(format!("arthas MCP 握手失败: {e}")));
         }
     };
@@ -465,6 +481,66 @@ async fn wait_http_ready(
 /// attach 日志位置提示（错误消息用）
 const ARTHAS_LOG_HINT: &str = "/tmp/arthas-friday-<pid>.log";
 
+/// 残留 arthas 实例清理：探测段内端口，被占且非活跃 → HTTP stop + 等释放。
+/// v0.11.2+ 实例（localConnectionNonAuth）本地 stop 免密；更早残留会 401 → 报错指路重启目标服务。
+async fn cleanup_stale_instances(
+    channel: &dyn ExecChannel,
+    active_ports: &[u16],
+) -> Result<(), ManagerError> {
+    cleanup_stale_instances_with(
+        channel,
+        active_ports,
+        std::time::Duration::from_secs(15),
+        std::time::Duration::from_millis(500),
+    )
+    .await
+}
+
+/// cleanup_stale_instances 的参数化内核（等待预算/轮询间隔可调，测试用快参数）
+async fn cleanup_stale_instances_with(
+    channel: &dyn ExecChannel,
+    active_ports: &[u16],
+    wait_budget: std::time::Duration,
+    poll_interval: std::time::Duration,
+) -> Result<(), ManagerError> {
+    for port in ARTHAS_PORT_START..ARTHAS_PORT_START + ARTHAS_PORT_CANDIDATES {
+        if active_ports.contains(&port) {
+            continue;
+        }
+        let probe = run_with_timeout(channel, &port_probe_command(port), 15)
+            .await
+            .map_err(|e| ManagerError::Attach(format!("残留端口探测失败: {e}")))?;
+        if probe.stdout.trim() != "busy" {
+            continue;
+        }
+        tracing::info!(port, "stale arthas instance detected, stopping");
+        run_with_timeout(channel, &stop_command(port, ""), 15).await?;
+        let deadline = tokio::time::Instant::now() + wait_budget;
+        loop {
+            tokio::time::sleep(poll_interval).await;
+            let check = run_with_timeout(channel, &port_probe_command(port), 15).await?;
+            if check.stdout.trim() != "busy" {
+                tracing::info!(port, "stale arthas instance stopped");
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(ManagerError::Attach(format!(
+                    "端口 {port} 被残留 arthas 占用且无法停止（可能是旧版本实例，stop 被拒绝）。请重启目标服务后重试"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// attach 中途失败的收尾：best-effort 停掉可能已启动的 arthas（stop 失败不掩盖原错误）
+async fn cleanup_partial_attach(channel: &dyn ExecChannel, port: u16, token: &str) {
+    match run_with_timeout(channel, &stop_command(port, token), 15).await {
+        Ok(_) => tracing::info!(port, "partial attach cleaned up (arthas stopped)"),
+        Err(e) => tracing::warn!(port, error = %e, "cleanup stop failed, arthas agent may remain on target"),
+    }
+}
+
 /// 临时 attach 连接：jvm_user 凭证 → 独立 SshTransport（用后由调用方 disconnect）
 async fn build_temp_transport(
     deps: &AttachDeps,
@@ -645,5 +721,143 @@ mod tests {
             assert_eq!(t.len(), 32);
             assert!(t.chars().all(|c| c.is_ascii_alphanumeric()));
         }
+    }
+
+    // ── 残留清理 / 失败收尾（RecordingChannel stub，模型对齐 provision/arthas.rs 测试）──
+
+    use crate::exec::channel::ExecOutput;
+    use std::collections::VecDeque;
+
+    /// 记录 run 调用、按队列顺序返回预置输出
+    struct RecordingChannel {
+        calls: tokio::sync::Mutex<Vec<String>>,
+        responses: tokio::sync::Mutex<VecDeque<ExecOutput>>,
+    }
+
+    impl RecordingChannel {
+        fn new(responses: Vec<(&str, i32)>) -> Arc<Self> {
+            let dq = responses
+                .into_iter()
+                .map(|(o, c)| ExecOutput { stdout: o.to_string(), stderr: String::new(), exit_code: c })
+                .collect();
+            Arc::new(Self {
+                calls: tokio::sync::Mutex::new(Vec::new()),
+                responses: tokio::sync::Mutex::new(dq),
+            })
+        }
+
+        async fn calls(&self) -> Vec<String> {
+            self.calls.lock().await.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ExecChannel for RecordingChannel {
+        async fn run(&self, cmd: &str) -> Result<ExecOutput, Box<dyn std::error::Error + Send + Sync>> {
+            self.calls.lock().await.push(cmd.to_string());
+            Ok(self.responses.lock().await.pop_front().unwrap_or(ExecOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 1,
+            }))
+        }
+        async fn connect(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Ok(())
+        }
+        async fn disconnect(&self) {}
+        async fn is_alive(&self) -> bool {
+            true
+        }
+    }
+
+    /// run 恒定失败的通道（best-effort 收尾的失败路径用）
+    struct FailingChannel;
+
+    #[async_trait::async_trait]
+    impl ExecChannel for FailingChannel {
+        async fn run(&self, _cmd: &str) -> Result<ExecOutput, Box<dyn std::error::Error + Send + Sync>> {
+            Err("ssh broken".into())
+        }
+        async fn connect(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Ok(())
+        }
+        async fn disconnect(&self) {}
+        async fn is_alive(&self) -> bool {
+            true
+        }
+    }
+
+    /// 测试用快参数（预算 200ms / 轮询 50ms），避免 15s 生产等待拖慢 CI
+    const FAST_BUDGET: std::time::Duration = std::time::Duration::from_millis(200);
+    const FAST_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+    #[tokio::test]
+    async fn test_cleanup_stale_instances_stops_occupied_non_active_port() {
+        // 18563 被残留占用：probe busy → stop → 复查 free；其余 9 个候选端口 free
+        let channel = RecordingChannel::new(vec![
+            ("busy", 0), // 18563 探测：占用
+            ("", 0),     // 18563 HTTP stop
+            ("free", 0), // 18563 复查：已释放
+            ("free", 0), ("free", 0), ("free", 0), ("free", 0), ("free", 0),
+            ("free", 0), ("free", 0), ("free", 0), ("free", 0), // 18564~18572
+        ]);
+        cleanup_stale_instances_with(channel.as_ref(), &[], FAST_BUDGET, FAST_INTERVAL)
+            .await
+            .unwrap();
+        let calls = channel.calls().await;
+        assert_eq!(calls.len(), 12, "calls: {calls:?}");
+        assert!(calls[0].contains("/dev/tcp/127.0.0.1/18563"), "calls[0]: {}", calls[0]);
+        // stop 必须指向 18563 的 /api 且携带 stop payload
+        assert!(calls[1].contains("http://127.0.0.1:18563/api"), "calls[1]: {}", calls[1]);
+        assert!(calls[1].contains("\"command\":\"stop\""), "calls[1]: {}", calls[1]);
+        assert!(calls[2].contains("/dev/tcp/127.0.0.1/18563"), "calls[2]: {}", calls[2]);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_stale_instances_skips_active_ports() {
+        // 18563 是活跃会话端口：不得探测、不得 stop（否则会误杀在用会话）
+        let channel = RecordingChannel::new(vec![
+            ("free", 0), ("free", 0), ("free", 0), ("free", 0), ("free", 0),
+            ("free", 0), ("free", 0), ("free", 0), ("free", 0), // 18564~18572
+        ]);
+        cleanup_stale_instances_with(channel.as_ref(), &[18563], FAST_BUDGET, FAST_INTERVAL)
+            .await
+            .unwrap();
+        let calls = channel.calls().await;
+        assert_eq!(calls.len(), 9, "active port must be skipped entirely, calls: {calls:?}");
+        assert!(calls.iter().all(|c| !c.contains("18563")), "calls: {calls:?}");
+        assert!(calls.iter().all(|c| !c.contains("/api")), "no stop must be issued, calls: {calls:?}");
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_stale_instances_unstoppable_port_errors() {
+        // 18563 stop 后仍占用（旧版本实例拒绝 stop）→ 结构化报错指路重启目标服务
+        let mut responses = vec![
+            ("busy", 0), // 18563 探测：占用
+            ("", 0),     // 18563 stop（被拒绝）
+        ];
+        for _ in 0..30 {
+            responses.push(("busy", 0)); // 复查始终 busy，直到预算耗尽
+        }
+        let channel = RecordingChannel::new(responses);
+        let err = cleanup_stale_instances_with(channel.as_ref(), &[], FAST_BUDGET, FAST_INTERVAL)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("重启目标服务"), "err: {err}");
+        assert!(err.to_string().contains("18563"), "err: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_partial_attach_issues_best_effort_stop() {
+        // 正常路径：发出 stop 命令（含 token 与端口）
+        let channel = RecordingChannel::new(vec![("", 0)]);
+        cleanup_partial_attach(channel.as_ref(), 18563, "tok123").await;
+        let calls = channel.calls().await;
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].contains("Authorization: Bearer tok123"), "calls[0]: {}", calls[0]);
+        assert!(calls[0].contains("http://127.0.0.1:18563/api"), "calls[0]: {}", calls[0]);
+
+        // 通道失败路径：best-effort（仅告警），不 panic、不向上抛错
+        cleanup_partial_attach(&FailingChannel, 18563, "tok123").await;
     }
 }
