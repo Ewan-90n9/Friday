@@ -13,11 +13,13 @@ use super::manager::{ArthasClient, ArthasStopHandle, AttachFactory, AttachReques
 pub const ARTHAS_PORT_START: u16 = 18563;
 pub const ARTHAS_PORT_CANDIDATES: u16 = 10;
 
-/// arthas.properties 内容（MCP endpoint 开启 / telnet 关闭 / Friday 分配端口 / 随机 Bearer）。
+/// arthas.properties 内容。overrideAll=true 使 properties 覆盖 CLI（agent 侧 telnetPort=-1
+/// 真正禁用 telnet，CLI 传的 telnet 端口仅用于骗过 boot 的预检）；localConnectionNonAuth +
+/// ip=127.0.0.1 为官方包默认（stop 走 /api 本地免密、只绑回环），此前覆盖时丢失。
 /// 内容不含单引号/美元符，可安全嵌入 shell 单引号（见测试）。
 pub fn arthas_properties_content(http_port: u16, token: &str) -> String {
     format!(
-        "arthas.mcpEndpoint=/mcp\narthas.telnetPort=-1\narthas.httpPort={http_port}\narthas.password={token}\n"
+        "arthas.config.overrideAll=true\narthas.mcpEndpoint=/mcp\narthas.telnetPort=-1\narthas.httpPort={http_port}\narthas.password={token}\narthas.localConnectionNonAuth=true\narthas.ip=127.0.0.1\n"
     )
 }
 
@@ -60,28 +62,39 @@ pub fn port_probe_command(port: u16) -> String {
     )
 }
 
-/// 从 start 起找第一个空闲端口（探测命令，候选 count 个）
+/// 从 start 起找两个空闲端口（http + telnet 预检用）：探测候选 count 个，输出两行。
+/// 遍历全部候选输出空闲端口再 `head -2`（管道下循环 SIGPIPE 提前退出，行为正确）；
+/// 末尾 `; true` 保证整体 exit 0（探活命令的退出码不被 head 影响）。
 pub fn find_free_port_command(start: u16, count: u16) -> String {
     let end = start + count - 1;
     format!(
         "for p in $(seq {start} {end}); do \
-         if (exec 3<>/dev/tcp/127.0.0.1/$p) 2>/dev/null; then exec 3>&- 3<&-; else echo $p; exit 0; fi; \
-         done; echo none"
+         if (exec 3<>/dev/tcp/127.0.0.1/$p) 2>/dev/null; then exec 3>&- 3<&-; else echo $p; fi; \
+         done | head -2; true"
     )
 }
 
-/// 解析 find_free_port_command 输出
-pub fn parse_free_port(stdout: &str) -> Result<u16, String> {
-    let first = stdout.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
-    if first == "none" || first.is_empty() {
+/// 解析 find_free_port_command 输出 → (http_port, telnet_det_port)
+pub fn parse_free_port(stdout: &str) -> Result<(u16, u16), String> {
+    let ports: Vec<u16> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| l.parse::<u16>().ok())
+        .collect();
+    if ports.len() >= 2 {
+        return Ok((ports[0], ports[1]));
+    }
+    if ports.len() == 1 {
         return Err(format!(
-            "端口 {ARTHAS_PORT_START}~{} 均被占用，请减少同机并发 attach 的 JVM 数或稍后重试",
+            "端口 {ARTHAS_PORT_START}~{} 中只有 1 个空闲（需要 2 个：HTTP + telnet 预检），请稍后重试",
             ARTHAS_PORT_START + ARTHAS_PORT_CANDIDATES - 1
         ));
     }
-    first
-        .parse::<u16>()
-        .map_err(|_| format!("端口探测输出无法解析: {stdout:?}"))
+    Err(format!(
+        "端口 {ARTHAS_PORT_START}~{} 均被占用，请减少同机并发 attach 的 JVM 数或稍后重试",
+        ARTHAS_PORT_START + ARTHAS_PORT_CANDIDATES - 1
+    ))
 }
 
 /// 写 arthas.properties（内容经单引号转义；chmod 644 保证 jvm_user 可读）
@@ -92,12 +105,14 @@ pub fn write_properties_command(home: &str, content: &str) -> String {
     )
 }
 
-/// attach 命令：cd 到 arthas home（arthas-boot 从当前目录读 arthas.properties），
+/// attach 命令：pid 是位置参数（arthas-boot 无 --pid 选项）；--attach-only 使 boot 进程
+/// attach 后即退出（telnet 已禁用，不启动交互 client）；--telnet-port 传有效空闲端口
+/// 骗过 boot 的预检（对 -1 会抛 port out of range 退出），agent 侧实际不绑（overrideAll）。
 /// nohup 后台驻留，stdin 接 /dev/null 防交互等待。java 为可执行文件完整路径（已做字符集校验）。
 /// 日志重定向到 /tmp（跨用户 attach 时 home 目录对 jvm_user 不可写，/tmp 才能保证可写）。
-pub fn attach_command(java: &str, home: &str, pid: i64) -> String {
+pub fn attach_command(java: &str, home: &str, http_port: u16, telnet_det_port: u16, pid: i64) -> String {
     format!(
-        "cd {home} && nohup {java} -jar arthas-boot.jar --pid {pid} < /dev/null >> /tmp/arthas-friday-{pid}.log 2>&1 & echo attach-started"
+        "cd {home} && nohup {java} -jar arthas-boot.jar --attach-only --http-port {http_port} --telnet-port {telnet_det_port} {pid} < /dev/null >> /tmp/arthas-friday-{pid}.log 2>&1 & echo attach-started"
     )
 }
 
@@ -197,9 +212,9 @@ async fn attach_arthas(deps: AttachDeps, req: AttachRequest) -> Result<AttachedS
         }
     };
 
-    // 4. 分配远端 HTTP 端口 + 写 arthas.properties（配置只走 properties，不传 CLI 端口参数）
-    progress("allocate_port", "分配 arthas HTTP 端口".to_string());
-    let port = find_free_remote_port(channel.as_ref()).await?;
+    // 4. 分配远端端口（http + telnet 预检各一）+ 写 arthas.properties
+    progress("allocate_port", "分配 arthas 端口".to_string());
+    let (port, telnet_det_port) = find_free_remote_port(channel.as_ref()).await?;
     let token = generate_token();
     progress("write_config", format!("写入 arthas.properties（httpPort={port}）"));
     write_properties(channel.as_ref(), &arthas_home, &arthas_properties_content(port, &token)).await?;
@@ -208,11 +223,11 @@ async fn attach_arthas(deps: AttachDeps, req: AttachRequest) -> Result<AttachedS
     progress("attach", format!("attach arthas 到 PID {}（java={java}）", req.pid));
     let temp_disconnect: Option<TempAttachTransport> = match attach_exec_kind {
         AttachExecKind::Shared(shared) => {
-            run_attach_command(shared.as_ref(), &java, &arthas_home, req.pid).await?;
+            run_attach_command(shared.as_ref(), &java, &arthas_home, port, telnet_det_port, req.pid).await?;
             None
         }
         AttachExecKind::Temp(t) => {
-            run_attach_command(&t, &java, &arthas_home, req.pid).await?;
+            run_attach_command(&t, &java, &arthas_home, port, telnet_det_port, req.pid).await?;
             Some(t)
         }
     };
@@ -376,8 +391,8 @@ async fn check_users(
     parse_user_check(&out.stdout).map_err(|e| ManagerError::Attach(format!("用户对齐检查失败: {e}; stderr: {}", out.stderr)))
 }
 
-/// 分配远端空闲端口（18563 起顺序探测）
-async fn find_free_remote_port(channel: &dyn ExecChannel) -> Result<u16, ManagerError> {
+/// 分配远端空闲端口（18563 起顺序探测，取两个：http + telnet 预检）
+async fn find_free_remote_port(channel: &dyn ExecChannel) -> Result<(u16, u16), ManagerError> {
     let cmd = find_free_port_command(ARTHAS_PORT_START, ARTHAS_PORT_CANDIDATES);
     let out = run_with_timeout(channel, &cmd, 20).await?;
     parse_free_port(&out.stdout).map_err(|e| ManagerError::Attach(e))
@@ -404,9 +419,11 @@ async fn run_attach_command(
     exec: &dyn ExecChannel,
     java: &str,
     arthas_home: &str,
+    http_port: u16,
+    telnet_det_port: u16,
     pid: i64,
 ) -> Result<(), ManagerError> {
-    let out = run_with_timeout(exec, &attach_command(java, arthas_home, pid), 30).await?;
+    let out = run_with_timeout(exec, &attach_command(java, arthas_home, http_port, telnet_det_port, pid), 30).await?;
     if out.exit_code != 0 {
         return Err(ManagerError::Attach(format!(
             "arthas attach 命令失败（exit {}）: {}",
@@ -534,10 +551,13 @@ mod tests {
     #[test]
     fn test_arthas_properties_content() {
         let content = arthas_properties_content(18563, "abc123");
+        assert!(content.contains("arthas.config.overrideAll=true\n"));
         assert!(content.contains("arthas.mcpEndpoint=/mcp\n"));
         assert!(content.contains("arthas.telnetPort=-1\n"));
         assert!(content.contains("arthas.httpPort=18563\n"));
         assert!(content.contains("arthas.password=abc123\n"));
+        assert!(content.contains("arthas.localConnectionNonAuth=true\n"));
+        assert!(content.contains("arthas.ip=127.0.0.1\n"));
         // 无单引号/美元符（安全嵌入 shell 单引号）
         assert!(!content.contains('\''));
         assert!(!content.contains('$'));
@@ -566,10 +586,13 @@ mod tests {
 
     #[test]
     fn test_find_free_port_command_and_parse() {
-        let cmd = find_free_port_command(18563, 3);
-        assert!(cmd.contains("seq 18563 18565"));
-        assert_eq!(parse_free_port("18563\n").unwrap(), 18563);
+        let cmd = find_free_port_command(18563, 10);
+        assert!(cmd.contains("seq 18563 18572"));
+        // 返回两个空闲端口：第一行 http，第二行 telnet 预检
+        assert_eq!(parse_free_port("18563\n18564\n").unwrap(), (18563, 18564));
         assert!(parse_free_port("none\n").is_err());
+        // 只有一个空闲端口：不够用，报错
+        assert!(parse_free_port("18563\nnone\n").is_err());
     }
 
     #[test]
@@ -579,14 +602,23 @@ mod tests {
 
     #[test]
     fn test_attach_command() {
-        let cmd = attach_command("/tmp/friday-tools/jdk-21/bin/java", "/tmp/friday-tools/arthas-4.3.5", 123);
+        let cmd = attach_command(
+            "/tmp/friday-tools/jdk-21/bin/java",
+            "/tmp/friday-tools/arthas-4.3.5",
+            18563,      // http_port
+            19563,      // telnet_det_port
+            123,        // pid
+        );
         assert!(cmd.contains("cd /tmp/friday-tools/arthas-4.3.5"));
-        assert!(cmd.contains("nohup /tmp/friday-tools/jdk-21/bin/java -jar arthas-boot.jar --pid 123"));
+        assert!(cmd.contains("--attach-only"));
+        assert!(cmd.contains("--http-port 18563"));
+        assert!(cmd.contains("--telnet-port 19563"));
+        // pid 是位置参数（arthas-boot 无 --pid 选项），放在最后
+        assert!(cmd.contains("arthas-boot.jar --attach-only --http-port 18563 --telnet-port 19563 123"));
+        assert!(!cmd.contains("--pid"));
         assert!(cmd.contains("< /dev/null"));
         assert!(cmd.contains("&"));
-        // 日志重定向到 /tmp（跨用户 attach 时 home 目录对 jvm_user 不可写）
         assert!(cmd.contains(">> /tmp/arthas-friday-123.log 2>&1"));
-        assert!(!cmd.contains("{home}/arthas-attach-"));
     }
 
     #[test]
