@@ -40,7 +40,7 @@ pub trait ArthasClient: Send + Sync {
     async fn shutdown(&self);
 }
 
-/// attach 资源释放句柄：HTTP stop arthas + 拆隧道（尽力而为）
+/// attach 资源释放句柄：HTTP stop arthas + 关 MCP client（尽力而为）
 #[async_trait]
 pub trait ArthasStopHandle: Send + Sync {
     async fn stop(&self);

@@ -142,7 +142,6 @@ pub fn generate_token() -> String {
 pub struct AttachDeps {
     pub db: sqlx::SqlitePool,
     pub exec_pool: Arc<Mutex<ExecChannelPool>>,
-    pub tunnels: Arc<crate::exec::tunnel::TunnelManager>,
     pub jdk_cache: Arc<crate::tools::builtin::jvm::jdk_cache::JdkCache>,
     pub cache_dir: PathBuf,
     pub arthas_zip: Option<PathBuf>,
@@ -252,31 +251,25 @@ async fn attach_arthas(deps: AttachDeps, req: AttachRequest) -> Result<AttachedS
         return Err(e);
     }
 
-    // 7. 隧道 + MCP 握手（失败要先停 arthas、拆隧道）
-    progress("tunnel", "建立 SSH 隧道".to_string());
-    let lease = match deps.tunnels.open(&req.env_id, "127.0.0.1", port).await {
-        Ok(lease) => lease,
-        Err(e) => {
-            cleanup_partial_attach(channel.as_ref(), port, &token).await;
-            return Err(ManagerError::Attach(format!("SSH 隧道建立失败: {e}")));
-        }
-    };
-    let url = format!("http://127.0.0.1:{}/mcp", lease.local_port);
+    // 7. MCP 通路（exec HTTP 桥：每请求经 exec 通道在目标机本地 curl，不依赖
+    //    sshd TCP 转发）+ MCP 握手。失败先停 arthas 再报错（防 already-bind
+    //    残留挡死后续重试）
+    progress("bridge", "建立 MCP 通路（exec HTTP 桥）".to_string());
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let bridge = crate::arthas::bridge::ExecHttpBridge::new(channel.clone(), 60);
     progress("handshake", format!("MCP 握手（{url}）"));
-    let client: Arc<dyn ArthasClient> = match crate::arthas::client::connect_arthas_client(&url, &token).await {
+    let client: Arc<dyn ArthasClient> = match crate::arthas::client::connect_arthas_client(bridge, &url, &token).await {
         Ok(c) => Arc::new(c),
         Err(e) => {
-            deps.tunnels.close(&req.env_id, "127.0.0.1", port).await;
             cleanup_partial_attach(channel.as_ref(), port, &token).await;
             return Err(ManagerError::Attach(format!("arthas MCP 握手失败: {e}")));
         }
     };
 
-    progress("ready", format!("arthas 就绪（远端端口 {port}，本地隧道端口 {}）", lease.local_port));
+    progress("ready", format!("arthas 就绪（远端端口 {port}，exec HTTP 桥）"));
     let stop_handle: Arc<dyn ArthasStopHandle> = Arc::new(ProductionStopHandle {
         db: deps.db.clone(),
         exec_pool: deps.exec_pool.clone(),
-        tunnels: deps.tunnels.clone(),
         env_id: req.env_id.clone(),
         remote_port: port,
         token,
@@ -285,11 +278,10 @@ async fn attach_arthas(deps: AttachDeps, req: AttachRequest) -> Result<AttachedS
     Ok(AttachedSession { client, stop_handle, remote_port: port })
 }
 
-/// best-effort stop：HTTP stop arthas（卸载 agent）+ 拆隧道 + 关 MCP client
+/// best-effort stop：HTTP stop arthas（卸载 agent）+ 关 MCP client
 struct ProductionStopHandle {
     db: sqlx::SqlitePool,
     exec_pool: Arc<Mutex<ExecChannelPool>>,
-    tunnels: Arc<crate::exec::tunnel::TunnelManager>,
     env_id: String,
     remote_port: u16,
     token: String,
@@ -307,7 +299,6 @@ impl ArthasStopHandle for ProductionStopHandle {
             },
             Err(e) => tracing::warn!(env_id = %self.env_id, port = self.remote_port, error = %e, "failed to get exec channel for arthas http stop (best-effort skip)"),
         }
-        self.tunnels.close(&self.env_id, "127.0.0.1", self.remote_port).await;
         self.client.shutdown().await;
     }
 }

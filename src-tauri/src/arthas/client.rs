@@ -2,36 +2,30 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::time::Duration;
 
+use super::bridge::ExecHttpBridge;
 use super::manager::{ArthasClient, CallOutcome};
 
-/// rmcp Streamable HTTP 实现：连接远端 arthas MCP Server（经 SSH 隧道到达 127.0.0.1:local_port）。
-/// Bearer token 即 arthas.password（Friday 生成、随 arthas.properties 下发）。
+/// rmcp Streamable HTTP 实现（exec HTTP 桥）：每个 MCP 请求经 exec 通道在
+/// 目标机本地 curl 127.0.0.1:{remote_port}/mcp，不依赖 sshd TCP 转发
+/// （AllowTcpForwarding no 环境可用）。Bearer token 即 arthas.password
+/// （Friday 生成、随 arthas.properties 下发）。
 pub struct McpArthasClient {
     peer: rmcp::service::Peer<rmcp::RoleClient>,
     service: tokio::sync::Mutex<Option<rmcp::service::RunningService<rmcp::RoleClient, ()>>>,
 }
 
-/// 构建直连 HTTP 客户端：MCP 流量走 SSH 隧道（127.0.0.1 本地端口），
-/// 必须绕过一切系统/环境代理——企业代理截走 localhost 请求时回 504（issue #7）。
-fn direct_http_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .no_proxy()
-        .pool_max_idle_per_host(0)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| format!("构建 MCP http 客户端失败: {e}"))
-}
-
-/// 连接 + MCP 握手（30s 超时）
-pub async fn connect_arthas_client(url: &str, token: &str) -> Result<McpArthasClient, String> {
+/// 连接 + MCP 握手（30s 超时）。auth_header 传**裸 token**：rmcp 经参数透传给
+/// bridge 的 post_message，Bearer 前缀由 bridge 拼接（双重前缀 = 401）。
+pub async fn connect_arthas_client(
+    bridge: ExecHttpBridge,
+    url: &str,
+    token: &str,
+) -> Result<McpArthasClient, String> {
     use rmcp::ServiceExt;
 
     let config = rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(url)
         .auth_header(token);
-    let transport = rmcp::transport::StreamableHttpClientTransport::with_client(
-        direct_http_client()?,
-        config,
-    );
+    let transport = rmcp::transport::StreamableHttpClientTransport::with_client(bridge, config);
 
     let service = tokio::time::timeout(Duration::from_secs(30), ().serve(transport))
         .await
@@ -39,7 +33,7 @@ pub async fn connect_arthas_client(url: &str, token: &str) -> Result<McpArthasCl
         .map_err(|e| format!("arthas MCP 连接失败: {e}"))?;
 
     let peer = service.peer().clone();
-    tracing::info!(url, "arthas mcp client connected");
+    tracing::info!(url, "arthas mcp client connected (exec http bridge)");
     Ok(McpArthasClient {
         peer,
         service: tokio::sync::Mutex::new(Some(service)),

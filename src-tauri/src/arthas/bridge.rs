@@ -127,21 +127,28 @@ fn extract_session_id(headers: &[&str]) -> Option<String> {
     })
 }
 
-/// 收集 SSE body 的 data: 行负载（SSE 规范：去一个可选前导空格，多行以 \n 连接）。
-/// 无 data 行返回 None。
-pub fn sse_data_lines_to_json(body: &str) -> Option<String> {
-    let mut parts: Vec<&str> = Vec::new();
+/// 解析 SSE body 为逐事件 data 负载：按空行分块，每块内 `data:` 行以 \n 连接
+/// （SSE 规范：去一个可选前导空格；`id:`/`event:`/注释行忽略）。
+/// arthas MCP 携带 progressToken 的请求会返回多事件（progress 通知 + 最终结果），
+/// 无 data 的块跳过；无任何 data 返回空 Vec。
+pub fn sse_body_to_events(body: &str) -> Vec<String> {
+    let mut events: Vec<String> = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
     for line in body.lines() {
         let line = line.strip_suffix('\r').unwrap_or(line);
-        if let Some(data) = line.strip_prefix("data:") {
-            parts.push(data.strip_prefix(' ').unwrap_or(data));
+        if line.is_empty() {
+            if !current.is_empty() {
+                events.push(current.join("\n"));
+                current.clear();
+            }
+        } else if let Some(data) = line.strip_prefix("data:") {
+            current.push(data.strip_prefix(' ').unwrap_or(data));
         }
     }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join("\n"))
+    if !current.is_empty() {
+        events.push(current.join("\n"));
     }
+    events
 }
 
 /// 错误消息用的 body 前缀（超长截断，完整内容走日志）
@@ -233,18 +240,26 @@ impl StreamableHttpClient for ExecHttpBridge {
                 if trimmed.starts_with('{') {
                     let msg: ServerJsonRpcMessage = serde_json::from_str(trimmed)?;
                     Ok(StreamableHttpPostResponse::Json(msg, session_from_header))
-                } else if let Some(json) = sse_data_lines_to_json(&resp_body) {
-                    // arthas MCP 实测：SSE 形态 body 但单事件即完整（无 GET 流依赖）
-                    let _msg: ServerJsonRpcMessage = serde_json::from_str(&json)?;
-                    let event = Sse { event: None, data: Some(json), id: None, retry: None };
-                    let stream =
-                        futures::stream::once(async move { Ok::<Sse, SseError>(event) }).boxed();
-                    Ok(StreamableHttpPostResponse::Sse(stream, session_from_header))
                 } else {
-                    tracing::warn!(code, body = %resp_body, "arthas mcp bridge 收到无法识别的 200 响应");
-                    Err(StreamableHttpError::UnexpectedServerResponse(
-                        format!("HTTP 200 无法识别的响应体: {}", body_prefix(&resp_body)).into(),
-                    ))
+                    let events = sse_body_to_events(&resp_body);
+                    if events.is_empty() {
+                        tracing::warn!(code, body = %resp_body, "arthas mcp bridge 收到无法识别的 200 响应");
+                        return Err(StreamableHttpError::UnexpectedServerResponse(
+                            format!("HTTP 200 无法识别的响应体: {}", body_prefix(&resp_body)).into(),
+                        ));
+                    }
+                    // arthas MCP 实测：SSE 形态 body，progress 通知 + 最终结果逐事件返回
+                    // （rmcp 发 progressToken 时多事件，无 GET 流依赖）。最终事件即请求
+                    // 响应，提前校验可解析以给出清晰错误。
+                    let last = events.last().expect("checked non-empty");
+                    let _msg: ServerJsonRpcMessage = serde_json::from_str(last)?;
+                    let stream = futures::stream::iter(
+                        events.into_iter().map(|data| {
+                            Ok::<Sse, SseError>(Sse { event: None, data: Some(data), id: None, retry: None })
+                        }),
+                    )
+                    .boxed();
+                    Ok(StreamableHttpPostResponse::Sse(stream, session_from_header))
                 }
             }
             401 => {
@@ -501,29 +516,50 @@ mod tests {
         assert!(parse_curl_output("garbage without code line").is_err());
     }
 
-    // ── sse_data_lines_to_json ──
+    // ── sse_body_to_events ──
 
     #[test]
-    fn test_sse_data_lines_single_event() {
+    fn test_sse_body_to_events_single_event() {
         let json = server_response_json();
-        let body = format!("event: message\ndata: {json}\n\n");
-        assert_eq!(sse_data_lines_to_json(&body).as_deref(), Some(json.as_str()));
+        let body = format!("id: abc\r\nevent: message\r\ndata: {json}\r\n\r\n");
+        assert_eq!(sse_body_to_events(&body), vec![json]);
     }
 
     #[test]
-    fn test_sse_data_lines_multiline_data_joined() {
-        assert_eq!(sse_data_lines_to_json("data: {\"a\":\ndata: 1}").as_deref(), Some("{\"a\":\n1}"));
+    fn test_sse_body_to_events_progress_then_final() {
+        // arthas 实测形态：携带 progressToken 的 tools/call 返回多个事件
+        // （progress 通知 × N + 最终结果；每事件带 id:/event: 行）
+        let progress1 = r#"{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"9","progress":1.0,"total":3.0}}"#;
+        let progress2 = r#"{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"9","progress":2.0,"total":3.0}}"#;
+        let final_resp = server_response_json();
+        let body = format!(
+            "id: 1\nevent: message\ndata: {progress1}\n\n\
+             id: 2\nevent: message\ndata: {progress2}\n\n\
+             id: 3\nevent: message\ndata: {final_resp}\n\n"
+        );
+        assert_eq!(
+            sse_body_to_events(&body),
+            vec![progress1.to_string(), progress2.to_string(), final_resp]
+        );
     }
 
     #[test]
-    fn test_sse_data_lines_no_space_after_colon() {
-        assert_eq!(sse_data_lines_to_json("data:{\"x\":1}").as_deref(), Some("{\"x\":1}"));
+    fn test_sse_body_to_events_multiline_data_joined() {
+        assert_eq!(
+            sse_body_to_events("data: {\"a\":\ndata: 1}"),
+            vec!["{\"a\":\n1}".to_string()]
+        );
     }
 
     #[test]
-    fn test_sse_data_lines_none_when_no_data() {
-        assert_eq!(sse_data_lines_to_json("event: message\n"), None);
-        assert_eq!(sse_data_lines_to_json(""), None);
+    fn test_sse_body_to_events_no_space_after_colon() {
+        assert_eq!(sse_body_to_events("data:{\"x\":1}"), vec!["{\"x\":1}".to_string()]);
+    }
+
+    #[test]
+    fn test_sse_body_to_events_empty_when_no_data() {
+        assert!(sse_body_to_events("event: message\n").is_empty());
+        assert!(sse_body_to_events("").is_empty());
     }
 
     // ── post_message（StreamableHttpClient trait）──
@@ -595,6 +631,44 @@ mod tests {
                     events += 1;
                 }
                 assert_eq!(events, 1, "expected exactly one sse event");
+            }
+            other => panic!("expected Sse, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_post_message_sse_progress_then_final() {
+        // arthas 实测：携带 progressToken 的请求返回 progress 通知 + 最终结果多事件流
+        let progress = r#"{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"9","progress":1.0,"total":3.0}}"#;
+        let final_resp = server_response_json();
+        let stdout = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nmcp-session-id: sess-7\r\n\r\n\
+             id: 1\nevent: message\ndata: {progress}\n\n\
+             id: 2\nevent: message\ndata: {final_resp}\n\n\
+             200"
+        );
+        let channel = RecordingChannel::new(vec![(&stdout, 0)]);
+        let b = bridge(channel);
+
+        let resp = b
+            .post_message(
+                Arc::from("http://127.0.0.1:18563/mcp"),
+                client_message(),
+                Some(Arc::from("sess-7")),
+                Some("tok123".to_string()),
+                HashMap::new(),
+            )
+            .await
+            .unwrap();
+
+        match resp {
+            StreamableHttpPostResponse::Sse(mut stream, session) => {
+                assert_eq!(session.as_deref(), Some("sess-7"));
+                let first = stream.next().await.unwrap().unwrap();
+                assert_eq!(first.data.as_deref(), Some(progress));
+                let second = stream.next().await.unwrap().unwrap();
+                assert_eq!(second.data.as_deref(), Some(final_resp.as_str()));
+                assert!(stream.next().await.is_none(), "stream should end after final event");
             }
             other => panic!("expected Sse, got {other:?}"),
         }
@@ -769,5 +843,211 @@ mod tests {
             .unwrap();
         let events: Vec<Result<Sse, SseError>> = stream.collect().await;
         assert!(events.is_empty(), "events: {events:?}");
+    }
+
+    // ── 本地全链路回归（真 arthas + 真 curl；#[ignore]，手动 --ignored 运行）──
+
+    /// exec 通道的本地替身：命令经 Git Bash 执行——bridge 生成的 POSIX 命令
+    /// （单引号转义、curl 参数）原样可跑，语义与目标机 Linux bash 一致。
+    struct LocalExecChannel {
+        bash: std::path::PathBuf,
+    }
+
+    #[async_trait::async_trait]
+    impl ExecChannel for LocalExecChannel {
+        async fn run(&self, cmd: &str) -> Result<ExecOutput, Box<dyn std::error::Error + Send + Sync>> {
+            let out = tokio::process::Command::new(&self.bash)
+                .arg("-c")
+                .arg(cmd)
+                .output()
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.to_string().into() })?;
+            Ok(ExecOutput {
+                stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                exit_code: out.status.code().unwrap_or(-1),
+            })
+        }
+        async fn connect(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Ok(())
+        }
+        async fn disconnect(&self) {}
+        async fn is_alive(&self) -> bool {
+            true
+        }
+    }
+
+    /// e2e 固定口令（arthas.password，仅本地 throwaway 实例用）
+    const E2E_PASSWORD: &str = "testtoken123";
+
+    /// 本地全链路回归（真 arthas + 真 curl）：math-game JVM（arthas 官方 demo，
+    /// 随 bin 包分发）+ arthas-boot attach + exec HTTP 桥 MCP 握手 + dashboard /
+    /// thread 工具调用 + shutdown（DELETE session）。
+    /// 依赖本机 JDK（PATH java）、Git Bash（POSIX 命令语义）、resources/arthas 包；
+    /// 不进 CI（#[ignore]），环境缺失时早退跳过。
+    #[tokio::test]
+    #[ignore]
+    async fn local_e2e_bridge_against_real_arthas() {
+        use crate::arthas::manager::ArthasClient;
+
+        // 前置：Git Bash
+        let bash = [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+        ]
+        .iter()
+        .map(std::path::PathBuf::from)
+        .find(|p| p.exists())
+        .or_else(|| which::which("bash").ok());
+        let Some(bash) = bash else {
+            eprintln!("skip: Git Bash not found (provides POSIX command semantics like the target host)");
+            return;
+        };
+        // 前置：JDK（java + attach API）
+        let Ok(java) = which::which("java") else {
+            eprintln!("skip: java not on PATH (JDK required for arthas-boot)");
+            return;
+        };
+        // 前置：vendored arthas 包
+        let zip = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("arthas")
+            .join("arthas-bin-4.3.5.zip");
+        if !zip.exists() {
+            eprintln!("skip: arthas package not found at {}", zip.display());
+            return;
+        }
+
+        // 解压到 %TEMP% 缓存（复用避免每次解 17MB）
+        let dir = std::env::temp_dir().join("friday-arthas-e2e-4.3.5");
+        if !dir.join("arthas-boot.jar").exists() {
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            let to_slash = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/");
+            let cmd = format!("unzip -o -q '{}' -d '{}'", to_slash(&zip), to_slash(&dir));
+            let out = tokio::process::Command::new(&bash)
+                .arg("-c")
+                .arg(&cmd)
+                .output()
+                .await
+                .expect("run unzip");
+            assert!(
+                out.status.success() && dir.join("arthas-boot.jar").exists(),
+                "unzip arthas package failed: {}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr),
+            );
+        }
+
+        // 端口：18599 起避开生产常用段，探测取空闲的 http + telnet 预检两个
+        let mut free_ports: Vec<u16> = Vec::new();
+        for port in 18599..18620u16 {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err() {
+                free_ports.push(port);
+                if free_ports.len() == 2 {
+                    break;
+                }
+            }
+        }
+        if free_ports.len() < 2 {
+            eprintln!("skip: no free ports in 18599..18619 for e2e test");
+            return;
+        }
+        let (http_port, telnet_det_port) = (free_ports[0], free_ports[1]);
+
+        let token = E2E_PASSWORD;
+        std::fs::write(
+            dir.join("arthas.properties"),
+            crate::arthas::attach::arthas_properties_content(http_port, token),
+        )
+        .expect("write arthas.properties");
+
+        // 目标 JVM：math-game（长驻）。stdin 持有保活（EOF 会退出）；stdout/stderr 丢弃防管道写满
+        let mut game = tokio::process::Command::new(&java)
+            .args(["-jar", "math-game.jar"])
+            .current_dir(&dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn math-game");
+        let _game_stdin = game.stdin.take();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await; // 等 JVM 启动
+        let pid = game.id().expect("math-game pid");
+
+        // attach（与生产 attach_command 同构；--attach-only 后 boot 自行退出）
+        let attach = tokio::time::timeout(
+            std::time::Duration::from_secs(90),
+            tokio::process::Command::new(&java)
+                .args([
+                    "-jar",
+                    "arthas-boot.jar",
+                    "--attach-only",
+                    "--http-port",
+                    &http_port.to_string(),
+                    "--telnet-port",
+                    &telnet_det_port.to_string(),
+                    &pid.to_string(),
+                ])
+                .current_dir(&dir)
+                .output(),
+        )
+        .await
+        .expect("arthas-boot attach timed out (90s)")
+        .expect("run arthas-boot");
+        assert!(
+            attach.status.success(),
+            "arthas-boot attach failed (exit {:?}):\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            attach.status.code(),
+            String::from_utf8_lossy(&attach.stdout),
+            String::from_utf8_lossy(&attach.stderr),
+        );
+
+        // 等 arthas HTTP server 就绪（端口可连）
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            if tokio::net::TcpStream::connect(("127.0.0.1", http_port)).await.is_ok() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "arthas http server not ready on port {http_port} within 60s",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
+        // THE 焦点：exec HTTP 桥 + 真 curl 的 MCP 全链路
+        let channel: Arc<dyn ExecChannel> = Arc::new(LocalExecChannel { bash: bash.clone() });
+        let bridge = ExecHttpBridge::new(channel.clone(), 60);
+        let url = format!("http://127.0.0.1:{http_port}/mcp");
+        let client = crate::arthas::client::connect_arthas_client(bridge, &url, token)
+            .await
+            .expect("mcp handshake via exec bridge (real curl)");
+
+        // tools/call dashboard（POST 经真 curl，SSE 单事件响应解析）
+        let dashboard = client
+            .call_tool("dashboard", &serde_json::json!({}))
+            .await
+            .expect("dashboard call");
+        assert!(!dashboard.is_error, "dashboard returned error: {}", dashboard.text);
+        assert!(!dashboard.text.trim().is_empty(), "dashboard returned empty text");
+
+        // 第二次调用（验证 mcp-session-id 经 -D - 解析后在后续请求正确回传）
+        let thread = client
+            .call_tool("thread", &serde_json::json!({}))
+            .await
+            .expect("thread call");
+        assert!(!thread.is_error, "thread returned error: {}", thread.text);
+        assert!(!thread.text.trim().is_empty(), "thread returned empty text");
+
+        // shutdown（DELETE session 经真 curl）
+        client.shutdown().await;
+
+        // 清理：best-effort 停 arthas agent + 杀 math-game（kill_on_drop 兜底）
+        let _ = channel
+            .run(&crate::arthas::attach::stop_command(http_port, token))
+            .await;
+        let _ = game.kill().await;
     }
 }

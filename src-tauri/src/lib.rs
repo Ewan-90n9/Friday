@@ -109,7 +109,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // Create shared state for MCP server
             let exec_pool = Arc::new(Mutex::new(crate::exec::pool::ExecChannelPool::new()));
 
-            // SSH 隧道（direct-tcpip 本地转发）：arthas MCP 通路，后续 JMX 等复用
+            // SSH 隧道（direct-tcpip 本地转发）：通用基础设施（环境删除时统一清理）；
+            // arthas MCP 已改走 exec HTTP 桥，后续 JMX 等复用
             let tunnels = Arc::new(crate::exec::tunnel::TunnelManager::new(pool.clone()));
 
             // 文件传输：TransferManager（后台异步传输引擎）+ 4 个工具；
@@ -153,7 +154,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let attach_deps = crate::arthas::attach::AttachDeps {
                 db: pool.clone(),
                 exec_pool: exec_pool.clone(),
-                tunnels: tunnels.clone(),
                 jdk_cache: jdk_cache.clone(),
                 cache_dir: paths.cache_dir(),
                 arthas_zip,
