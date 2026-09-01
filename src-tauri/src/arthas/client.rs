@@ -11,13 +11,27 @@ pub struct McpArthasClient {
     service: tokio::sync::Mutex<Option<rmcp::service::RunningService<rmcp::RoleClient, ()>>>,
 }
 
+/// 构建直连 HTTP 客户端：MCP 流量走 SSH 隧道（127.0.0.1 本地端口），
+/// 必须绕过一切系统/环境代理——企业代理截走 localhost 请求时回 504（issue #7）。
+fn direct_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .pool_max_idle_per_host(0)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("构建 MCP http 客户端失败: {e}"))
+}
+
 /// 连接 + MCP 握手（30s 超时）
 pub async fn connect_arthas_client(url: &str, token: &str) -> Result<McpArthasClient, String> {
     use rmcp::ServiceExt;
 
     let config = rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(url)
         .auth_header(token);
-    let transport = rmcp::transport::StreamableHttpClientTransport::from_config(config);
+    let transport = rmcp::transport::StreamableHttpClientTransport::with_client(
+        direct_http_client()?,
+        config,
+    );
 
     let service = tokio::time::timeout(Duration::from_secs(30), ().serve(transport))
         .await

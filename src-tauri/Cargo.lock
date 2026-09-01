@@ -1754,6 +1754,7 @@ dependencies = [
  "hyper-util",
  "keyring",
  "regex",
+ "reqwest 0.13.4",
  "rmcp",
  "rusqlite",
  "russh",
