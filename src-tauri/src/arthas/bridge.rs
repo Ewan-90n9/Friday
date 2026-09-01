@@ -181,20 +181,7 @@ impl ExecHttpBridge {
         &self,
         cmd: &str,
     ) -> Result<(u16, Option<String>, String), StreamableHttpError<BridgeError>> {
-        let timed = tokio::time::timeout(Duration::from_secs(self.timeout_secs), self.channel.run(cmd)).await;
-        let output = match timed {
-            Ok(result) => result.map_err(|e| {
-                tracing::warn!(error = %e, "arthas mcp bridge exec 失败");
-                StreamableHttpError::Client(BridgeError::Exec(format!("ssh exec 失败: {e}")))
-            })?,
-            Err(_) => {
-                tracing::warn!(timeout_secs = self.timeout_secs, "arthas mcp bridge exec 超时");
-                return Err(StreamableHttpError::Client(BridgeError::Exec(format!(
-                    "exec 超时（{}s）",
-                    self.timeout_secs
-                ))));
-            }
-        };
+        let output = self.run_curl(cmd).await?;
         if output.exit_code != 0 {
             tracing::warn!(exit_code = output.exit_code, stderr = %output.stderr, "arthas mcp bridge curl 非零退出");
             return Err(StreamableHttpError::Client(BridgeError::Curl(format!(
@@ -207,6 +194,27 @@ impl ExecHttpBridge {
             tracing::warn!(error = %e, "arthas mcp bridge 响应解析失败");
             StreamableHttpError::Client(BridgeError::Curl(e))
         })
+    }
+
+    /// 执行 curl 命令并返回原始输出（超时/SSH 层失败才报错；curl 退出码由调用方解释）
+    async fn run_curl(
+        &self,
+        cmd: &str,
+    ) -> Result<crate::exec::channel::ExecOutput, StreamableHttpError<BridgeError>> {
+        let timed = tokio::time::timeout(Duration::from_secs(self.timeout_secs), self.channel.run(cmd)).await;
+        match timed {
+            Ok(result) => result.map_err(|e| {
+                tracing::warn!(error = %e, "arthas mcp bridge exec 失败");
+                StreamableHttpError::Client(BridgeError::Exec(format!("ssh exec 失败: {e}")))
+            }),
+            Err(_) => {
+                tracing::warn!(timeout_secs = self.timeout_secs, "arthas mcp bridge exec 超时");
+                Err(StreamableHttpError::Client(BridgeError::Exec(format!(
+                    "exec 超时（{}s）",
+                    self.timeout_secs
+                ))))
+            }
+        }
     }
 }
 
@@ -291,8 +299,32 @@ impl StreamableHttpClient for ExecHttpBridge {
             self.timeout_secs,
         );
         tracing::debug!(cmd = %cmd, "arthas mcp bridge delete session");
-        let (code, _, body) = self.exec_curl(&cmd).await?;
-        if (200..300).contains(&code) {
+        // DELETE 是会话清理（best-effort）：服务器已不在（连接拒绝）或会话已不存在（404/405）
+        // 都视为清理完成——arthas 停止后 client 才 shutdown 的时序下这是常态，不能报错刷屏
+        let output = match self.run_curl(&cmd).await {
+            Ok(output) => output,
+            Err(e) => return Err(e),
+        };
+        if output.exit_code == 7 {
+            tracing::info!("arthas mcp bridge delete session: 服务器已停止（连接拒绝），会话随服务消亡");
+            return Ok(());
+        }
+        if output.exit_code != 0 {
+            tracing::warn!(exit_code = output.exit_code, stderr = %output.stderr, "arthas mcp bridge delete session curl 失败");
+            return Err(StreamableHttpError::Client(BridgeError::Curl(format!(
+                "curl 退出码 {}: {}",
+                output.exit_code,
+                output.stderr.trim()
+            ))));
+        }
+        let (code, _, body) = parse_curl_output(&output.stdout).map_err(|e| {
+            tracing::warn!(error = %e, "arthas mcp bridge 响应解析失败");
+            StreamableHttpError::Client(BridgeError::Curl(e))
+        })?;
+        if (200..300).contains(&code) || code == 404 || code == 405 {
+            if !(200..300).contains(&code) {
+                tracing::debug!(code, "delete session 返回 {code}（会话不存在/不支持），视为完成");
+            }
             Ok(())
         } else {
             tracing::warn!(code, body = %body, "arthas mcp bridge delete session 非 2xx");
@@ -810,8 +842,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delete_session_404_errors() {
+    async fn test_delete_session_404_tolerated() {
+        // 404 = 会话已不存在，视为清理完成（停止时序下常态）
         let channel = RecordingChannel::new(vec![("HTTP/1.1 404\r\n\r\n\n404", 0)]);
+        let b = bridge(channel);
+
+        b.delete_session(
+            Arc::from("http://127.0.0.1:18563/mcp"),
+            Arc::from("sess-9"),
+            None,
+            HashMap::new(),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_connection_refused_tolerated() {
+        // exit 7 = 服务器已停止（arthas 先于 client shutdown 被停）→ 会话随服务消亡，无 ERROR
+        let channel = RecordingChannel::new(vec![(
+            "curl: (7) Failed to connect to 127.0.0.1 port 18563: Couldn't connect to server",
+            7,
+        )]);
+        let b = bridge(channel);
+
+        b.delete_session(
+            Arc::from("http://127.0.0.1:18563/mcp"),
+            Arc::from("sess-9"),
+            None,
+            HashMap::new(),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_500_errors() {
+        let channel = RecordingChannel::new(vec![("HTTP/1.1 500\r\n\r\nboom\n500", 0)]);
         let b = bridge(channel);
 
         let err = b
@@ -823,7 +890,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("404"), "err: {err}");
+        assert!(err.to_string().contains("500"), "err: {err}");
     }
 
     // ── get_stream ──

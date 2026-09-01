@@ -291,6 +291,9 @@ struct ProductionStopHandle {
 #[async_trait::async_trait]
 impl ArthasStopHandle for ProductionStopHandle {
     async fn stop(&self) {
+        // 先关 MCP client（DELETE 会话清理需要 arthas 还活着），再停 arthas。
+        // 反过来会因服务已死导致 DELETE 连接拒绝（虽已容错，但语义上先清会话更正确）。
+        self.client.shutdown().await;
         // HTTP stop（尽力而为，失败仅告警——残留 agent 由用户 arthas_close 重试或目标机重启解决）
         match get_default_channel_raw(&self.db, &self.exec_pool, &self.env_id).await {
             Ok(channel) => match run_with_timeout(channel.as_ref(), &stop_command(self.remote_port, &self.token), 15).await {
@@ -299,7 +302,6 @@ impl ArthasStopHandle for ProductionStopHandle {
             },
             Err(e) => tracing::warn!(env_id = %self.env_id, port = self.remote_port, error = %e, "failed to get exec channel for arthas http stop (best-effort skip)"),
         }
-        self.client.shutdown().await;
     }
 }
 
