@@ -37,3 +37,7 @@ pnpm-debug.log*
 # Heap analyzer vendored JAR (fetched at build time, see scripts/fetch-analyzer-jar.ps1)
 src-tauri/resources/analyzer/*.jar
 src-tauri/resources/analyzer/*.downloading
+
+# Arthas vendored package (fetched at build time, see scripts/fetch-arthas.ps1)
+src-tauri/resources/arthas/*.zip
+src-tauri/resources/arthas/*.downloading

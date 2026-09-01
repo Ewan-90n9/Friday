@@ -63,6 +63,10 @@ jobs:
         shell: pwsh
         run: ./scripts/fetch-analyzer-jar.ps1
 
+      - name: Download arthas package
+        shell: pwsh
+        run: ./scripts/fetch-arthas.ps1
+
       - name: Inject version from tag
         shell: pwsh
         run: ./scripts/set-version.ps1 -Version ${{ github.ref_name }}
