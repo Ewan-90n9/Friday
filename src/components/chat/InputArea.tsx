@@ -64,7 +64,7 @@ export function InputArea() {
               onClick={() => hasContent && !isRunning && sendMessage()}
               className={`flex items-center justify-center w-7 h-7 rounded-md transition-all ${
                 hasContent && !isRunning
-                  ? "bg-accent text-white hover:bg-accent/80 cursor-pointer"
+                  ? "bg-accent text-accent-foreground hover:bg-accent/80 cursor-pointer"
                   : "bg-muted text-muted-foreground cursor-not-allowed"
               }`}
               disabled={!hasContent || isRunning}

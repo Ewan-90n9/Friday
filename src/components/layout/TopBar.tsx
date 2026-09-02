@@ -3,6 +3,7 @@ import { GearSix } from "@phosphor-icons/react";
 import { FridayMark } from "@/components/FridayMark";
 import { useAgentStore } from "@/store/agentStore";
 import { AgentSettingsDialog } from "@/components/agents/AgentSettingsDialog";
+import { ThemeMenu } from "@/components/layout/ThemeMenu";
 import type { AgentRow } from "@/lib/types";
 
 function computeStatus(
@@ -81,6 +82,7 @@ export function TopBar() {
           </span>
           <span className="text-muted-foreground text-xs">{label}</span>
         </button>
+        <ThemeMenu />
         <button
           onClick={() => setSettingsOpen(true)}
           className="flex items-center justify-center w-8 h-8 rounded-md text-muted-foreground hover:text-foreground hover:bg-surface-3 transition-colors cursor-pointer"

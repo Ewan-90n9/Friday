@@ -14,7 +14,39 @@
 
 ### 语义色 Token
 
-基于纯黑基底，通过三层级表面（surface-1/2/3）营造深邃感，CSS 变量 + `@theme inline` 映射到 Tailwind v4。
+基于纯黑基底，通过三层级表面（surface-1/2/3）营造深邃感，CSS 变量 + `@theme inline` 映射到 Tailwind v4。上表为**暗色主题**（默认）的取值。
+
+### 多主题（data-theme 切换）
+
+主题色板定义在 `globals.css`：`:root` 为暗色（默认），`[data-theme="light"]`（浅色）与 `[data-theme="warm"]`（暖白）覆盖同名变量；`@theme inline` 将 `--color-*` 映射到这些变量，工具类随 `<html data-theme>` 实时切换。主题选择持久化到 localStorage（`friday.theme`），顶栏调色板图标可切换。
+
+**浅色（light，冷调中性）：**
+
+| Token | Hex | 用途 |
+|-------|-----|------|
+| `--background` | `#FFFFFF` | 全局背景 |
+| `--foreground` | `#1A1A1A` | 主文本 |
+| `--surface-1/2/3` | `#F6F6F7` / `#EFEFF1` / `#E6E6E9` | 层级表面（越深越"浮起"的反向分层） |
+| `--card` | `#FFFFFF` | 卡片/弹窗 |
+| `--muted-foreground` | `#6B6B6B` | 次要文本（白底 5.3:1） |
+| `--border` / `--border-strong` | `rgba(0,0,0,0.08)` / `rgba(0,0,0,0.14)` | 边框（半透明黑） |
+| `--accent` | `#2563EB` | 强调蓝（Blue-600，白字 5.2:1） |
+| `--success` / `--destructive` / `--warning` | `#15803D` / `#DC2626` / `#B45309` | 语义色（浅底加深一档以保对比度，前景均白字） |
+
+**暖白（warm，纸感暖调）：**
+
+| Token | Hex | 用途 |
+|-------|-----|------|
+| `--background` | `#FAF7F1` | 全局背景（暖纸白） |
+| `--foreground` | `#292524` | 主文本（Stone-800） |
+| `--surface-1/2/3` | `#F3EEE4` / `#ECE5D8` / `#E2D9C8` | 暖调分层表面 |
+| `--card` | `#FFFEFA` | 卡片/弹窗 |
+| `--muted-foreground` | `#6F675C` | 次要文本（纸底 5.2:1） |
+| `--border` / `--border-strong` | `rgba(0,0,0,0.10)` / `rgba(0,0,0,0.18)` | 边框 |
+| `--accent` | `#2563EB` | 品牌蓝不变（暖底 4.9:1） |
+| `--success` / `--destructive` / `--warning` | `#15803D` / `#DC2626` / `#B45309` | 同浅色 |
+
+除语义色外，滚动条（`--scrollbar-thumb`）、文本选中（`--selection-*`）、弹窗遮罩（`--dialog-backdrop`）与 `color-scheme` 均随主题切换。
 
 | Token | Hex | 用途 |
 |-------|-----|------|
@@ -367,10 +399,12 @@ GC 频率       [██████░░░░░░░░░░░░] 32%  �
 
 ### 9.2 主题约定
 
-- 使用 CSS 变量定义语义色，通过 `@theme inline` 映射到 Tailwind v4
+- 使用 CSS 变量定义语义色，通过 `@theme inline` 映射到 Tailwind v4（`--color-*: var(--*)`）
+- 主题色板集中在 `globals.css`：`:root`（暗色，默认）+ `[data-theme="light"]` + `[data-theme="warm"]`，`<html data-theme>` 切换，localStorage 持久化
 - 不在组件中硬编码颜色——所有颜色走 `bg-surface-1`、`text-muted-foreground` 等 token
-- 边框使用半透明白色（`rgba(255,255,255,0.08)`），不用实色
-- 滚动条、文本选中、焦点环均在 `globals.css` 全局定义
+- 边框使用半透明（暗色 `rgba(255,255,255,x)` / 浅色 `rgba(0,0,0,x)`），不用实色
+- 滚动条、文本选中、焦点环均在 `globals.css` 全局定义（随主题变量切换）
+- `color-scheme` 随主题设置（dark/light），保证原生控件与滚动条一致
 
 ### 9.3 禁止项
 
@@ -384,7 +418,7 @@ GC 频率       [██████░░░░░░░░░░░░] 32%  �
 
 | 项 | v1 | 后续 |
 |----|----|------|
-| 主题 | Dark Mode only | 增加 Light Mode（token 已预留语义映射） |
+| 主题 | 暗色（默认）+ 浅色 + 暖白，顶栏可切换 | 跟随系统（prefers-color-scheme） |
 | 图表 | 基础 streaming area + bullet | 增加更多诊断可视化（火焰图、线程状态时序图） |
 | 布局 | 固定三栏 | 可拖拽调整侧栏宽度，可折叠侧栏 |
 | 国际化 | 中文 | 增加英文 |
