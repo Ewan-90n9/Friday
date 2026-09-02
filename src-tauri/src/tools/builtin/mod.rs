@@ -6,6 +6,7 @@ pub mod jvm;
 pub mod list_environments;
 pub mod run_command;
 
+use crate::tools::category::ToolCategory;
 use crate::tools::registry::{ToolContext, ToolDef, ToolHandler, ToolOutput};
 use crate::tools::risk::RiskLevel;
 use async_trait::async_trait;
@@ -44,6 +45,7 @@ pub fn echo_tool_def() -> ToolDef {
             "required": ["message"]
         }),
         risk_level: RiskLevel::ReadOnly,
+        category: ToolCategory::Builtin,
         needs_channel: false,
         handler: Arc::new(EchoHandler),
     }

@@ -1,4 +1,5 @@
 use crate::tools::builtin::run_command::artifact_dir_for;
+use crate::tools::category::ToolCategory;
 use crate::tools::registry::{ToolContext, ToolDef, ToolHandler, ToolOutput};
 use crate::tools::risk::RiskLevel;
 use crate::transfer::state::{Direction, Status};
@@ -320,6 +321,7 @@ pub fn file_transfer_tool_defs(
                 "required": ["environment", "remote_path"]
             }),
             risk_level: RiskLevel::Low,
+            category: ToolCategory::FileTransfer,
             needs_channel: false,
             handler: Arc::new(FileDownloadHandler(tools.clone())),
         },
@@ -336,6 +338,7 @@ pub fn file_transfer_tool_defs(
                 "required": ["environment", "local_path", "remote_path"]
             }),
             risk_level: RiskLevel::High,
+            category: ToolCategory::FileTransfer,
             needs_channel: false,
             handler: Arc::new(FileUploadHandler(tools.clone())),
         },
@@ -349,6 +352,7 @@ pub fn file_transfer_tool_defs(
                 }
             }),
             risk_level: RiskLevel::ReadOnly,
+            category: ToolCategory::FileTransfer,
             needs_channel: false,
             handler: Arc::new(TransferStatusHandler(tools.clone())),
         },
@@ -363,6 +367,7 @@ pub fn file_transfer_tool_defs(
                 "required": ["transfer_id"]
             }),
             risk_level: RiskLevel::ReadOnly,
+            category: ToolCategory::FileTransfer,
             needs_channel: false,
             handler: Arc::new(TransferCancelHandler(tools)),
         },

@@ -3,6 +3,7 @@ use crate::tools::builtin::jvm::core::{
     JvmExecCore,
 };
 use crate::tools::builtin::run_command::artifact_dir_for;
+use crate::tools::category::ToolCategory;
 use crate::tools::registry::{ToolContext, ToolDef, ToolHandler, ToolOutput};
 use crate::tools::risk::RiskLevel;
 use async_trait::async_trait;
@@ -211,6 +212,7 @@ pub fn jvm_heap_dump_tool_def(
             "required": ["environment", "pid"]
         }),
         risk_level: RiskLevel::High,
+        category: ToolCategory::Jvm,
         needs_channel: false,
         handler: Arc::new(HeapDumpHandler { core, bus, transfer }),
     }

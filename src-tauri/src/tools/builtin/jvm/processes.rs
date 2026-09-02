@@ -1,4 +1,5 @@
 use crate::tools::builtin::jvm::core::{clamp_or, error_output, resolve_environment, JvmExecCore};
+use crate::tools::category::ToolCategory;
 use crate::tools::registry::{ToolContext, ToolDef, ToolHandler, ToolOutput};
 use crate::tools::risk::RiskLevel;
 use async_trait::async_trait;
@@ -114,6 +115,7 @@ pub fn list_processes_tool_def(core: Arc<JvmExecCore>) -> ToolDef {
             "required": ["environment"]
         }),
         risk_level: RiskLevel::ReadOnly,
+        category: ToolCategory::Environment,
         needs_channel: false,
         handler: Arc::new(ListProcessesHandler { core }),
     }

@@ -1,3 +1,4 @@
+use super::category::ToolCategory;
 use super::risk::RiskLevel;
 use crate::exec::channel::ExecChannel;
 use async_trait::async_trait;
@@ -28,6 +29,8 @@ pub struct ToolDef {
     pub description: String,
     pub input_schema: serde_json::Value,
     pub risk_level: RiskLevel,
+    /// 面板分组归属（见 tools/category.rs；枚举声明序即分组展示序）
+    pub category: ToolCategory,
     /// Whether the tool requires a remote ExecChannel. Local tools (echo,
     /// get_playbook) set this to false and run without an environment.
     pub needs_channel: bool,
@@ -92,6 +95,7 @@ mod tests {
                 }
             }),
             risk_level: risk,
+            category: ToolCategory::Environment,
             needs_channel: true,
             handler: Arc::new(DummyHandler),
         }

@@ -3,6 +3,7 @@ pub mod mapping;
 use crate::arthas::manager::{ArthasManager, ManagerError};
 use crate::tools::builtin::jvm::core::{clamp_or, error_output, parse_pid};
 use crate::tools::builtin::run_command::{artifact_dir_for, truncate_output};
+use crate::tools::category::ToolCategory;
 use crate::tools::registry::{ToolContext, ToolDef, ToolHandler, ToolOutput};
 use crate::tools::risk::RiskLevel;
 use async_trait::async_trait;
@@ -315,6 +316,7 @@ fn arthas_tool_def(
             "required": ["environment", "pid"],
         }),
         risk_level: risk,
+        category: ToolCategory::Arthas,
         needs_channel: false,
         handler: Arc::new(ArthasToolHandler {
             manager,

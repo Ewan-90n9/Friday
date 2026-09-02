@@ -2,6 +2,7 @@ pub mod mapping;
 
 use crate::analyzer::{normalize_dump_path, HeapAnalyzerManager, ManagerError};
 use crate::tools::builtin::run_command::{artifact_dir_for, truncate_output};
+use crate::tools::category::ToolCategory;
 use crate::tools::registry::{ToolContext, ToolDef, ToolHandler, ToolOutput};
 use crate::tools::risk::RiskLevel;
 use async_trait::async_trait;
@@ -227,6 +228,7 @@ fn heap_tool_def(
         description: description.to_string(),
         input_schema: schema,
         risk_level: RiskLevel::ReadOnly,
+        category: ToolCategory::Heap,
         needs_channel: false,
         handler: Arc::new(HeapToolHandler {
             manager: manager.clone(),

@@ -1,3 +1,4 @@
+use crate::tools::category::ToolCategory;
 use crate::tools::registry::{ToolContext, ToolDef, ToolHandler, ToolOutput};
 use crate::tools::risk::RiskLevel;
 use async_trait::async_trait;
@@ -51,6 +52,7 @@ pub fn list_environments_tool_def(db: sqlx::SqlitePool) -> ToolDef {
             "properties": {}
         }),
         risk_level: RiskLevel::ReadOnly,
+        category: ToolCategory::Environment,
         needs_channel: false,
         handler: Arc::new(ListEnvironmentsHandler { db }),
     }

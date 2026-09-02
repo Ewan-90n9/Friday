@@ -1,3 +1,4 @@
+use crate::tools::category::ToolCategory;
 use crate::tools::registry::{ToolContext, ToolDef, ToolHandler, ToolOutput};
 use crate::tools::risk::RiskLevel;
 use async_trait::async_trait;
@@ -216,6 +217,7 @@ pub fn run_command_tool_def(
             "required": ["environment", "command"]
         }),
         risk_level: RiskLevel::High,
+        category: ToolCategory::Environment,
         needs_channel: false, // handler 自己按 environment 参数获取 channel
         handler: Arc::new(RunCommandHandler { db, exec_pool, artifacts_dir }),
     }

@@ -1,4 +1,5 @@
 use crate::provision::package::{ProvisionContext, StageTimeouts, ToolPackage};
+use crate::tools::category::ToolCategory;
 use crate::tools::registry::{ToolContext, ToolDef, ToolHandler, ToolOutput};
 use crate::tools::risk::RiskLevel;
 use async_trait::async_trait;
@@ -144,6 +145,7 @@ pub fn ensure_tool_tool_def(
             "required": ["environment", "tool"]
         }),
         risk_level: RiskLevel::Low,
+        category: ToolCategory::Environment,
         needs_channel: false,
         handler: Arc::new(EnsureToolHandler {
             db,

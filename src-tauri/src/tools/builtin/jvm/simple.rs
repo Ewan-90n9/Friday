@@ -1,6 +1,7 @@
 use crate::tools::builtin::jvm::core::{
     clamp_or, error_output, parse_pid, require_bins, resolve_environment, JvmExecCore,
 };
+use crate::tools::category::ToolCategory;
 use crate::tools::registry::{ToolContext, ToolDef, ToolHandler, ToolOutput};
 use crate::tools::risk::RiskLevel;
 use async_trait::async_trait;
@@ -194,6 +195,7 @@ pub fn jvm_gc_stats_tool_def(core: Arc<JvmExecCore>) -> ToolDef {
             ],
         ),
         risk_level: RiskLevel::ReadOnly,
+        category: ToolCategory::Jvm,
         needs_channel: false,
         handler: Arc::new(JvmSimpleHandler {
             core,
@@ -210,6 +212,7 @@ pub fn jvm_thread_dump_tool_def(core: Arc<JvmExecCore>) -> ToolDef {
         description: "抓取目标 JVM 线程转储（jcmd Thread.print -l，含死锁检测信息）。诊断 CPU 飙高、死锁、线程阻塞。输出较长，可直接读关键段（BLOCKED/死锁/等待）。需先 ensure_tool 装备 JDK。".to_string(),
         input_schema: simple_schema(&THREAD_DUMP, vec![]),
         risk_level: RiskLevel::ReadOnly,
+        category: ToolCategory::Jvm,
         needs_channel: false,
         handler: Arc::new(JvmSimpleHandler {
             core,
@@ -226,6 +229,7 @@ pub fn jvm_heap_info_tool_def(core: Arc<JvmExecCore>) -> ToolDef {
         description: "查看目标 JVM 堆概况（jcmd GC.heap_info：各代容量/已用、GC 策略）。OOM 时确认堆配置与实际占用。需先 ensure_tool 装备 JDK。".to_string(),
         input_schema: simple_schema(&HEAP_INFO, vec![]),
         risk_level: RiskLevel::ReadOnly,
+        category: ToolCategory::Jvm,
         needs_channel: false,
         handler: Arc::new(JvmSimpleHandler {
             core,
@@ -252,6 +256,7 @@ pub fn jvm_vm_info_tool_def(core: Arc<JvmExecCore>) -> ToolDef {
             )],
         ),
         risk_level: RiskLevel::ReadOnly,
+        category: ToolCategory::Jvm,
         needs_channel: false,
         handler: Arc::new(JvmSimpleHandler {
             core,
@@ -277,6 +282,7 @@ pub fn jvm_class_histogram_tool_def(core: Arc<JvmExecCore>) -> ToolDef {
             )],
         ),
         risk_level: RiskLevel::Low,
+        category: ToolCategory::Jvm,
         needs_channel: false,
         handler: Arc::new(JvmSimpleHandler {
             core,
