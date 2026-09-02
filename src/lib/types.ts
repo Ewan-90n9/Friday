@@ -110,10 +110,19 @@ export interface MessageRow {
   parts: MessagePartRow[];
 }
 
+export type ToolCategory =
+  | "environment"
+  | "jvm"
+  | "heap"
+  | "arthas"
+  | "file_transfer"
+  | "builtin";
+
 export interface ToolInfo {
   name: string;
   description: string;
   risk_level: RiskLevel;
+  category: ToolCategory;
 }
 
 export type EnvironmentAuthType = "private_key" | "password";
