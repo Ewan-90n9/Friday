@@ -77,6 +77,7 @@ mod tests {
 
         assert_eq!(def.name, "echo");
         assert_eq!(def.risk_level, RiskLevel::ReadOnly);
+        assert_eq!(def.category, ToolCategory::Builtin);
         assert!(!def.needs_channel);
         assert!(def.description.to_lowercase().contains("echo"));
     }

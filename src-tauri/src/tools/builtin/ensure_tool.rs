@@ -298,6 +298,7 @@ mod tests {
         );
         assert_eq!(def.name, "ensure_tool");
         assert_eq!(def.risk_level, RiskLevel::Low);
+        assert_eq!(def.category, ToolCategory::Environment);
         assert!(!def.needs_channel);
     }
 

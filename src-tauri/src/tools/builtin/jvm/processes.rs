@@ -285,6 +285,7 @@ mod tests {
         let def = list_processes_tool_def(core);
         assert_eq!(def.name, "list_processes");
         assert_eq!(def.risk_level, RiskLevel::ReadOnly);
+        assert_eq!(def.category, ToolCategory::Environment);
         assert!(!def.needs_channel);
         assert!(def.input_schema["properties"]["keyword"].is_object());
         drop(tmp);

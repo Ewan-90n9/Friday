@@ -476,7 +476,12 @@ mod tests {
         assert_eq!(jvm_heap_info_tool_def(core.clone()).risk_level, RiskLevel::ReadOnly);
         assert_eq!(jvm_vm_info_tool_def(core.clone()).risk_level, RiskLevel::ReadOnly);
         assert_eq!(jvm_class_histogram_tool_def(core.clone()).risk_level, RiskLevel::Low);
-        assert_eq!(jvm_class_histogram_tool_def(core).name, "jvm_class_histogram");
+        assert_eq!(jvm_class_histogram_tool_def(core.clone()).name, "jvm_class_histogram");
+        assert_eq!(jvm_gc_stats_tool_def(core.clone()).category, ToolCategory::Jvm);
+        assert_eq!(jvm_thread_dump_tool_def(core.clone()).category, ToolCategory::Jvm);
+        assert_eq!(jvm_heap_info_tool_def(core.clone()).category, ToolCategory::Jvm);
+        assert_eq!(jvm_vm_info_tool_def(core.clone()).category, ToolCategory::Jvm);
+        assert_eq!(jvm_class_histogram_tool_def(core).category, ToolCategory::Jvm);
         drop(tmp);
     }
 }

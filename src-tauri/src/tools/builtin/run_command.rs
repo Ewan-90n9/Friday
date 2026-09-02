@@ -227,6 +227,19 @@ pub fn run_command_tool_def(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn test_tool_def_metadata() {
+        let def = run_command_tool_def(
+            sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap(),
+            Arc::new(tokio::sync::Mutex::new(crate::exec::pool::ExecChannelPool::new())),
+            std::path::PathBuf::from("/tmp/x"),
+        );
+        assert_eq!(def.name, "run_command");
+        assert_eq!(def.risk_level, RiskLevel::High);
+        assert_eq!(def.category, ToolCategory::Environment);
+        assert!(!def.needs_channel);
+    }
+
     #[test]
     fn test_clamp_timeout_default_when_missing() {
         assert_eq!(clamp_timeout(None), 120);

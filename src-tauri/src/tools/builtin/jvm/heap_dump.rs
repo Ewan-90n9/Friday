@@ -362,6 +362,7 @@ mod tests {
         let def = jvm_heap_dump_tool_def(core, crate::app::events::EventBus::disabled(), mgr);
         assert_eq!(def.name, "jvm_heap_dump");
         assert_eq!(def.risk_level, RiskLevel::High);
+        assert_eq!(def.category, ToolCategory::Jvm);
         assert!(!def.needs_channel);
         // schema 不再含 download_timeout_secs
         let schema_str = serde_json::to_string(&def.input_schema).unwrap();

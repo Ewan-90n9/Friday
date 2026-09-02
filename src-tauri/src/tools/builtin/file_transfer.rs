@@ -606,6 +606,7 @@ mod tests {
         assert_eq!(download.risk_level, RiskLevel::Low);
         for d in &defs {
             assert!(!d.needs_channel);
+            assert_eq!(d.category, ToolCategory::FileTransfer, "{}", d.name);
         }
     }
 }

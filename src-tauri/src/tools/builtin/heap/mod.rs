@@ -477,6 +477,7 @@ mod tests {
         ] {
             let d = def(&reg, name);
             assert_eq!(d.risk_level, RiskLevel::ReadOnly, "{name}");
+            assert_eq!(d.category, ToolCategory::Heap, "{name}");
             assert!(!d.needs_channel, "{name}");
         }
         drop(tmp);

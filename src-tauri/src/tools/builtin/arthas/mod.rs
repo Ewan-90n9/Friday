@@ -327,3 +327,32 @@ fn arthas_tool_def(
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arthas::manager::{ArthasConfig, AttachFactory};
+    use crate::tools::category::ToolCategory;
+
+    #[tokio::test]
+    async fn test_arthas_tool_def_metadata() {
+        // dummy attach factory：metadata 测试不触发 attach，构造一个必然失败的闭包即可
+        let factory: AttachFactory =
+            Arc::new(|_req| Box::pin(async { Err(ManagerError::Attach("dummy".to_string())) }));
+        let manager = Arc::new(ArthasManager::new(factory, ArthasConfig::default()));
+        let def = arthas_tool_def(
+            "arthas_open",
+            "test",
+            RiskLevel::Low,
+            OPEN,
+            ArthasToolKind::Open,
+            manager,
+            sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap(),
+            std::path::PathBuf::from("/tmp/x"),
+        );
+        assert_eq!(def.name, "arthas_open");
+        assert_eq!(def.category, ToolCategory::Arthas);
+        assert_eq!(def.risk_level, RiskLevel::Low);
+        assert!(!def.needs_channel);
+    }
+}

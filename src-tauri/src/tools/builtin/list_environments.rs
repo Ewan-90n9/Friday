@@ -110,6 +110,7 @@ mod tests {
         let def = list_environments_tool_def(dummy_db());
         assert_eq!(def.name, "list_environments");
         assert_eq!(def.risk_level, crate::tools::risk::RiskLevel::ReadOnly);
+        assert_eq!(def.category, ToolCategory::Environment);
         assert!(!def.needs_channel);
         assert!(def.description.contains("list_environments") || def.description.len() > 20);
     }
