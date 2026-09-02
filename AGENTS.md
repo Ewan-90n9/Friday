@@ -37,6 +37,7 @@ Friday 是面向软件开发人员的**远程环境运行时故障诊断 Agent**
 - **文件上传下载**：独立 Agent 工具（file_download / file_upload / transfer_status / transfer_cancel），TransferManager 后台异步传输（专用 SSH 连接、断点续传、5 次重试/2h 预算、1s 进度事件），heap_dump 生成后自动后台拉回，前端聊天流内进度条卡片
 - **堆快照分析**：heap_* 系列 9 个 MCP 工具（MAT 内核，leak suspects/支配树/GC root 链/对象下钻/线程分析）。Friday 作为 MCP client 托管 vendored jvm-heap-dump-mcp JAR 工人进程（stdio，需本机 Java 21+，JAR 由 `scripts/fetch-analyzer-jar.ps1` 构建时获取、随安装包分发）；dump 拉回完成自动预热（MAT 建索引，provision_progress 事件）；会话 LRU（上限 3）、空闲 15min 自动退出、崩溃自动重启、会话关闭联动释放
 - **Arthas 动态诊断**：arthas_open / arthas_close + 25 个 arthas_* 代理工具（dashboard / thread / watch / trace / sc / jad / ognl 等，精选诊断集，剔除 redefine 热更新类）。Friday 作为 MCP client（rmcp streamable-http + Bearer）经 SSH exec 通道 HTTP 桥（`arthas/bridge.rs`，每请求一条 exec curl；不依赖 sshd TCP 转发，适配 AllowTcpForwarding no 环境）连目标机 arthas 4.x 内置 MCP Server；arthas 包随应用分发（resources/arthas，scripts/fetch-arthas.ps1 构建期下载），attach 时 SFTP 直传目标机（`provision/arthas.rs`）；ArthasManager 管理会话（并发去重、LRU 3、空闲 15min 回收、传输错误 invalidate、stale attach 任务防护）；attach 前自动清理残留实例、失败路径停 arthas（`arthas/attach.rs`）；attach 用户对齐（SSH 用户 ≠ JVM 用户时用对应用户凭证建临时连接）；环境多用户凭证管理（`env_credentials` 表 + 新增/编辑统一弹窗：凭证增删改/星标设默认、本地暂存、`save_environment_cmd` 原子提交；默认凭证即日常 SSH 用户；逐凭证测试连接）
+- **诊断工具面板分组**：右侧工具面板按 `ToolCategory`（tools/category.rs，声明序即分组展示序）分组折叠展示（6 组 51 项，默认全折叠，两行式列表项）。category 在工具注册时声明（单一事实来源，新增工具必须在 ToolDef 构造点补 category）；`list_tools_cmd` 稳定排序（分类序 → 名称序）；前端展示名统一 `friday_` 前缀与聊天流一致
 
 ## 开发命令
 
