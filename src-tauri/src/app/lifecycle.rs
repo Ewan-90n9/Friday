@@ -334,6 +334,7 @@ fn sort_tool_infos(infos: &mut [ToolInfo]) {
 }
 
 #[tauri::command]
+#[tracing::instrument(skip(state))]
 pub async fn list_tools_cmd(
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<ToolInfo>, String> {
