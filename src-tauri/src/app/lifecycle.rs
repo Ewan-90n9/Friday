@@ -324,6 +324,13 @@ pub struct ToolInfo {
     pub name: String,
     pub description: String,
     pub risk_level: crate::tools::risk::RiskLevel,
+    pub category: crate::tools::category::ToolCategory,
+}
+
+/// 面板展示排序：category 声明序 → 名称字母序。
+/// ToolRegistry 内部是 HashMap，list() 迭代序随机，必须显式排序保证每次启动顺序一致。
+fn sort_tool_infos(infos: &mut [ToolInfo]) {
+    infos.sort_by(|a, b| a.category.cmp(&b.category).then_with(|| a.name.cmp(&b.name)));
 }
 
 #[tauri::command]
@@ -331,14 +338,17 @@ pub async fn list_tools_cmd(
     state: State<'_, crate::AppState>,
 ) -> Result<Vec<ToolInfo>, String> {
     let tools = state.tool_registry.list();
-    Ok(tools
+    let mut infos: Vec<ToolInfo> = tools
         .into_iter()
         .map(|def| ToolInfo {
             name: def.name.clone(),
             description: def.description.clone(),
             risk_level: def.risk_level,
+            category: def.category,
         })
-        .collect())
+        .collect();
+    sort_tool_infos(&mut infos);
+    Ok(infos)
 }
 
 #[tauri::command]
@@ -424,6 +434,45 @@ pub async fn get_session_summary_cmd(
 mod tests {
     use super::*;
     use crate::infra::db;
+    use crate::tools::category::ToolCategory;
+
+    #[test]
+    fn test_sort_tool_infos_orders_by_category_then_name() {
+        let mk = |name: &str, category: ToolCategory| ToolInfo {
+            name: name.to_string(),
+            description: String::new(),
+            risk_level: crate::tools::risk::RiskLevel::ReadOnly,
+            category,
+        };
+        let mut infos = vec![
+            mk("heap_open", ToolCategory::Heap),
+            mk("arthas_watch", ToolCategory::Arthas),
+            mk("jvm_gc_stats", ToolCategory::Jvm),
+            mk("echo", ToolCategory::Builtin),
+            mk("heap_close", ToolCategory::Heap),
+            mk("arthas_dashboard", ToolCategory::Arthas),
+        ];
+        sort_tool_infos(&mut infos);
+        let names: Vec<&str> = infos.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "jvm_gc_stats",
+                "heap_close",
+                "heap_open",
+                "arthas_dashboard",
+                "arthas_watch",
+                "echo",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_sort_tool_infos_empty() {
+        let mut infos: Vec<ToolInfo> = Vec::new();
+        sort_tool_infos(&mut infos);
+        assert!(infos.is_empty());
+    }
 
     #[tokio::test]
     async fn test_stop_agent_when_no_agent_running() {
