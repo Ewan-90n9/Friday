@@ -74,7 +74,12 @@ export function ToolsPanel() {
           诊断工具
         </span>
         {tools && (
-          <span className="text-xs text-muted-foreground/60 ml-auto">{tools.length}</span>
+          <span
+            className="text-xs text-muted-foreground/60 ml-auto"
+            style={{ fontFamily: "var(--font-mono)" }}
+          >
+            {tools.length}
+          </span>
         )}
       </div>
 
@@ -110,7 +115,7 @@ export function ToolsPanel() {
                   onClick={() =>
                     setCollapsed((c) => ({ ...c, [meta.key]: !c[meta.key] }))
                   }
-                  className="w-full flex items-center gap-1.5 px-1.5 py-1.5 rounded-md hover:bg-surface-2/60 text-left"
+                  className="w-full flex items-center gap-1.5 px-1.5 py-1.5 rounded-md hover:bg-surface-2/60 transition-colors text-left"
                 >
                   {isCollapsed ? (
                     <CaretRight
