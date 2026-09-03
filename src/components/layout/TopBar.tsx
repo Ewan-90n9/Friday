@@ -1,7 +1,8 @@
-import { useState, useRef } from "react";
-import { GearSix } from "@phosphor-icons/react";
+import { useState, useRef, useEffect } from "react";
+import { GearSix, ShieldWarning } from "@phosphor-icons/react";
 import { FridayMark } from "@/components/FridayMark";
 import { useAgentStore } from "@/store/agentStore";
+import { useSettingsStore } from "@/store/settingsStore";
 import { AgentSettingsDialog } from "@/components/agents/AgentSettingsDialog";
 import type { AgentRow } from "@/lib/types";
 
@@ -35,6 +36,12 @@ export function TopBar() {
   const activeAgent = useAgentStore((s) => s.activeAgent);
   const loading = useAgentStore((s) => s.loading);
   const error = useAgentStore((s) => s.error);
+  const autoApprove = useSettingsStore((s) => s.autoApprove);
+  const loadSettings = useSettingsStore((s) => s.load);
+
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
 
   const { label, dotClass, pulse } = computeStatus(loading, activeAgent, error);
 
@@ -63,6 +70,16 @@ export function TopBar() {
 
       {/* 右侧：状态 + 设置 */}
       <div className="flex items-center gap-1">
+        {autoApprove && (
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-warning/10 border border-warning/20 text-warning text-xs cursor-pointer hover:bg-warning/20 transition-colors"
+            aria-label="免确认模式已开启，点击打开设置"
+          >
+            <ShieldWarning size={14} weight="regular" aria-hidden="true" />
+            免确认
+          </button>
+        )}
         <button
           ref={triggerRef}
           onClick={() => setSettingsOpen(true)}
