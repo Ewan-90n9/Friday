@@ -19,7 +19,7 @@ use crate::exec::pool::ExecChannelPool;
 use crate::mcp::session_mapper::SessionMapper;
 use crate::tools::confirm::{ConfirmRegistry, ConfirmResult};
 use crate::tools::registry::{ToolContext, ToolDef, ToolOutput, ToolRegistry};
-use crate::tools::risk::RiskLevel;
+use crate::tools::risk::{RiskLevel, should_confirm};
 
 pub struct FridayMcpServer {
     pub tool_registry: Arc<ToolRegistry>,
@@ -164,8 +164,18 @@ impl ServerHandler for FridayMcpServer {
                 .map(serde_json::Value::Object)
                 .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
-            // Confirmation flow for Low/High risk tools
-            if matches!(risk_level, RiskLevel::Low | RiskLevel::High) {
+            // Confirmation flow for Low/High risk tools; skipped entirely
+            // when auto-approve mode is enabled (global setting)
+            let auto_approve = crate::app::settings::auto_approve_tools(&self.pool).await;
+            if auto_approve && matches!(risk_level, RiskLevel::Low | RiskLevel::High) {
+                tracing::info!(
+                    session_id = %session_id,
+                    tool = %tool_name,
+                    ?risk_level,
+                    "tool call auto-approved (auto-approve mode enabled)"
+                );
+            }
+            if should_confirm(risk_level, auto_approve) {
                 let confirm_id = uuid::Uuid::new_v4().to_string();
                 let (tx, rx) = tokio::sync::oneshot::channel();
 
