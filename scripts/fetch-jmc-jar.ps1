@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 $manifest = Get-Content (Join-Path $PSScriptRoot "vendor-versions.json") -Raw | ConvertFrom-Json
 $dep = $manifest.jmc
 $url = "https://github.com/$($dep.release_repo)/releases/download/$($dep.tag)/$($dep.asset)"
