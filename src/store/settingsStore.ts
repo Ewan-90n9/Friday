@@ -1,13 +1,20 @@
 import { create } from "zustand";
-import { getArtifactoryBaseUrl, setArtifactoryBaseUrl } from "@/lib/ipc";
+import {
+  getArtifactoryBaseUrl,
+  setArtifactoryBaseUrl,
+  getAutoApproveTools,
+  setAutoApproveTools,
+} from "@/lib/ipc";
 
 interface SettingsStore {
   artifactoryBaseUrl: string;
+  autoApprove: boolean;
   loading: boolean;
   saving: boolean;
   error: string | null;
   load: () => Promise<void>;
   saveBaseUrl: (url: string) => Promise<boolean>;
+  saveAutoApprove: (enabled: boolean) => Promise<boolean>;
 }
 
 function errMsg(e: unknown): string {
@@ -16,6 +23,7 @@ function errMsg(e: unknown): string {
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   artifactoryBaseUrl: "",
+  autoApprove: false,
   loading: false,
   saving: false,
   error: null,
@@ -23,8 +31,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   load: async () => {
     set({ loading: true, error: null });
     try {
-      const url = await getArtifactoryBaseUrl();
-      set({ artifactoryBaseUrl: url });
+      const [url, autoApprove] = await Promise.all([
+        getArtifactoryBaseUrl(),
+        getAutoApproveTools(),
+      ]);
+      set({ artifactoryBaseUrl: url, autoApprove });
     } catch (e) {
       set({ error: errMsg(e) });
     } finally {
@@ -37,6 +48,20 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     try {
       await setArtifactoryBaseUrl(url);
       await get().load();
+      return true;
+    } catch (e) {
+      set({ error: errMsg(e) });
+      return false;
+    } finally {
+      set({ saving: false });
+    }
+  },
+
+  saveAutoApprove: async (enabled) => {
+    set({ saving: true, error: null });
+    try {
+      await setAutoApproveTools(enabled);
+      set({ autoApprove: enabled });
       return true;
     } catch (e) {
       set({ error: errMsg(e) });

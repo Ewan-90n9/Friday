@@ -111,6 +111,14 @@ export async function setArtifactoryBaseUrl(url: string): Promise<void> {
   return invoke<void>("set_artifactory_base_url_cmd", { url });
 }
 
+export async function getAutoApproveTools(): Promise<boolean> {
+  return invoke<boolean>("get_auto_approve_tools_cmd");
+}
+
+export async function setAutoApproveTools(enabled: boolean): Promise<void> {
+  return invoke<void>("set_auto_approve_tools_cmd", { enabled });
+}
+
 export async function listEnvCredentials(environmentId: string): Promise<EnvCredentialRow[]> {
   return invoke<EnvCredentialRow[]>("list_env_credentials_cmd", { environmentId });
 }
