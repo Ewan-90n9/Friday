@@ -89,31 +89,32 @@ pub fn jfr_start_command(
     format!("{jcmd} {pid} JFR.start name={name} settings={settings} duration={duration_secs}s filename={remote_path}")
 }
 
-/// 代理工具：local_path → jfr_file_path + args 透传合并；async 强制 false
-/// （禁用上游后台任务模式，靠 Friday 超时分层，spec §3.2）。
+/// 代理工具：local_path → jfr_file_path + args 透传合并；路径与 async 为 handler
+/// 权威值，合并后强制写入（透传对象不得覆盖）；async 固定 false（禁用上游后台
+/// 任务模式，靠 Friday 超时分层，spec §3.2）。
 pub fn build_proxy(kind: JfrProxyKind, local_path: &str, extra: Option<&Value>) -> (String, Value) {
     let mut map = serde_json::Map::new();
-    map.insert("jfr_file_path".to_string(), json!(local_path));
     if let Some(Value::Object(extra)) = extra {
         for (k, v) in extra {
             map.insert(k.clone(), v.clone());
         }
     }
-    // 最后强制覆盖：即使调用方透传了 async:true 也压回 false
+    // 最后强制覆盖：路径由 handler 解析（local_path 是唯一来源）；async 压回 false
+    map.insert("jfr_file_path".to_string(), json!(local_path));
     map.insert("async".to_string(), json!(false));
     (kind.upstream_name().to_string(), Value::Object(map))
 }
 
-/// A/B 对比：双路径映射 + args 透传合并；async 强制 false
+/// A/B 对比：双路径映射 + args 透传合并；路径与 async 合并后强制写入
 pub fn build_compare(baseline: &str, target: &str, extra: Option<&Value>) -> (String, Value) {
     let mut map = serde_json::Map::new();
-    map.insert("baseline_jfr_path".to_string(), json!(baseline));
-    map.insert("target_jfr_path".to_string(), json!(target));
     if let Some(Value::Object(extra)) = extra {
         for (k, v) in extra {
             map.insert(k.clone(), v.clone());
         }
     }
+    map.insert("baseline_jfr_path".to_string(), json!(baseline));
+    map.insert("target_jfr_path".to_string(), json!(target));
     map.insert("async".to_string(), json!(false));
     ("smart_compare_recordings".to_string(), Value::Object(map))
 }
@@ -178,6 +179,14 @@ mod tests {
         assert_eq!(args["jfr_file_path"], r"C:\artifacts\a.jfr");
         assert_eq!(args["top_n"], 5);
         assert_eq!(args["async"], false, "async must be forced false even if caller passes true");
+
+        // 透传对象不得覆盖 handler 权威路径键
+        let (_, args) = build_proxy(
+            JfrProxyKind::HotMethods,
+            r"C:\artifacts\a.jfr",
+            Some(&json!({"jfr_file_path": "/stale/hallucinated.jfr"})),
+        );
+        assert_eq!(args["jfr_file_path"], r"C:\artifacts\a.jfr", "path key must not be overridable");
     }
 
     #[test]
@@ -197,6 +206,15 @@ mod tests {
         assert_eq!(args["baseline_jfr_path"], "/tmp/base.jfr");
         assert_eq!(args["target_jfr_path"], "/tmp/target.jfr");
         assert_eq!(args["async"], false);
+
+        // 透传对象不得覆盖 handler 权威路径键
+        let (_, args) = build_compare(
+            "/tmp/base.jfr",
+            "/tmp/target.jfr",
+            Some(&json!({"baseline_jfr_path": "/stale.jfr", "target_jfr_path": "/stale.jfr"})),
+        );
+        assert_eq!(args["baseline_jfr_path"], "/tmp/base.jfr");
+        assert_eq!(args["target_jfr_path"], "/tmp/target.jfr");
     }
 
     #[test]
