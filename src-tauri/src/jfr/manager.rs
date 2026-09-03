@@ -119,7 +119,7 @@ impl JmcManager {
             )),
         );
         let args = serde_json::json!({ "jfr_file_path": path.to_string_lossy(), "async": false });
-        match self.query("jfr_overview", &args, WARMUP_TASK_TIMEOUT_SECS).await {
+        match self.query("jfrOverview", &args, WARMUP_TASK_TIMEOUT_SECS).await {
             Ok(_) => self.bus.emit(
                 session_id,
                 progress(format!("分析就绪，jfr_* 工具可直接查询：{}", path.display())),
@@ -334,11 +334,11 @@ mod tests {
         let mock = Arc::new(MockJmcClient::ok("OVERVIEW"));
         let (mgr, spawns) = manager_with(&mock, JmcConfig::default());
         let out = mgr
-            .query("jfr_overview", &serde_json::json!({"jfr_file_path": "a.jfr"}), 5)
+            .query("jfrOverview", &serde_json::json!({"jfr_file_path": "a.jfr"}), 5)
             .await
             .expect("query should succeed");
         assert_eq!(out.text, "OVERVIEW");
-        mgr.query("jfr_rules", &serde_json::json!({"jfr_file_path": "a.jfr"}), 5)
+        mgr.query("jfrRules", &serde_json::json!({"jfr_file_path": "a.jfr"}), 5)
             .await
             .unwrap();
         assert_eq!(spawns.load(Ordering::SeqCst), 1, "worker must spawn exactly once");
@@ -350,7 +350,7 @@ mod tests {
             Ok(CallOutcome { text: "bad jfr file".into(), is_error: true })
         }));
         let (mgr, _s) = manager_with(&mock, JmcConfig::default());
-        match mgr.query("jfr_overview", &serde_json::json!({}), 5).await {
+        match mgr.query("jfrOverview", &serde_json::json!({}), 5).await {
             Err(JmcError::Upstream(text)) => assert!(text.contains("bad jfr file")),
             other => panic!("expected Upstream, got {other:?}"),
         }
@@ -363,13 +363,13 @@ mod tests {
         }));
         let (mgr, spawns) = manager_with(&mock, JmcConfig::default());
         assert!(matches!(
-            mgr.query("jfr_overview", &serde_json::json!({}), 5).await,
+            mgr.query("jfrOverview", &serde_json::json!({}), 5).await,
             Err(JmcError::Unavailable(_))
         ));
         assert_eq!(mock.shutdown_count.load(Ordering::SeqCst), 1, "dead worker shut down");
         // 下次调用懒重建（再失败但工厂已再次拉起）
         assert!(matches!(
-            mgr.query("jfr_overview", &serde_json::json!({}), 5).await,
+            mgr.query("jfrOverview", &serde_json::json!({}), 5).await,
             Err(JmcError::Unavailable(_))
         ));
         assert_eq!(spawns.load(Ordering::SeqCst), 2);
@@ -390,11 +390,11 @@ mod tests {
         }));
         let (mgr, _s) = manager_with(&mock, JmcConfig::default());
         assert!(matches!(
-            mgr.query("jfr_overview", &serde_json::json!({}), 1).await,
+            mgr.query("jfrOverview", &serde_json::json!({}), 1).await,
             Err(JmcError::Timeout(1))
         ));
         assert_eq!(mock.shutdown_count.load(Ordering::SeqCst), 0, "timeout must NOT kill worker");
-        mgr.query("jfr_overview", &serde_json::json!({}), 5).await.unwrap();
+        mgr.query("jfrOverview", &serde_json::json!({}), 5).await.unwrap();
     }
 
     #[tokio::test]
@@ -407,11 +407,11 @@ mod tests {
                 idle_tick: Duration::from_millis(20),
             },
         );
-        mgr.query("jfr_overview", &serde_json::json!({}), 5).await.unwrap();
+        mgr.query("jfrOverview", &serde_json::json!({}), 5).await.unwrap();
         tokio::time::sleep(Duration::from_millis(400)).await;
         assert_eq!(mock.shutdown_count.load(Ordering::SeqCst), 1, "idle worker must exit");
         // 退出后再调用 → 工厂重新拉起
-        mgr.query("jfr_overview", &serde_json::json!({}), 5).await.unwrap();
+        mgr.query("jfrOverview", &serde_json::json!({}), 5).await.unwrap();
         assert_eq!(spawns.load(Ordering::SeqCst), 2);
     }
 
@@ -422,7 +422,7 @@ mod tests {
         mgr.warm_up("sid-1", Path::new("/tmp/a.jfr")).await;
         let calls = mock.calls.lock().await;
         assert_eq!(calls.len(), 1, "warm_up issues exactly one jfr_overview");
-        assert_eq!(calls[0].0, "jfr_overview");
+        assert_eq!(calls[0].0, "jfrOverview");
         assert_eq!(calls[0].1["jfr_file_path"], "/tmp/a.jfr");
         assert_eq!(calls[0].1["async"], false);
     }
@@ -436,7 +436,7 @@ mod tests {
         mgr.warm_up("sid-1", Path::new("/tmp/a.jfr")).await;
         // 预热失败不阻断：后续 query 照常透传上游错误
         assert!(matches!(
-            mgr.query("jfr_overview", &serde_json::json!({"jfr_file_path": "/tmp/a.jfr"}), 5).await,
+            mgr.query("jfrOverview", &serde_json::json!({"jfr_file_path": "/tmp/a.jfr"}), 5).await,
             Err(JmcError::Upstream(_))
         ));
     }
@@ -471,7 +471,7 @@ mod tests {
         hook(&mk("c.txt"));
         tokio::time::sleep(Duration::from_millis(100)).await;
         let calls = mock.calls.lock().await;
-        let overviews: Vec<_> = calls.iter().filter(|(n, _)| *n == "jfr_overview").collect();
+        let overviews: Vec<_> = calls.iter().filter(|(n, _)| *n == "jfrOverview").collect();
         assert_eq!(overviews.len(), 1, "only .jfr triggers warm_up, calls: {calls:?}");
     }
 
@@ -586,9 +586,9 @@ mod tests {
         });
         let mgr = JmcManager::new(factory, EventBus::disabled(), JmcConfig::default());
         let args = serde_json::json!({ "jfr_file_path": jfr.to_string_lossy(), "async": false });
-        let out = mgr.query("jfr_overview", &args, 300).await.expect("jfr_overview");
+        let out = mgr.query("jfrOverview", &args, 300).await.expect("jfrOverview");
         assert!(!out.text.trim().is_empty(), "overview output should not be empty");
-        let out = mgr.query("jfr_rules", &args, 300).await.expect("jfr_rules");
+        let out = mgr.query("jfrRules", &args, 300).await.expect("jfrRules");
         assert!(!out.text.trim().is_empty(), "rules output should not be empty");
         mgr.shutdown().await;
         let _ = jvm.kill().await;

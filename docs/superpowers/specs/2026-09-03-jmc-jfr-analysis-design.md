@@ -76,31 +76,33 @@ MCP 层自动加 `friday_` 前缀。分析对象是**本机** `.jfr` 文件，�
 
 公共 schema：`local_path`（必填）+ `args`（可选透传对象：`top_n` / `thread_name` / `package_prefix` / `focus` / `start_time` / `end_time` 等，工具描述说明各自可用项）+ `timeout_secs`。所有代理调用**强制注入 `async: false`**（禁用上游后台任务模式，靠 Friday 超时分层）。
 
-| Friday 工具 | 上游工具 | 用途 | 默认/上限超时 |
-|---|---|---|---|
-| `jfr_overview` | `jfr_overview` | 录制摘要/事件数/JVM 信息（预热也用它） | 60s / 300s |
-| `jfr_rules` | `jfr_rules` | JMC 规则引擎自动瓶颈检测 | 60s / 300s |
-| `jfr_quick_analysis` | `smart_quick_analysis` | 一键宏诊断仪表盘（严重度分类+主瓶颈） | 300s / 1800s |
-| `jfr_gc_detail` | `gc_detail` | GC 分阶段暂停/GC cause/堆趋势 | 60s / 300s |
-| `jfr_memory_leaks` | `memory_leaks` | 老对象采样泄漏分析 | 300s / 1800s |
-| `jfr_predictive_leak` | `smart_predictive_leak_analysis` | 线性回归数学检测泄漏 | 300s / 1800s |
-| `jfr_allocation_hotspots` | `allocation_hotspots` | 分配热点（类+调用点） | 60s / 300s |
-| `jfr_hot_methods` | `hot_methods` | CPU 热点方法 | 60s / 300s |
-| `jfr_thread_cpu` | `thread_cpu` | 线程级 CPU | 60s / 300s |
-| `jfr_cpu_flame` | `cpu_flame` | CPU 火焰图数据 | 300s / 1800s |
-| `jfr_thread_contention` | `thread_contention` | 锁竞争/阻塞/等待 | 60s / 300s |
-| `jfr_deadlock_detection` | `deadlock_detection` | 死锁环检测 | 60s / 300s |
-| `jfr_io_hotspots` | `io_hotspots` | 慢/高频 IO（含调用点） | 60s / 300s |
-| `jfr_exceptions` | `exception_analysis` | 异常抛出统计 | 60s / 300s |
-| `jfr_errors` | `error_analysis` | OOM/SOError 等错误严重度分类 | 60s / 300s |
-| `jfr_safepoints` | `safepoint_analysis` | GC 外 STW/safepoint 暂停 | 60s / 300s |
-| `jfr_virtual_threads` | `virtual_threads` | 虚拟线程 pinning（JDK 21+） | 60s / 300s |
-| `jfr_stack_trace_search` | `smart_stack_trace_search` | 跨 13 类事件栈正则搜索 | 300s / 1800s |
-| `jfr_correlate` | `smart_correlate` | 锁↔IO↔热点方法相关性链 | 300s / 1800s |
-| `jfr_request_waterfall` | `smart_request_waterfall` | 线程时序瀑布（锁→IO→CPU→异常） | 300s / 1800s |
-| `jfr_compare` | `smart_compare_recordings` | 两个录制的 A/B 对比；参数为 `baseline_local_path` + `target_local_path`（其余 `args` 透传） | 300s / 1800s |
+> **上游工具名为 lowerCamelCase**（Quarkus MCP 从 Java 方法名派生，与上游 README 文档的 snake_case 不符；实测 tools/list 共 70 个工具，参数名则保持 snake_case）。注意两个特例：`virtualThreadTool`、`compareRecordings`。
 
-**明确剔除**：`live_recording`（JMX 直连，与远程诊断模式不符）、`get_job_status`/`get_job_result`（async 已禁用）、`health_check`（内部）、Web Dashboard（不启用 HTTP 模式）、`call_tree`/`expand_call_tree`/`diff_call_tree`/`expand_diff_call_tree`（交互式下钻树，多轮交互成本高，v2 按需加）、`gc_analysis`/`gc_cause`/`gc_recommendations` 等（`gc_detail` 覆盖）、其余各领域次级工具（`smart_diff_stack_traces`/`jdk_bug_reference`/`container_metrics` 等，后续批次按需加）。
+| Friday 工具 | 上游工具（实测名） | 用途 | 默认/上限超时 |
+|---|---|---|---|
+| `jfr_overview` | `jfrOverview` | 录制摘要/事件数/JVM 信息（预热也用它） | 60s / 300s |
+| `jfr_rules` | `jfrRules` | JMC 规则引擎自动瓶颈检测 | 60s / 300s |
+| `jfr_quick_analysis` | `smartQuickAnalysis` | 一键宏诊断仪表盘（严重度分类+主瓶颈） | 300s / 1800s |
+| `jfr_gc_detail` | `gcDetail` | GC 分阶段暂停/GC cause/堆趋势 | 60s / 300s |
+| `jfr_memory_leaks` | `memoryLeaks` | 老对象采样泄漏分析 | 300s / 1800s |
+| `jfr_predictive_leak` | `smartPredictiveLeakAnalysis` | 线性回归数学检测泄漏 | 300s / 1800s |
+| `jfr_allocation_hotspots` | `allocationHotspots` | 分配热点（类+调用点） | 60s / 300s |
+| `jfr_hot_methods` | `hotMethods` | CPU 热点方法 | 60s / 300s |
+| `jfr_thread_cpu` | `threadCpu` | 线程级 CPU | 60s / 300s |
+| `jfr_cpu_flame` | `cpuFlame` | CPU 火焰图数据 | 300s / 1800s |
+| `jfr_thread_contention` | `threadContention` | 锁竞争/阻塞/等待 | 60s / 300s |
+| `jfr_deadlock_detection` | `deadlockDetection` | 死锁环检测 | 60s / 300s |
+| `jfr_io_hotspots` | `ioHotspots` | 慢/高频 IO（含调用点） | 60s / 300s |
+| `jfr_exceptions` | `exceptionAnalysis` | 异常抛出统计 | 60s / 300s |
+| `jfr_errors` | `errorAnalysis` | OOM/SOError 等错误严重度分类 | 60s / 300s |
+| `jfr_safepoints` | `safepointAnalysis` | GC 外 STW/safepoint 暂停 | 60s / 300s |
+| `jfr_virtual_threads` | `virtualThreadTool` | 虚拟线程 pinning（JDK 21+） | 60s / 300s |
+| `jfr_stack_trace_search` | `smartStackTraceSearch` | 跨 13 类事件栈正则搜索 | 300s / 1800s |
+| `jfr_correlate` | `smartCorrelate` | 锁↔IO↔热点方法相关性链 | 300s / 1800s |
+| `jfr_request_waterfall` | `smartRequestWaterfall` | 线程时序瀑布（锁→IO→CPU→异常） | 300s / 1800s |
+| `jfr_compare` | `compareRecordings` | 两个录制的 A/B 对比；参数为 `baseline_local_path` + `target_local_path`（其余 `args` 透传） | 300s / 1800s |
+
+**明确剔除**：`liveRecording`（JMX 直连，与远程诊断模式不符）、async 任务轮询（async 已禁用）、`healthCheck`（内部）、Web Dashboard（不启用 HTTP 模式）、`callTree`/`expandCallTree`/`diffCallTree`/`expandDiffCallTree`（交互式下钻树，多轮交互成本高，v2 按需加）、`gcAnalysis`/`gcCause`/`gcRecommendations` 等（`gcDetail` 覆盖）、其余各领域次级工具（`smartDiffStackTraces`/`jdkBugReference`/`containerMetrics`/`heapDump*` 系等，后续批次按需加）。
 
 ## 4. 模块与代码组织
 
@@ -176,7 +178,7 @@ scripts/fetch-jmc-jar.ps1（读清单 → 下载 → 校验 sha256 → 幂等/.d
 
 **JmcManager（全局单例，无会话层）规则**：
 
-1. **懒启动**：首次 `query()` 或预热触发 `ensure_client()` → Java 探测（≥21）→ spawn `java --enable-preview -Xmx4g -jar <vendored jar>`（stdio MCP，stderr 全量 drain 记录）→ 60s 握手 → 常驻。
+1. **懒启动**：首次 `query()` 或预热触发 `ensure_client()` → Java 探测（≥21）→ spawn `java --enable-preview -Xmx4g -jar <vendored jar>`（stdio MCP，stderr 全量 drain 记录；环境变量 `JMC_MCP_DISABLE_PATH_VALIDATION=true`——上游默认只允许访问工作目录内文件，Friday 本地 spawn + 工具层已校验路径，禁用对齐 MAT 同信任模型）→ 60s 握手 → 常驻。
 2. **预热**：TransferManager `.jfr` 下载完成（扩展名判定 + Download + Completed）→ 回调 JmcManager → 推 `provision_progress`（tool=`jfr_record`、stage=`analyze`，前端复用现有渲染）→ 后台调 `jfr_overview`（1800s 硬超时）触发上游解析+建缓存；失败不 invalidate（下次 query 重试），不打断对话流。
 3. **透传**：`query(local_path, upstream_name, upstream_args, timeout)` → 注入 `jfr_file_path` + `async:false` → 上游调用；inflight 计数。
 4. **空闲退出**：无 inflight 且 15min 未用 → graceful shutdown（stdin 关 → 3s → kill）。上游缓存随进程退出释放；本地 `.jfr` 文件保留，重分析时懒重启重加载。

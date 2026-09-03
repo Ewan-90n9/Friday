@@ -52,6 +52,10 @@ pub async fn spawn_jmc_client(
 
     let mut cmd = tokio::process::Command::new(&java.path);
     cmd.args(jmc_jvm_args(&jar_path, xmx_gb));
+    // 上游默认只允许访问其工作目录内的 JFR 文件（Access denied）。Friday 本地 spawn、
+    // stdio 单客户端、路径已由工具层 resolve_existing_file 校验——禁用校验对齐
+    // heap analyzer（MAT）的同信任模型；local_path 本身就是唯一路径来源。
+    cmd.env("JMC_MCP_DISABLE_PATH_VALIDATION", "true");
     let (transport, stderr) =
         rmcp::transport::child_process::TokioChildProcess::builder(cmd)
             .stderr(std::process::Stdio::piped())
@@ -263,7 +267,7 @@ mod tests {
             .await
             .expect("MCP handshake must succeed with verbatim jar path");
         let out = client
-            .call_tool("jfr_overview", &serde_json::json!({"jfr_file_path": "nonexistent.jfr", "async": false}))
+            .call_tool("jfrOverview", &serde_json::json!({"jfr_file_path": "nonexistent.jfr", "async": false}))
             .await
             .expect("tools/call must work");
         // 文件不存在 → 上游工具级错误（is_error=true），但传输层正常
