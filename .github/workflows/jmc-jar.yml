@@ -145,7 +145,9 @@ jobs:
           if git diff --cached --quiet; then
             echo "sha256 already up to date, nothing to commit"
           else
-            git commit -m "chore: backfill jmc sha256 from ${{ steps.tag.outputs.tag }} [skip ci]"
+            # 不加 [skip ci]：本提交不命中 jmc-jar.yml 的 paths 过滤器，无需跳过；
+            # 且 skip 指令会让指向该提交的 release tag（v*）跳过所有 workflow。
+            git commit -m "chore: backfill jmc sha256 from ${{ steps.tag.outputs.tag }}"
             git pull --rebase --autostash
             git push
           fi
