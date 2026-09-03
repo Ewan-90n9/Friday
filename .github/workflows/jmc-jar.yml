@@ -85,13 +85,23 @@ jobs:
       - name: Locate and rename fat JAR
         run: |
           cd jmc
+          # 选 Quarkus runner（*-runner.jar 由 quarkus-maven-plugin 产出、可独立运行）；
+          # shade 产物是无 -runner 后缀的扁平 blob，无法自举，天然被排除
           jar=$(find . -name "*-runner.jar" -path "*/target/*" -printf '%s\t%p\n' | sort -rn | head -1 | cut -f2-)
           echo "found: $jar"
-          # 断言：产物必须是可独立运行的 Quarkus runner（决定性标记为 bootstrap 描述
-          # 文件；Main-Class 是上游 @QuarkusMain 类属预期，勿断言 GeneratedMainClass）。
-          # shade 产物（扁平 blob、无此文件）无法自举——Quarkus.run() 退化 IDE 启动器。
-          unzip -p "$jar" META-INF/quarkus-bootstrap.properties > /dev/null || { echo "::error::not a standalone Quarkus runner (missing quarkus-bootstrap.properties; shade executed?)"; unzip -p "$jar" META-INF/MANIFEST.MF; exit 1; }
           cp "$jar" ../jmc-mcp-1.0.0.jar
+
+      - name: Smoke test — MCP stdio handshake on Java 21
+        run: |
+          # 功能性闸门：产物必须能在 Java 21（同运行时要求）上经 stdio 完成 MCP 握手。
+          # 结构断言不可靠（uber-jar 无 quarkus-bootstrap.properties），直接实测。
+          resp=$(
+            (echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci-smoke","version":"0"}}}'; sleep 45) \
+              | timeout 60 java --enable-preview -jar jmc-mcp-1.0.0.jar 2>/dev/null \
+              | head -n 1
+          )
+          echo "handshake response: ${resp:0:200}"
+          echo "$resp" | grep -q '"serverInfo"' || { echo "::error::MCP stdio smoke test failed (no serverInfo in response)"; exit 1; }
 
       - name: Compute SHA256
         id: hash
