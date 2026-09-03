@@ -2,6 +2,7 @@ pub mod arthas;
 pub mod ensure_tool;
 pub mod file_transfer;
 pub mod heap;
+pub mod jfr;
 pub mod jvm;
 pub mod list_environments;
 pub mod run_command;
