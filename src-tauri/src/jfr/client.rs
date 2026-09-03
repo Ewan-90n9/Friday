@@ -225,6 +225,7 @@ mod tests {
         let calls = mock.calls.lock().await;
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "jfr_overview");
+        assert_eq!(calls[0].1["jfr_file_path"], "x", "args must be cloned into calls record");
     }
 
     #[tokio::test]
