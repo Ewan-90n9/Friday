@@ -1,0 +1,67 @@
+name: JMC JAR
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. jmc-v1.0.0)"
+        required: true
+        default: "jmc-v1.0.0"
+  push:
+    tags:
+      - "jmc-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone upstream at pinned SHA
+        run: |
+          git clone https://github.com/scarletbean01/jmc-mcp-server.git jmc
+          cd jmc
+          git checkout e6c35671e6351b0ab4c8f04599ec93fcfb5a3b20
+
+      - name: Downgrade to Java 21 bytecode
+        run: |
+          cd jmc
+          # SHA 同时记录在 scripts/vendor-versions.json（jmc.upstream_sha），升级上游两处同步改
+          find . -name pom.xml -print -exec sed -i 's|<maven.compiler.release>25</maven.compiler.release>|<maven.compiler.release>21</maven.compiler.release>|g' {} +
+          grep -rn "maven.compiler.release" --include=pom.xml .
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Build fat JAR (release 21 + preview)
+        run: |
+          cd jmc
+          # --enable-preview：上游使用 unnamed variable（`_ ->`，Java 22 转正、21 预览）
+          # maven.compiler.argument 对应 maven-compiler-plugin 的 compilerArgument 参数
+          mvn -B clean package -DskipTests -Dmaven.compiler.argument=--enable-preview
+
+      - name: Locate and rename fat JAR
+        run: |
+          cd jmc
+          jar=$(find . -name "*.jar" -path "*/target/*" ! -name "*-sources.jar" ! -name "original-*" | xargs ls -S | head -1)
+          echo "found: $jar"
+          cp "$jar" ../jmc-mcp-1.0.0.jar
+
+      - name: Compute SHA256
+        id: hash
+        run: echo "sha256=$(sha256sum jmc-mcp-1.0.0.jar | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: jmc-mcp-1.0.0.jar
+          body: |
+            Built from scarletbean01/jmc-mcp-server @ e6c35671e6351b0ab4c8f04599ec93fcfb5a3b20
+
+            - Bytecode: Java 21 + `--enable-preview`（运行需 JVM 21+ 且启动参数带 `--enable-preview`）
+            - SHA256: `${{ steps.hash.outputs.sha256 }}`
+            - → 首次发布后把该哈希回填 `scripts/vendor-versions.json` 的 `jmc.sha256`
