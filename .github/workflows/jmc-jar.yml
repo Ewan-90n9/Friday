@@ -75,14 +75,22 @@ jobs:
       - name: Build fat JAR (release 21 + preview)
         run: |
           cd jmc
-          # --enable-preview 已由上一步注入 pom compilerArgs（上游 unnamed variable 语法）
-          mvn -B clean package -DskipTests
+          # --enable-preview 已由上一步注入 pom compilerArgs（上游 unnamed variable 语法）。
+          # uber-jar：Quarkus 官方可独立运行的单文件产物（bootstrap 完整，manifest 指向
+          # GeneratedMainClass）；shade.skip：上游 pom 的 maven-shade-plugin 会把 runner
+          # 重新 shade 成扁平 blob 并改写 Main-Class → Quarkus 无法自举（IDE 启动器报
+          # Failed to locate project dir，见 run 33762239247），必须跳过。
+          mvn -B clean package -DskipTests -Dquarkus.package.type=uber-jar -Dshade.skip=true
 
       - name: Locate and rename fat JAR
         run: |
           cd jmc
           jar=$(find . -name "*.jar" -path "*/target/*" ! -name "*-sources.jar" ! -name "original-*" -printf '%s\t%p\n' | sort -rn | head -1 | cut -f2-)
           echo "found: $jar"
+          # 断言：产物必须是可独立运行的 Quarkus uber-jar（manifest 指向 GeneratedMainClass
+          # 且带 bootstrap 描述文件），否则 java -jar 会走 IDE 启动器路径而崩溃
+          unzip -p "$jar" META-INF/MANIFEST.MF | grep -q 'Main-Class: io.quarkus.runner.GeneratedMainClass' || { echo "::error::not a standalone Quarkus uber-jar (Main-Class wrong; shade not skipped?)"; unzip -p "$jar" META-INF/MANIFEST.MF; exit 1; }
+          unzip -p "$jar" META-INF/quarkus-bootstrap.properties > /dev/null || { echo "::error::missing quarkus-bootstrap.properties (not a Quarkus runner)"; exit 1; }
           cp "$jar" ../jmc-mcp-1.0.0.jar
 
       - name: Compute SHA256
