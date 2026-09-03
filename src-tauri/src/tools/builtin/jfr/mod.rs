@@ -634,39 +634,31 @@ mod tests {
     }
 
     async fn setup(channel: Arc<dyn ExecChannel>) -> (tempfile::TempDir, Arc<JvmExecCore>, Arc<crate::transfer::TransferManager>) {
+        // 注意：调用方在 setup 完成后才 pause 时钟（而非 start_paused 全程暂停）——
+        // sqlx 建新连接走真实 IO，而 pool acquire_timeout 是 tokio 定时器，全程暂停的
+        // auto-advance 会在真实连接完成前把时钟推到超时点（PoolTimedOut，且嵌套
+        // runtime 建 pool 会产生随其销毁的僵尸连接）。
         let tmp = tempfile::tempdir().unwrap();
-        // sqlx 建新连接在专用 OS 线程上完成，而 pool acquire_timeout 是 tokio 定时器：
-        // start_paused 的 auto-advance 会在真实连接完成前把时钟推到超时点（PoolTimedOut）。
-        // 故 DB 初始化与种子数据在嵌套真实时钟 runtime 执行；pool 跨 runtime 复用安全
-        // （连接 worker 为独立线程；maintenance 任务随嵌套 runtime 一起销毁）。
-        let db_path = tmp.path().join("friday.db");
-        let (db, env_id) = tokio::task::spawn_blocking(move || {
-            tokio::runtime::Runtime::new().unwrap().block_on(async {
-                let db = crate::infra::db::init(db_path).await.unwrap();
-                let env_id = crate::app::env_save::save_environment(
-                    &db,
-                    None,
-                    "prod",
-                    "10.0.0.1",
-                    22,
-                    vec![crate::app::env_save::CredentialInput {
-                        id: None,
-                        username: "root".to_string(),
-                        auth_type: "password".to_string(),
-                        private_key_path: None,
-                        secret: None,
-                        is_default: true,
-                    }],
-                )
-                .await
-                .unwrap()
-                .environment
-                .id;
-                (db, env_id)
-            })
-        })
+        let db = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
+        let env_id = crate::app::env_save::save_environment(
+            &db,
+            None,
+            "prod",
+            "10.0.0.1",
+            22,
+            vec![crate::app::env_save::CredentialInput {
+                id: None,
+                username: "root".to_string(),
+                auth_type: "password".to_string(),
+                private_key_path: None,
+                secret: None,
+                is_default: true,
+            }],
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .environment
+        .id;
         let exec_pool = Arc::new(tokio::sync::Mutex::new(crate::exec::pool::ExecChannelPool::new()));
         exec_pool.lock().await.insert_channel(env_id.clone(), channel).await;
         let mut bins = HashMap::new();
@@ -730,6 +722,18 @@ mod tests {
         Arc::new(JfrChannel { start_exit: 0, stat_size: stat, calls: TokioMutex::new(Vec::new()) })
     }
 
+    /// 虚拟时钟起搏器：常驻 1ms 定时任务，把 auto-advance 的推进粒度钳制在 1ms。
+    /// 无起搏时，runtime 空闲即跳到下一个 pending 定时器——sqlx 30s acquire 超时
+    /// 定时器会在其真实 IO（连接归还/查询往返，µs 级）完成前被瞬间穿透（PoolTimedOut）。
+    /// 用后 abort。
+    fn spawn_auto_advance_pacer() -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+    }
+
     #[tokio::test]
     async fn test_register_all_twenty_two_tools() {
         let (tmp, reg) = registry(std_channel("1"), Arc::new(MockJmcClient::ok("S"))).await;
@@ -769,11 +773,15 @@ mod tests {
         drop(tmp);
     }
 
-    /// start_paused：wait_for_recording 的轮询休眠走 tokio 虚拟时钟，秒级等待瞬时完成
-    #[tokio::test(start_paused = true)]
+    /// 录制流程开始前手动 pause 时钟 + 起搏器任务（setup 走真实时钟）。
+    /// 起搏器把 auto-advance 的推进粒度钳制在 1ms：无起搏时 pending 的远期定时器
+    /// （sqlx 30s acquire 超时）会在真实 IO 完成前被瞬间穿透（PoolTimedOut）。
+    #[tokio::test]
     async fn test_record_full_flow_starts_background_download() {
         let ch = std_channel("54321");
         let (tmp, reg) = registry(ch.clone(), Arc::new(MockJmcClient::ok("S"))).await;
+        tokio::time::pause();
+        let pacer = spawn_auto_advance_pacer();
         let out = def(&reg, "jfr_record")
             .handler
             .execute(
@@ -781,6 +789,7 @@ mod tests {
                 &ctx(),
             )
             .await;
+        pacer.abort();
         assert!(out.success, "out: {}", out.data);
         let tid = out.data["transfer_id"].as_str().unwrap();
         assert!(!tid.is_empty());
@@ -814,9 +823,12 @@ mod tests {
         drop(tmp);
     }
 
-    #[tokio::test(start_paused = true)]
+    /// 录制流程开始前手动 pause 时钟 + 起搏器（同上）
+    #[tokio::test]
     async fn test_record_file_never_materializes() {
         let (tmp, reg) = registry(std_channel("0"), Arc::new(MockJmcClient::ok("S"))).await;
+        tokio::time::pause();
+        let pacer = spawn_auto_advance_pacer();
         let out = def(&reg, "jfr_record")
             .handler
             .execute(
@@ -824,8 +836,9 @@ mod tests {
                 &ctx(),
             )
             .await;
+        pacer.abort();
         assert!(!out.success, "out: {}", out.data);
-        assert_eq!(out.data["error"], "record_not_found");
+        assert_eq!(out.data["error"], "record_not_found", "out: {}", out.data);
         assert!(out.data["message"].as_str().unwrap().contains("friday-tools"));
         drop(tmp);
     }

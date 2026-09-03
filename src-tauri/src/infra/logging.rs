@@ -193,8 +193,7 @@ mod tests {
         let log_dir = tmp.path().join("logs");
         std::fs::create_dir_all(&log_dir).unwrap();
         let _guard = init(log_dir);
-
-        let _hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
+        // 注意：不得在此替换全局 panic hook——libtest 依赖它输出断言失败信息，
+        // 替换成空操作会吞掉同进程内其他测试（如 jfr 虚拟时钟测试）的 panic 消息
     }
 }
