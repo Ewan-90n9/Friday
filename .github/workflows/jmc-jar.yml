@@ -48,12 +48,17 @@ jobs:
           cd jmc
           git checkout "$JMC_SHA"
 
-      - name: Downgrade to Java 21 bytecode
+      - name: Downgrade to Java 21 bytecode + enable preview
         run: |
           cd jmc
           find . -name pom.xml -print -exec sed -i 's|<maven.compiler.release>25</maven.compiler.release>|<maven.compiler.release>21</maven.compiler.release>|g' {} +
-          # 断言：sed 必须命中且无残留非 21 的 release 声明，否则 fail-fast
+          # 上游使用 unnamed variable（`_ ->`，Java 22 转正、21 预览）——注入 compilerArgs 开启
+          # --enable-preview（-Dmaven.compiler.argument 在 compiler-plugin 3.15 不生效，
+          # 见 run 33761751286 失败：unnamed variables are not supported in -source 21）
+          find . -name pom.xml -print -exec sed -i 's|<parameters>true</parameters>|<parameters>true</parameters>\n                <compilerArgs>\n                    <arg>--enable-preview</arg>\n                </compilerArgs>|' {} +
+          # 断言：降级命中 + preview 注入命中 + 无残留非 21 的 release 声明，否则 fail-fast
           grep -rq '<maven.compiler.release>21</maven.compiler.release>' --include=pom.xml . || { echo "::error::downgrade to 21 failed (upstream pom layout changed?)"; exit 1; }
+          grep -rq '<arg>--enable-preview</arg>' --include=pom.xml . || { echo "::error::preview compilerArgs injection failed (pom layout changed?)"; exit 1; }
           if grep -rn '<maven.compiler.release>' --include=pom.xml . | grep -v '<maven.compiler.release>21</maven.compiler.release>'; then
             echo "::error::non-21 maven.compiler.release remains after sed"
             exit 1
@@ -68,9 +73,8 @@ jobs:
       - name: Build fat JAR (release 21 + preview)
         run: |
           cd jmc
-          # --enable-preview：上游使用 unnamed variable（`_ ->`，Java 22 转正、21 预览）
-          # maven.compiler.argument 对应 maven-compiler-plugin 的 compilerArgument 参数
-          mvn -B clean package -DskipTests -Dmaven.compiler.argument=--enable-preview
+          # --enable-preview 已由上一步注入 pom compilerArgs（上游 unnamed variable 语法）
+          mvn -B clean package -DskipTests
 
       - name: Locate and rename fat JAR
         run: |
