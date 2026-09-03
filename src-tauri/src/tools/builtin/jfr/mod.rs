@@ -872,10 +872,10 @@ mod tests {
             )
             .await;
         assert!(out.success, "out: {}", out.data);
-        assert_eq!(out.data["tool"], "jfr_overview");
+        assert_eq!(out.data["tool"], "jfrOverview");
         let calls = mock.calls.lock().await;
         let (name, args) = calls.last().unwrap();
-        assert_eq!(name, "jfr_overview");
+        assert_eq!(name, "jfrOverview");
         assert_eq!(args["jfr_file_path"].as_str().unwrap(), p.to_string_lossy());
         assert_eq!(args["start_time"], "2026-09-03T10:00:00Z");
         assert_eq!(args["async"], false);
@@ -920,10 +920,10 @@ mod tests {
             )
             .await;
         assert!(out.success, "out: {}", out.data);
-        assert_eq!(out.data["tool"], "smart_compare_recordings");
+        assert_eq!(out.data["tool"], "compareRecordings");
         let calls = mock.calls.lock().await;
         let (name, args) = calls.last().unwrap();
-        assert_eq!(name, "smart_compare_recordings");
+        assert_eq!(name, "compareRecordings");
         assert_eq!(args["baseline_jfr_path"].as_str().unwrap(), base.to_string_lossy());
         assert_eq!(args["target_jfr_path"].as_str().unwrap(), target.to_string_lossy());
         assert_eq!(args["async"], false);

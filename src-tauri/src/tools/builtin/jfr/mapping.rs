@@ -26,28 +26,31 @@ pub enum JfrProxyKind {
 }
 
 impl JfrProxyKind {
+    /// 上游实际注册名是 lowerCamelCase（Quarkus MCP 从 Java 方法名派生，与上游
+    /// README 文档的 snake_case 不符，实测 tools/list 得出；参数名则保持 snake_case）。
+    /// 注意两个特例：VirtualThreads → virtualThreadTool、compare → compareRecordings。
     pub fn upstream_name(&self) -> &'static str {
         match self {
-            JfrProxyKind::Overview => "jfr_overview",
-            JfrProxyKind::Rules => "jfr_rules",
-            JfrProxyKind::QuickAnalysis => "smart_quick_analysis",
-            JfrProxyKind::GcDetail => "gc_detail",
-            JfrProxyKind::MemoryLeaks => "memory_leaks",
-            JfrProxyKind::PredictiveLeak => "smart_predictive_leak_analysis",
-            JfrProxyKind::AllocationHotspots => "allocation_hotspots",
-            JfrProxyKind::HotMethods => "hot_methods",
-            JfrProxyKind::ThreadCpu => "thread_cpu",
-            JfrProxyKind::CpuFlame => "cpu_flame",
-            JfrProxyKind::ThreadContention => "thread_contention",
-            JfrProxyKind::DeadlockDetection => "deadlock_detection",
-            JfrProxyKind::IoHotspots => "io_hotspots",
-            JfrProxyKind::Exceptions => "exception_analysis",
-            JfrProxyKind::Errors => "error_analysis",
-            JfrProxyKind::Safepoints => "safepoint_analysis",
-            JfrProxyKind::VirtualThreads => "virtual_threads",
-            JfrProxyKind::StackTraceSearch => "smart_stack_trace_search",
-            JfrProxyKind::Correlate => "smart_correlate",
-            JfrProxyKind::RequestWaterfall => "smart_request_waterfall",
+            JfrProxyKind::Overview => "jfrOverview",
+            JfrProxyKind::Rules => "jfrRules",
+            JfrProxyKind::QuickAnalysis => "smartQuickAnalysis",
+            JfrProxyKind::GcDetail => "gcDetail",
+            JfrProxyKind::MemoryLeaks => "memoryLeaks",
+            JfrProxyKind::PredictiveLeak => "smartPredictiveLeakAnalysis",
+            JfrProxyKind::AllocationHotspots => "allocationHotspots",
+            JfrProxyKind::HotMethods => "hotMethods",
+            JfrProxyKind::ThreadCpu => "threadCpu",
+            JfrProxyKind::CpuFlame => "cpuFlame",
+            JfrProxyKind::ThreadContention => "threadContention",
+            JfrProxyKind::DeadlockDetection => "deadlockDetection",
+            JfrProxyKind::IoHotspots => "ioHotspots",
+            JfrProxyKind::Exceptions => "exceptionAnalysis",
+            JfrProxyKind::Errors => "errorAnalysis",
+            JfrProxyKind::Safepoints => "safepointAnalysis",
+            JfrProxyKind::VirtualThreads => "virtualThreadTool",
+            JfrProxyKind::StackTraceSearch => "smartStackTraceSearch",
+            JfrProxyKind::Correlate => "smartCorrelate",
+            JfrProxyKind::RequestWaterfall => "smartRequestWaterfall",
         }
     }
 }
@@ -116,7 +119,7 @@ pub fn build_compare(baseline: &str, target: &str, extra: Option<&Value>) -> (St
     map.insert("baseline_jfr_path".to_string(), json!(baseline));
     map.insert("target_jfr_path".to_string(), json!(target));
     map.insert("async".to_string(), json!(false));
-    ("smart_compare_recordings".to_string(), Value::Object(map))
+    ("compareRecordings".to_string(), Value::Object(map))
 }
 
 #[cfg(test)]
@@ -175,7 +178,7 @@ mod tests {
             r"C:\artifacts\a.jfr",
             Some(&json!({"top_n": 5, "async": true})),
         );
-        assert_eq!(name, "hot_methods");
+        assert_eq!(name, "hotMethods");
         assert_eq!(args["jfr_file_path"], r"C:\artifacts\a.jfr");
         assert_eq!(args["top_n"], 5);
         assert_eq!(args["async"], false, "async must be forced false even if caller passes true");
@@ -192,7 +195,7 @@ mod tests {
     #[test]
     fn test_build_proxy_without_extra_args() {
         let (name, args) = build_proxy(JfrProxyKind::QuickAnalysis, "/tmp/a.jfr", None);
-        assert_eq!(name, "smart_quick_analysis");
+        assert_eq!(name, "smartQuickAnalysis");
         assert_eq!(args["jfr_file_path"], "/tmp/a.jfr");
         assert_eq!(args["async"], false);
         assert_eq!(args.as_object().unwrap().len(), 2);
@@ -202,7 +205,7 @@ mod tests {
     fn test_build_compare_two_paths() {
         let (name, args) =
             build_compare("/tmp/base.jfr", "/tmp/target.jfr", Some(&json!({"async": true})));
-        assert_eq!(name, "smart_compare_recordings");
+        assert_eq!(name, "compareRecordings");
         assert_eq!(args["baseline_jfr_path"], "/tmp/base.jfr");
         assert_eq!(args["target_jfr_path"], "/tmp/target.jfr");
         assert_eq!(args["async"], false);
