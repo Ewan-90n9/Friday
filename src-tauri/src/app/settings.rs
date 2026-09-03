@@ -5,6 +5,8 @@ pub const KEY_ARTIFACTORY_BASE_URL: &str = "artifactory_base_url";
 pub const DEFAULT_ARTIFACTORY_BASE_URL: &str =
     "https://cmc-szver-artifactory.cmc.tools.huawei.com/artifactory/cmc-software-release";
 
+pub const KEY_AUTO_APPROVE_TOOLS: &str = "auto_approve_tools";
+
 /// 读取设置项，未设置时返回 None
 pub async fn get_setting(pool: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {
     let value: Option<String> = sqlx::query_scalar("SELECT value FROM app_settings WHERE key = ?")
@@ -53,6 +55,32 @@ pub fn normalize_base_url(input: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
+/// 读取免确认模式开关：缺失、非法值、DB 错误一律返回 false（fail-safe，
+/// 绝不因读不到设置而放行高风险操作）
+pub async fn auto_approve_tools(pool: &SqlitePool) -> bool {
+    match get_setting(pool, KEY_AUTO_APPROVE_TOOLS).await {
+        Ok(Some(value)) if value == "true" => true,
+        Ok(Some(value)) if value == "false" => false,
+        Ok(Some(value)) => {
+            tracing::warn!(
+                key = KEY_AUTO_APPROVE_TOOLS,
+                value = %value,
+                "invalid auto_approve_tools value, falling back to false"
+            );
+            false
+        }
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!(
+                key = KEY_AUTO_APPROVE_TOOLS,
+                error = %e,
+                "failed to read auto_approve_tools, falling back to false"
+            );
+            false
+        }
+    }
+}
+
 #[tauri::command]
 #[tracing::instrument(skip(state))]
 pub async fn get_artifactory_base_url_cmd(state: State<'_, crate::AppState>) -> Result<String, String> {
@@ -73,6 +101,29 @@ pub async fn set_artifactory_base_url_cmd(
     set_setting(&state.db, KEY_ARTIFACTORY_BASE_URL, &normalized)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn get_auto_approve_tools_cmd(state: State<'_, crate::AppState>) -> Result<bool, String> {
+    tracing::info!("get_auto_approve_tools_cmd called");
+    Ok(auto_approve_tools(&state.db).await)
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn set_auto_approve_tools_cmd(
+    state: State<'_, crate::AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    tracing::info!(enabled = enabled, "set_auto_approve_tools_cmd called");
+    let value = if enabled { "true" } else { "false" };
+    set_setting(&state.db, KEY_AUTO_APPROVE_TOOLS, value)
+        .await
+        .map_err(|e| {
+            tracing::error!(key = KEY_AUTO_APPROVE_TOOLS, error = %e, "failed to persist auto_approve_tools");
+            e.to_string()
+        })
 }
 
 #[cfg(test)]
@@ -166,5 +217,30 @@ mod tests {
             artifactory_base_url(&pool).await.unwrap(),
             "https://example.com/artifactory/"
         );
+    }
+
+    #[tokio::test]
+    async fn test_auto_approve_tools_defaults_false_when_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
+        assert!(!auto_approve_tools(&pool).await);
+    }
+
+    #[tokio::test]
+    async fn test_auto_approve_tools_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
+        set_setting(&pool, KEY_AUTO_APPROVE_TOOLS, "true").await.unwrap();
+        assert!(auto_approve_tools(&pool).await);
+        set_setting(&pool, KEY_AUTO_APPROVE_TOOLS, "false").await.unwrap();
+        assert!(!auto_approve_tools(&pool).await);
+    }
+
+    #[tokio::test]
+    async fn test_auto_approve_tools_invalid_value_falls_back_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
+        set_setting(&pool, KEY_AUTO_APPROVE_TOOLS, "yes").await.unwrap();
+        assert!(!auto_approve_tools(&pool).await);
     }
 }
