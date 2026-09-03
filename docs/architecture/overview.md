@@ -12,7 +12,7 @@
 | 6 | Agent↔工具接口 | Tool Registry（MCP tool 注册） |
 | 7 | 知识层形态 | 结构化 playbook（主干 steps + 旁注 + 原文附件），SQLite 为运行时权威 |
 | 8 | 前后端通信 | command 发起 + event 流式推送，session_id 归属 |
-| 9 | 安全边界 | 分级拦截：只读自主 / 低风险确认 / 高风险强制确认 |
+| 9 | 安全边界 | 分级拦截：只读自主 / 低风险确认 / 高风险强制确认；全局「免确认模式」开启后全部豁免 |
 | 10 | 会话状态 | 持久化（SQLite），应用层管生命周期 |
 | 11 | 存储 | SQLite；文件布局统一在 `app_data_dir`，见 [基础设施](infrastructure.md#文件布局) |
 | 12 | 凭证 | OS 密钥链存私钥/密码，其余配置明文入 SQLite |

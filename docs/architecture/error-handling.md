@@ -21,3 +21,5 @@
 | 高风险强制确认 | `jmap -dump`（触发 STW）、arthas `redefine`（热改类） | 醒目警告，需显式确认 |
 
 拦截点在 Tool Registry dispatch 前：每个 tool 注册时声明 risk_level，MCP server 在执行前检查。
+
+全局免确认开关：设置弹窗中的「免确认模式」开启后，Low/High 工具均跳过确认直接执行；设置读取失败一律回落确认模式。详见 [免确认模式设计](../superpowers/specs/2026-09-03-auto-approve-tools-design.md)。
