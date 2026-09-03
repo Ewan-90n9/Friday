@@ -3,7 +3,7 @@
 - 日期：2026-09-03
 - 状态：已评审（各节均与用户逐节确认）
 - 上游：[JDK 原生命令结构化工具设计](2026-08-28-jdk-native-tools-design.md)（jcmd 执行模式）；[文件传输设计](2026-08-29-file-transfer-design.md)（拉回 + download_complete_hook）；[堆快照分析设计](2026-08-29-heap-analysis-design.md)（本地 Java 工人进程模式，本设计大量复用其形态）
-- 外部依赖：[scarletbean01/jmc-mcp-server](https://github.com/scarletbean01/jmc-mcp-server)（MIT，JMC 9.1.1 核心库驱动的 JFR 分析 MCP server；fork 后构建分发，见 §2）
+- 外部依赖：[scarletbean01/jmc-mcp-server](https://github.com/scarletbean01/jmc-mcp-server)（MIT，JMC 9.1.1 核心库驱动的 JFR 分析 MCP server；无 Releases，由 Friday 仓库内 `jmc-jar.yml` workflow 从 pinned SHA 构建分发，见 §2/§4）
 
 ## 1. 背景与目标
 
@@ -19,7 +19,7 @@
 - **无 Releases 产物**，只能源码构建（fat JAR `target/jmc-mcp-1.0.0-SNAPSHOT.jar`）；
 - 上游自带无状态设计：所有工具接收 `jfr_file_path` 参数，内部有 TTL 录制缓存（1h 过期、文件变更检测、内存压力驱逐、软引用）；
 - 重型工具支持 `async: true` 后台任务模式（get_job_status/get_job_result 轮询）；
-- 单人维护、1 star 的早期项目（质量与维护风险由 fork 控版本对冲）。
+- 单人维护、1 star 的早期项目（质量与维护风险由 pinned SHA 控版本对冲 + 巡检提醒跟进）。
 
 ### 目标 JVM 兼容性（热开启矩阵）
 
@@ -38,10 +38,11 @@ JDK 8 目标调用 `jfr_record` 走 `record_failed` 错误路径（jcmd 错误�
 | 仅本地分析（不做录制工具） | 否——agent 需多步手工编排（run_command 录制 + file_download），闭环断链 |
 | 持续录制 + 按需 dump（jfr_start/jfr_dump/jfr_stop） | 否——需管理远程录制会话状态，工具多、出错面大，v1 用一次性定时录制覆盖主流场景 |
 | agent 直连第二台 MCP server | 否——同 heap 分析定案（工具面膨胀、依赖裸露、工人进程无人管） |
-| 自研最小 JMC server（JMC core + MCP SDK） | 否——69 工具的聚合分析逻辑（GC 分阶段、火焰图数据、相关性引擎）自研工作量是 fork 的数倍 |
-| fork 并裁剪（剔除 Dashboard/async 队列） | 否——fork diff 变大失去同步上游能力，体积代价可接受 |
+| 自研最小 JMC server（JMC core + MCP SDK） | 否——69 工具的聚合分析逻辑（GC 分阶段、火焰图数据、相关性引擎）自研工作量是复用上游的数倍 |
+| fork 上游仓库（降级 + fork CI 发版） | 否——需维护第二个仓库；改用 Friday 仓库内 workflow 直接构建（已评审定案） |
+| fork 并裁剪（剔除 Dashboard/async 队列） | 否——裁剪 diff 变大失去同步上游能力，体积代价可接受 |
 | 每个文件独立 worker 进程 | 否——Quarkus 启动秒级开销、进程数膨胀，与上游单 server+缓存设计相悖 |
-| **定案：fork jmc-mcp-server（仅降 Java 21）+ CI 发布 JAR + Friday 无状态代理（方案 1）** | 下游完全沿用 heap analyzer 的 vendoring/生命周期模式；Friday 侧无会话层（上游自带缓存） |
+| **定案：Friday 仓库内 `jmc-jar.yml` workflow（clone 上游 pinned SHA + 降级 Java 21）+ 发布到 Friday 自身 Releases + Friday 无状态代理（方案 1）** | 下游完全沿用 heap analyzer 的 vendoring/生命周期模式；Friday 侧无会话层（上游自带缓存）；零第二仓库 |
 
 ## 2. 决策表
 
@@ -49,14 +50,15 @@ JDK 8 目标调用 `jfr_record` 走 `record_failed` 错误路径（jcmd 错误�
 |---|--------|------|
 | 1 | 链路范围 | 完整闭环：`jfr_record`（录制+落盘+拉回）→ `.jfr` 下载完成自动预热 → `jfr_*` 分析 |
 | 2 | 录制模型 | 一次性定时录制：`jcmd JFR.start settings=<档> duration=Ns filename=...`，无远程会话状态管理 |
-| 3 | 上游依赖 | fork 上游（我们 org 下），仅改 `maven.compiler.release` 25→21，GitHub Actions 构建 fat JAR 发 fork Releases；升级锁 fork tag、随 Friday 发版 |
-| 4 | Java 依赖 | JMC worker 要求本机 Java ≥21（降级后与 heap analyzer 统一；降级失败回退 ≥25，见 §10 风险闸门）；复用 `analyzer::java::detect_java` |
+| 3 | 上游依赖 | 不 fork：Friday 仓库内 `jmc-jar.yml` workflow（clone 上游 pinned commit SHA → 命令行参数降 `maven.compiler.release` 21 + `--enable-preview`（上游用了 21 预览语法 unnamed variable，22 转正）→ JDK 25 toolchain 构建 → fat JAR 发 Friday 自身 Releases，tag `jmc-v*`）；升级 = 改 workflow 里的 SHA 重跑（已评审定案，替代 fork 方案） |
+| 4 | Java 依赖 | JMC worker 要求本机 Java ≥21（降级后与 heap analyzer 统一；降级失败回退 ≥25，见 §9 风险闸门）；复用 `analyzer::java::detect_java`；spawn 参数带 `--enable-preview`（运行 21 预览字节码所需，对回退到 25 的非预览产物无害） |
 | 5 | Friday 侧会话模型 | 无状态代理（方案 1）：无 open/close 工具、无 session 层；文件内存归上游缓存（TTL/驱逐），Friday 只管 worker 进程生命周期 |
 | 6 | 工具面 | 精选 22 个（§3）：1 录制 + 21 分析；剔除 async 任务轮询（强制 `async:false`）、JMX 直连、内部工具、call_tree 交互树、冗余对 |
 | 7 | worker 进程数 | 全局唯一，懒启动；`-Xmx4g` 常量起步（JFR 缓存为主要内存消费者，先简单后调优） |
 | 8 | 回收 | 空闲 15min 自动退出（idle reaper 30s tick）；传输错误 invalidate + 懒重建；无会话关闭联动（无会话表） |
 | 9 | 预热 | `.jfr` 下载完成后台调 `jfr_overview` 触发上游缓存加载，`provision_progress`（tool=`jfr_record`、stage=`analyze`），1800s 硬超时 |
 | 10 | 工具分类 | 新 `ToolCategory::Jfr`，枚举序在 `Heap` 之后；前端第 7 组"JFR 分析" |
+| 11 | vendoring 同步机制 | 三依赖（analyzer/arthas/jmc）统一：`scripts/vendor-versions.json` 单一事实来源（version/upstream_sha + asset sha256）→ fetch 脚本读清单下载并校验 checksum → cargo 单测断言清单与 Rust 常量一致（防双处漂移）→ `vendor-update-check.yml` 周期巡检上游（releases/latest 与 commits/master）开 issue 提醒，只报警不自动升级 |
 
 ## 3. 工具契约
 
@@ -129,21 +131,29 @@ agent CLI ──HTTP──▶ Friday MCP server (ToolRegistry: jfr_* 工具)
                         │                                                    │ .jfr 完成
                         ▼                                                    ▼
                   JmcManager ◀────────── download_complete_hook（扩展名分发）
-                  （Rust 托管层）──stdio(MCP)──▶ jmc-mcp fork JAR
+                   （Rust 托管层）──stdio(MCP)──▶ jmc-mcp JAR（vendored，降级构建）
                                                （vendored, JVM 工人进程）
 ```
 
 ### 工件分发链
 
 ```
-GitHub fork（我们 org）─ 仅改 compiler release 25→21 ─▶ CI（GitHub Actions）
-  mvn clean package ─▶ fat JAR ─▶ fork Releases（tag 形如 v0.1.0-jfriday）
-                                        │
-scripts/fetch-jmc-jar.ps1（对齐 fetch-analyzer-jar.ps1：下载/幂等/.downloading 原子落盘）
-  → src-tauri/resources/jmc/jmc-mcp-<ver>.jar
+Friday 仓库 .github/workflows/jmc-jar.yml（手动/ tag jmc-v* 触发）
+  ├─ clone scarletbean01/jmc-mcp-server @ pinned SHA e6c35671
+  ├─ sed 降级：所有 pom 的 maven.compiler.release 25→21，compiler plugin 加 --enable-preview
+  ├─ JDK 25 toolchain：mvn -B clean package -DskipTests
+  ├─ 产物重命名 jmc-mcp-1.0.0.jar + 计算 SHA256 写入 Release 说明
+  └─ softprops/action-gh-release 发到 Ewan-90n9/Friday Releases（tag jmc-v1.0.0）
+                                         │
+scripts/vendor-versions.json（单一事实来源：upstream_sha / tag / sha256）
+  │
+scripts/fetch-jmc-jar.ps1（读清单 → 下载 → 校验 sha256 → 幂等/.downloading 原子落盘）
+  → src-tauri/resources/jmc/jmc-mcp-1.0.0.jar
   → tauri.conf.json bundle.resources 加 "resources/jmc/*"
   → lib.rs 双候选 resource_dir 解析（resources/jmc/ 与 jmc/，dev/打包两布局）
 ```
+
+上游同步：`vendor-update-check.yml` 周期（每周）比对上游 master HEAD 与清单 `upstream_sha`，不一致开 issue 提醒人工评审升级（改 workflow SHA 重跑 + 更新清单，随 Friday 发版）。analyzer/arthas 同机制纳入清单与巡检（查 `releases/latest`），fetch 脚本同步改造为读清单 + checksum 校验。
 
 启动时 JAR 缺失只 `tracing::warn!`（工具返回结构化错误，不阻断应用）。
 
@@ -162,7 +172,7 @@ scripts/fetch-jmc-jar.ps1（对齐 fetch-analyzer-jar.ps1：下载/幂等/.downl
 
 **JmcManager（全局单例，无会话层）规则**：
 
-1. **懒启动**：首次 `query()` 或预热触发 `ensure_client()` → Java 探测（≥21）→ spawn `java -Xmx4g -jar <vendored jar>`（stdio MCP，stderr 全量 drain 记录）→ 60s 握手 → 常驻。
+1. **懒启动**：首次 `query()` 或预热触发 `ensure_client()` → Java 探测（≥21）→ spawn `java --enable-preview -Xmx4g -jar <vendored jar>`（stdio MCP，stderr 全量 drain 记录）→ 60s 握手 → 常驻。
 2. **预热**：TransferManager `.jfr` 下载完成（扩展名判定 + Download + Completed）→ 回调 JmcManager → 推 `provision_progress`（tool=`jfr_record`、stage=`analyze`，前端复用现有渲染）→ 后台调 `jfr_overview`（1800s 硬超时）触发上游解析+建缓存；失败不 invalidate（下次 query 重试），不打断对话流。
 3. **透传**：`query(local_path, upstream_name, upstream_args, timeout)` → 注入 `jfr_file_path` + `async:false` → 上游调用；inflight 计数。
 4. **空闲退出**：无 inflight 且 15min 未用 → graceful shutdown（stdin 关 → 3s → kill）。上游缓存随进程退出释放；本地 `.jfr` 文件保留，重分析时懒重启重加载。
@@ -192,7 +202,7 @@ scripts/fetch-jmc-jar.ps1（对齐 fetch-analyzer-jar.ps1：下载/幂等/.downl
 2. **mapping 纯函数**：jcmd 参数构造（duration 边界 10/600/越界、settings 白名单）、async:false 注入、compare 双路径映射、代理参数透传；
 3. **录制链路**：mock SSH channel（run_command 测试模式）验证 JFR.start 命令形态、JFR.check 轮询与大小稳定判定、TransferState 构造（远端清理标志/本地路径）；`record_not_found` 路径；
 4. **预热联动**：transfer completed 回调扩展名分发（.jfr 触发 JMC、.hprof 仍触发 MAT、其他不触发）；预热失败不影响 transfer 终态；
-5. **集成测试 `#[ignore]`**（需本机 Java 21+ + fetch 脚本已跑）：测试内用 `jcmd JFR.start` 对自身 JVM 录制生成样例 `.jfr` → 真实 spawn → `jfr_overview` → `jfr_rules` → 传输错误 invalidate → 重建；同时充当 fork JAR 的 Java 21 兼容性验证；
+5. **集成测试 `#[ignore]`**（需本机 Java 21+ + fetch 脚本已跑）：测试内用 `jcmd JFR.start` 对自身 JVM 录制生成样例 `.jfr` → 真实 spawn → `jfr_overview` → `jfr_rules` → 传输错误 invalidate → 重建；同时充当降级 JAR 的 Java 21 兼容性验证；
 6. **prompt**：TOOL_GUIDANCE 含 jfr_* 关键词与 JDK 8 兜底指引；
 7. **前端**：`pnpm typecheck`；工具面板第 7 组渲染人工验证；`cargo check` / `cargo test`。
 
@@ -210,4 +220,4 @@ scripts/fetch-jmc-jar.ps1（对齐 fetch-analyzer-jar.ps1：下载/幂等/.downl
 
 ## 9. 实施风险闸门
 
-fork 降级 Java 21 是第一张多米诺，实施计划的**第一步**即：fork → 改 compiler release → CI 构建 JAR → 跑通最小集成测试（§7.5）。若降级失败（上游使用 25-only API），回退方案：JMC worker 单独要求 Java 25（`detect_java` 阈值参数化，每个 worker 各自最低版本），heap analyzer 维持 21，仅更新探测逻辑与文档，Friday 侧其余设计不变。
+降级 Java 21 是第一张多米诺，实施计划的前两步即：`jmc-jar.yml` workflow（clone pinned SHA → 降级构建 → 发布）跑通出 JAR → 跑通最小集成测试（§7.5）。若降级失败（上游使用 21 无法启用预览的 25-only API），回退方案：JMC worker 单独要求 Java 25（`detect_java` 阈值参数化，每个 worker 各自最低版本），heap analyzer 维持 21，仅更新探测逻辑与文档，Friday 侧其余设计不变。

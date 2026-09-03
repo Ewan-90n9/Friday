@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Friday 新增 JFR 完整诊断闭环：`jfr_record`（远程热开启录制 → 自动拉回）+ 21 个 `jfr_*` JMC 分析工具（本地 stdio 工人进程，fork 自 jmc-mcp-server 并降级 Java 21）。
+**Goal:** Friday 新增 JFR 完整诊断闭环：`jfr_record`（远程热开启录制 → 自动拉回）+ 21 个 `jfr_*` JMC 分析工具（本地 stdio 工人进程，上游 jmc-mcp-server 降级 Java 21 后由 Friday 自己的 CI 构建分发）。
 
-**Architecture:** 复制 `analyzer/`（heap MAT 集成）的成熟模式裁剪：`jfr/` 模块（client + manager，**无会话层**——上游 jmc-mcp-server 自带 TTL 缓存，工具直接接收 `jfr_file_path`）；`tools/builtin/jfr/` 工具契约层（record 工具走 jcmd + TransferManager，代理工具走 JmcManager 透传）；TransferManager 下载完成钩子泛化为列表（.hprof → MAT 预热、.jfr → JMC 预热）。
+**Architecture:** 复制 `analyzer/`（heap MAT 集成）的成熟模式裁剪：`jfr/` 模块（client + manager，**无会话层**——上游 jmc-mcp-server 自带 TTL 缓存，工具直接接收 `jfr_file_path`）；`tools/builtin/jfr/` 工具契约层（record 工具走 jcmd + TransferManager，代理工具走 JmcManager 透传）；TransferManager 下载完成钩子泛化为列表（.hprof → MAT 预热、.jfr → JMC 预热）。工件分发：`jmc-jar.yml` workflow 从上游 pinned SHA 构建发布到 Friday 自身 Releases；三依赖（analyzer/arthas/jmc）统一纳入 `vendor-versions.json` 清单 + checksum 校验 + 上游巡检。
 
-**Tech Stack:** Rust (Tauri 2, rmcp 3.1.4 stdio client, tokio)、React/TS（工具面板第 7 组）、PowerShell（fetch 脚本）、Maven/GitHub Actions（fork 侧构建）。
+**Tech Stack:** Rust (Tauri 2, rmcp 3.1.4 stdio client, tokio)、React/TS（工具面板第 7 组）、PowerShell（fetch 脚本）、Maven/GitHub Actions（JMC JAR 构建 + 上游巡检）。
 
 **Spec:** `docs/superpowers/specs/2026-09-03-jmc-jfr-analysis-design.md`
 
@@ -19,73 +19,68 @@
 
 ---
 
-## 前置条件（人工，仓库外 —— 风险闸门，spec §9）
+## 前置条件说明（无仓库外人工步骤）
 
-实施 Task 1 的 fetch 脚本**之前**需要先完成 fork 侧准备（需要 GitHub 账号操作，agent 无法代办；与用户协作完成）：
+不 fork 上游（已评审定案）。JMC JAR 的构建发布由 Task 1b 创建的 `jmc-jar.yml`（Friday 仓库内 workflow）完成：clone 上游 pinned commit `e6c35671e6351b0ab4c8f04599ec93fcfb5a3b20` → sed 降级 `maven.compiler.release` 25→21 → `--enable-preview` 编译（上游最新代码用了 unnamed variable `_ ->`：Java 22 转正、21 是预览特性；`maven.compiler.argument` 对应 maven-compiler-plugin 的 `compilerArgument` 参数）→ JDK 25 toolchain 构建 → 发布到 `Ewan-90n9/Friday` 自身 Releases（tag `jmc-v1.0.0`，Release 说明里写 SHA256 供回填清单）。
 
-1. Fork https://github.com/scarletbean01/jmc-mcp-server 到用户可控的 GitHub org（若用户即上游作者，直接在上游开分支）。
-2. 改根 `pom.xml`：`<maven.compiler.release>25</maven.compiler.release>` → `21`（若各子模块 pom 有独立 release 属性，一并改；用 `grep -r "compiler.release"` 确认）。**构建仍用 JDK 25 toolchain（setup-java java-version: 25），release=21 只降字节码级别**——产物可跑在 JRE 21+。
-3. 在 fork 根目录添加 `.github/workflows/release.yml`：
-
-```yaml
-name: release
-on:
-  push:
-    tags: ["v*"]
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "25"
-      - name: Build fat JAR (bytecode 21)
-        run: mvn -B clean package -DskipTests
-      - name: Locate and rename fat JAR
-        run: |
-          jar=$(find . -name "*.jar" -path "*/target/*" ! -name "*-sources.jar" ! -name "original-*" | xargs ls -S | head -1)
-          echo "found: $jar"
-          cp "$jar" jmc-mcp-1.0.0.jar
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: jmc-mcp-1.0.0.jar
-```
-
-4. 提交改动 → `git tag v1.0.0-jfriday && git push origin v1.0.0-jfriday`。
-5. 验证 Actions 构建成功且 Release 资产含 `jmc-mcp-1.0.0.jar`。
-6. **风险闸门**：若 `mvn package` 在 release=21 下编译失败（上游使用 Java 25-only API），停止本计划并回退：保持 compiler release=25，Task 4 的 `production_client_factory` 处改为要求 Java 25（`analyzer::java::detect_java` 的阈值需参数化，jfr 侧传 25），并更新 spec §2 决策 4 与 AGENTS.md。Friday 侧其余设计不变。
-7. 记下 fork 的 GitHub owner 名（Task 1 的 fetch 脚本默认 `scarletbean01`，不同则改 `-Owner` 参数默认值）。
+**风险闸门（spec §9）**：Task 1b 的 workflow 合并推送后需人工触发一次（workflow_dispatch 或 push tag `jmc-v1.0.0`）验证降级构建可行。若编译失败：先排查 `maven.compiler.argument=--enable-preview` 是否被 compiler plugin 3.15 采纳（备选：sed 往根 pom 的 maven-compiler-plugin `<configuration>` 块注入 `<compilerArgs><arg>--enable-preview</arg></compilerArgs>`）；仍失败（真 25-only API）则回退保持 release=25——Friday 侧 JMC worker 的 Java 阈值改 25（`detect_java` 阈值参数化）、spawn 去掉 `--enable-preview`、更新 spec 决策 4。Task 2 起的 Rust 侧实现不阻塞在 workflow 上；`#[ignore]` 集成测试在 JAR 发布后运行。
 
 ---
 
-### Task 1: fetch 脚本 + 资源目录 + 打包配置
+### Task 1: vendoring 清单 + 三 fetch 脚本统一改造（checksum + 单一事实来源）
 
 **Files:**
+- Create: `scripts/vendor-versions.json`
 - Create: `scripts/fetch-jmc-jar.ps1`
+- Modify: `scripts/fetch-analyzer-jar.ps1`（读清单 + sha256 校验，去掉 `-Version` 参数）
+- Modify: `scripts/fetch-arthas.ps1`（读清单 + sha256 校验，去掉 `-Version` 参数）
 - Create: `src-tauri/resources/jmc/.gitkeep`
 - Modify: `.gitignore`（文件末尾追加）
 - Modify: `src-tauri/tauri.conf.json:28-33`（resources 数组）
 - Modify: `.github/workflows/release.yml:62-68`（下载步骤后追加）
+- Test: `src-tauri/src/analyzer/manager.rs` tests（一致性断言）、`src-tauri/src/provision/arthas.rs` tests（一致性断言）
 
-- [ ] **Step 1: 创建 `src-tauri/resources/jmc/.gitkeep`**
+背景（已评审定案）：版本 pin 原先散在「脚本参数默认值 + Rust 常量」两处，且无 checksum、无上游更新感知。本任务把三个依赖统一为 `scripts/vendor-versions.json` 单一事实来源：fetch 脚本读清单下载并校验 sha256；cargo 单测断言清单与 Rust 常量一致（防漂移，回归守卫性质——引入时即通过，价值在未来改动时报警）。jmc 的常量一致性断言在 Task 4 随 `JMC_JAR_NAME` 一起加。
 
-空文件（对齐 `resources/analyzer/.gitkeep` 模式）。
+- [ ] **Step 1: 创建 `scripts/vendor-versions.json`（真实哈希已用本地产物计算）**
 
-- [ ] **Step 2: 创建 `scripts/fetch-jmc-jar.ps1`**
+```json
+{
+  "analyzer": {
+    "repo": "Djaler/jvm-heap-dump-mcp",
+    "version": "0.2.0",
+    "asset": "jvm-heap-dump-mcp-0.2.0-all.jar",
+    "sha256": "91929fc3d70c9780eca361e103496e5040d02b878a1b285b7713e2f7184c6e03"
+  },
+  "arthas": {
+    "repo": "alibaba/arthas",
+    "version": "4.3.5",
+    "asset": "arthas-bin-4.3.5.zip",
+    "sha256": "f4ea8e4ab4bb20a9925c21780bfb91331e73968eae881fd89b855cccaad21f1c"
+  },
+  "jmc": {
+    "repo": "scarletbean01/jmc-mcp-server",
+    "upstream_sha": "e6c35671e6351b0ab4c8f04599ec93fcfb5a3b20",
+    "release_repo": "Ewan-90n9/Friday",
+    "tag": "jmc-v1.0.0",
+    "asset": "jmc-mcp-1.0.0.jar",
+    "sha256": null
+  }
+}
+```
+
+说明：jmc.sha256 为 null——首次运行 jmc-jar.yml（Task 1b）发布后，把 Release 说明里的 SHA256 回填此字段并提交（一次性人工步骤）。
+
+- [ ] **Step 2: 改造 `scripts/fetch-analyzer-jar.ps1`（整文件替换）**
 
 ```powershell
-param(
-    [string]$Owner = "scarletbean01",
-    [string]$Tag = "v1.0.0-jfriday"
-)
 $ErrorActionPreference = "Stop"
-$jarName = "jmc-mcp-1.0.0.jar"
-$url = "https://github.com/$Owner/jmc-mcp-server/releases/download/$Tag/$jarName"
-$destDir = Join-Path $PSScriptRoot "..\src-tauri\resources\jmc"
+$manifest = Get-Content (Join-Path $PSScriptRoot "vendor-versions.json") -Raw | ConvertFrom-Json
+$dep = $manifest.analyzer
+$url = "https://github.com/$($dep.repo)/releases/download/v$($dep.version)/$($dep.asset)"
+$destDir = Join-Path $PSScriptRoot "..\src-tauri\resources\analyzer"
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
-$dest = Join-Path $destDir $jarName
+$dest = Join-Path $destDir $dep.asset
 if (Test-Path $dest) {
     Write-Host "JAR already present: $dest"
     exit 0
@@ -93,13 +88,72 @@ if (Test-Path $dest) {
 Write-Host "Downloading $url"
 $tmp = "$dest.downloading"
 Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+$hash = (Get-FileHash -Algorithm SHA256 $tmp).Hash.ToLower()
+if ($hash -ne $dep.sha256) {
+    Remove-Item $tmp -Force
+    throw "SHA256 mismatch for $($dep.asset): expected $($dep.sha256), got $hash"
+}
+Move-Item $tmp $dest
+Write-Host "Downloaded and verified: $dest ($((Get-Item $dest).Length) bytes)"
+```
+
+- [ ] **Step 3: 改造 `scripts/fetch-arthas.ps1`（整文件替换）**
+
+```powershell
+$ErrorActionPreference = "Stop"
+$manifest = Get-Content (Join-Path $PSScriptRoot "vendor-versions.json") -Raw | ConvertFrom-Json
+$dep = $manifest.arthas
+$url = "https://github.com/$($dep.repo)/releases/download/arthas-all-$($dep.version)/$($dep.asset)"
+$destDir = Join-Path $PSScriptRoot "..\src-tauri\resources\arthas"
+New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+$dest = Join-Path $destDir $dep.asset
+if (Test-Path $dest) {
+    Write-Host "arthas package already present: $dest"
+    exit 0
+}
+Write-Host "Downloading $url"
+$tmp = "$dest.downloading"
+Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+$hash = (Get-FileHash -Algorithm SHA256 $tmp).Hash.ToLower()
+if ($hash -ne $dep.sha256) {
+    Remove-Item $tmp -Force
+    throw "SHA256 mismatch for $($dep.asset): expected $($dep.sha256), got $hash"
+}
+Move-Item $tmp $dest
+Write-Host "Downloaded and verified: $dest ($((Get-Item $dest).Length) bytes)"
+```
+
+- [ ] **Step 4: 创建 `scripts/fetch-jmc-jar.ps1`（sha256 未固定时警告不阻断）**
+
+```powershell
+$ErrorActionPreference = "Stop"
+$manifest = Get-Content (Join-Path $PSScriptRoot "vendor-versions.json") -Raw | ConvertFrom-Json
+$dep = $manifest.jmc
+$url = "https://github.com/$($dep.release_repo)/releases/download/$($dep.tag)/$($dep.asset)"
+$destDir = Join-Path $PSScriptRoot "..\src-tauri\resources\jmc"
+New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+$dest = Join-Path $destDir $dep.asset
+if (Test-Path $dest) {
+    Write-Host "JAR already present: $dest"
+    exit 0
+}
+Write-Host "Downloading $url"
+$tmp = "$dest.downloading"
+Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+$actual = (Get-FileHash -Algorithm SHA256 $tmp).Hash.ToLower()
+if ($null -eq $dep.sha256) {
+    Write-Warning "vendor-versions.json 的 jmc.sha256 未固定（jmc-jar.yml 首次发布后回填）。本次跳过校验，实际哈希：$actual"
+} elseif ($actual -ne $dep.sha256) {
+    Remove-Item $tmp -Force
+    throw "SHA256 mismatch for $($dep.asset): expected $($dep.sha256), got $actual"
+}
 Move-Item $tmp $dest
 Write-Host "Downloaded: $dest ($((Get-Item $dest).Length) bytes)"
 ```
 
-注：若前置条件的 fork owner 不是 `scarletbean01`，把 `-Owner` 默认值改成实际 owner。
+- [ ] **Step 5: 创建 `src-tauri/resources/jmc/.gitkeep`（空文件）**
 
-- [ ] **Step 3: `.gitignore` 末尾追加**
+- [ ] **Step 6: `.gitignore` 末尾追加**
 
 ```
 # JMC vendored JAR (fetched at build time, see scripts/fetch-jmc-jar.ps1)
@@ -107,7 +161,7 @@ src-tauri/resources/jmc/*.jar
 src-tauri/resources/jmc/*.downloading
 ```
 
-- [ ] **Step 4: `src-tauri/tauri.conf.json` resources 数组加一行**
+- [ ] **Step 7: `src-tauri/tauri.conf.json` resources 数组加一行**
 
 找到（约 28-33 行）：
 
@@ -132,9 +186,7 @@ src-tauri/resources/jmc/*.downloading
     ],
 ```
 
-- [ ] **Step 5: `.github/workflows/release.yml` 下载步骤后追加**
-
-在 `- name: Download arthas package` 块之后、`- name: Inject version from tag` 之前插入：
+- [ ] **Step 8: `.github/workflows/release.yml` 在 `- name: Download arthas package` 块之后、`- name: Inject version from tag` 之前插入**
 
 ```yaml
       - name: Download JMC JAR
@@ -142,16 +194,247 @@ src-tauri/resources/jmc/*.downloading
         run: ./scripts/fetch-jmc-jar.ps1
 ```
 
-- [ ] **Step 6: 验证脚本幂等逻辑（若 fork Release 已就绪则真实执行）**
+- [ ] **Step 9: 一致性回归测试（追加到 `src-tauri/src/analyzer/manager.rs` 的 `mod tests` 末尾）**
 
-Run: `./scripts/fetch-jmc-jar.ps1`（两次）
-Expected: 第一次 `Downloading ...` + `Downloaded: ...`，第二次 `JAR already present`。若 fork Release 尚未就绪，跳过真实下载（Task 4 的 `#[ignore]` 集成测试前补跑）。
+```rust
+    /// vendoring 一致性守卫：scripts/vendor-versions.json 与 ANALYZER_JAR_NAME 必须一致。
+    /// 版本升级必须同时改清单与常量，漏一处此测试即红。
+    #[test]
+    fn test_vendor_manifest_matches_analyzer_jar_name() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("vendor-versions.json");
+        let text = std::fs::read_to_string(&manifest)
+            .unwrap_or_else(|e| panic!("read manifest {}: {e}", manifest.display()));
+        let v: serde_json::Value =
+            serde_json::from_str(&text).expect("vendor-versions.json must be valid JSON");
+        let asset = v["analyzer"]["asset"].as_str().expect("analyzer.asset");
+        assert_eq!(
+            asset, ANALYZER_JAR_NAME,
+            "scripts/vendor-versions.json 的 analyzer.asset 与 ANALYZER_JAR_NAME 漂移，二者必须同步修改"
+        );
+        let version = v["analyzer"]["version"].as_str().expect("analyzer.version");
+        assert!(
+            ANALYZER_JAR_NAME.contains(version),
+            "ANALYZER_JAR_NAME 应内嵌版本 {version}"
+        );
+    }
+```
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 10: 一致性回归测试（追加到 `src-tauri/src/provision/arthas.rs` 的 `mod tests` 末尾）**
+
+```rust
+    /// vendoring 一致性守卫：scripts/vendor-versions.json 与 ARTHAS_VERSION 必须一致。
+    #[test]
+    fn test_vendor_manifest_matches_arthas_version() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("vendor-versions.json");
+        let text = std::fs::read_to_string(&manifest)
+            .unwrap_or_else(|e| panic!("read manifest {}: {e}", manifest.display()));
+        let v: serde_json::Value =
+            serde_json::from_str(&text).expect("vendor-versions.json must be valid JSON");
+        let version = v["arthas"]["version"].as_str().expect("arthas.version");
+        assert_eq!(
+            version, ARTHAS_VERSION,
+            "scripts/vendor-versions.json 的 arthas.version 与 ARTHAS_VERSION 漂移，二者必须同步修改"
+        );
+        let asset = v["arthas"]["asset"].as_str().expect("arthas.asset");
+        assert_eq!(asset, format!("arthas-bin-{ARTHAS_VERSION}.zip"));
+    }
+```
+
+注：若 `provision/arthas.rs` 尚无 `mod tests`，新建之；serde_json 已是依赖无需新增。
+
+- [ ] **Step 11: 验证**
+
+Run: `cargo test --manifest-path src-tauri/Cargo.toml test_vendor_manifest`
+Expected: 2 PASS（回归守卫，引入时即通过属预期）。
+
+Run: `./scripts/fetch-analyzer-jar.ps1` 与 `./scripts/fetch-arthas.ps1`
+Expected: 本地产物已存在 → `already present` 幂等路径。
+
+可选（联网时）：删 `src-tauri/resources/arthas/arthas-bin-4.3.5.zip` 后重跑 fetch-arthas.ps1 → 重新下载 + `Downloaded and verified`（校验真实链路）。`./scripts/fetch-jmc-jar.ps1` 在 jmc-v1.0.0 Release 就绪前会 404——属预期（Task 1b 后可用）。
+
+- [ ] **Step 12: Commit**
 
 ```bash
-git add scripts/fetch-jmc-jar.ps1 src-tauri/resources/jmc/.gitkeep .gitignore src-tauri/tauri.conf.json .github/workflows/release.yml
-git commit -m "feat: fetch script and packaging for vendored JMC JAR"
+git add scripts/vendor-versions.json scripts/fetch-jmc-jar.ps1 scripts/fetch-analyzer-jar.ps1 scripts/fetch-arthas.ps1 src-tauri/resources/jmc/.gitkeep .gitignore src-tauri/tauri.conf.json .github/workflows/release.yml src-tauri/src/analyzer/manager.rs src-tauri/src/provision/arthas.rs
+git commit -m "feat: vendor manifest with checksums and unified fetch scripts"
+```
+
+---
+
+### Task 1b: CI workflows —— jmc-jar 构建 + 上游巡检
+
+**Files:**
+- Create: `.github/workflows/jmc-jar.yml`
+- Create: `.github/workflows/vendor-update-check.yml`
+- Create: `scripts/vendor-update-check.ps1`
+
+- [ ] **Step 1: 创建 `.github/workflows/jmc-jar.yml`（上游 pinned SHA 构建 + 降级 + 发布）**
+
+```yaml
+name: JMC JAR
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. jmc-v1.0.0)"
+        required: true
+        default: "jmc-v1.0.0"
+  push:
+    tags:
+      - "jmc-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone upstream at pinned SHA
+        run: |
+          git clone https://github.com/scarletbean01/jmc-mcp-server.git jmc
+          cd jmc
+          git checkout e6c35671e6351b0ab4c8f04599ec93fcfb5a3b20
+
+      - name: Downgrade to Java 21 bytecode
+        run: |
+          cd jmc
+          # SHA 同时记录在 scripts/vendor-versions.json（jmc.upstream_sha），升级上游两处同步改
+          find . -name pom.xml -print -exec sed -i 's|<maven.compiler.release>25</maven.compiler.release>|<maven.compiler.release>21</maven.compiler.release>|g' {} +
+          grep -rn "maven.compiler.release" --include=pom.xml .
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Build fat JAR (release 21 + preview)
+        run: |
+          cd jmc
+          # --enable-preview：上游使用 unnamed variable（`_ ->`，Java 22 转正、21 预览）
+          # maven.compiler.argument 对应 maven-compiler-plugin 的 compilerArgument 参数
+          mvn -B clean package -DskipTests -Dmaven.compiler.argument=--enable-preview
+
+      - name: Locate and rename fat JAR
+        run: |
+          cd jmc
+          jar=$(find . -name "*.jar" -path "*/target/*" ! -name "*-sources.jar" ! -name "original-*" | xargs ls -S | head -1)
+          echo "found: $jar"
+          cp "$jar" ../jmc-mcp-1.0.0.jar
+
+      - name: Compute SHA256
+        id: hash
+        run: echo "sha256=$(sha256sum jmc-mcp-1.0.0.jar | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: jmc-mcp-1.0.0.jar
+          body: |
+            Built from scarletbean01/jmc-mcp-server @ e6c35671e6351b0ab4c8f04599ec93fcfb5a3b20
+
+            - Bytecode: Java 21 + `--enable-preview`（运行需 JVM 21+ 且启动参数带 `--enable-preview`）
+            - SHA256: `${{ steps.hash.outputs.sha256 }}`
+            - → 首次发布后把该哈希回填 `scripts/vendor-versions.json` 的 `jmc.sha256`
+```
+
+- [ ] **Step 2: 创建 `scripts/vendor-update-check.ps1`（巡检逻辑，只报警不自动升级）**
+
+```powershell
+$ErrorActionPreference = "Stop"
+$manifest = Get-Content (Join-Path $PSScriptRoot "vendor-versions.json") -Raw | ConvertFrom-Json
+$headers = @{ Accept = "application/vnd.github+json" }
+$findings = @()
+
+# analyzer / arthas：查 releases/latest 与 pin 的 tag 比对
+foreach ($name in @("analyzer", "arthas")) {
+    $dep = $manifest.$name
+    $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/$($dep.repo)/releases/latest" -Headers $headers
+    $pinnedTag = if ($name -eq "analyzer") { "v$($dep.version)" } else { "arthas-all-$($dep.version)" }
+    if ($latest.tag_name -ne $pinnedTag) {
+        $findings += "$name 上游最新 release 为 $($latest.tag_name)（当前 pin $pinnedTag）：$($latest.html_url)"
+    }
+}
+
+# jmc：查上游 master HEAD 与 pin 的 SHA 比对
+$jmc = $manifest.jmc
+$head = Invoke-RestMethod -Uri "https://api.github.com/repos/$($jmc.repo)/commits/master" -Headers $headers
+if ($head.sha -ne $jmc.upstream_sha) {
+    $msg = ($head.commit.message -split "`n")[0]
+    $findings += "jmc 上游 master HEAD 已到 $($head.sha.Substring(0, 8))（当前 pin $($jmc.upstream_sha.Substring(0, 8))）：$msg"
+}
+
+if ($findings.Count -eq 0) {
+    Write-Host "All vendored deps up to date."
+    exit 0
+}
+
+$body = ($findings | ForEach-Object { "- $_" }) -join "`n"
+Write-Host "Outdated vendored deps:`n$body"
+
+# 幂等开/更新 tracking issue（gh CLI 为 GitHub runner 内置）
+$label = "vendor-update"
+gh label create $label --force 2>$null | Out-Null
+$title = "vendored 依赖有上游更新"
+$existing = gh issue list --label $label --state open --json number --jq ".[0].number" 2>$null
+if ($existing) {
+    gh issue comment $existing --body "巡检更新（$(Get-Date -Format yyyy-MM-dd)）：`n`n$body"
+    Write-Host "Updated issue #$existing"
+} else {
+    gh issue create --label $label --title $title --body "周期巡检发现以下 vendored 依赖落后于上游。升级需人工评审（工具面/行为可能变化）后同步更新 vendor-versions.json、Rust 常量与 workflow 里的 pinned SHA：`n`n$body"
+    Write-Host "Created tracking issue"
+}
+```
+
+- [ ] **Step 3: 创建 `.github/workflows/vendor-update-check.yml`（每周巡检）**
+
+```yaml
+name: Vendor update check
+
+on:
+  schedule:
+    - cron: "0 3 * * 1" # 每周一 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check upstream versions vs vendor-versions.json
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: ./scripts/vendor-update-check.ps1
+```
+
+- [ ] **Step 4: 验证（本地可验部分）**
+
+Run: `./scripts/vendor-update-check.ps1`（本机需 gh 已登录且对 Ewan-90n9/Friday 有 issue 权限；无 gh 时跳过）
+Expected: 输出各依赖比对结果；上游无更新时 `All vendored deps up to date.`（jmc 大概率报 HEAD 漂移——正常，upstream 已有新提交则提示更新；**不要真的开 issue**，本地跑仅验证脚本逻辑，可临时注释开 issue 段或接受其失败）。
+
+YAML 语法检查（可选）：`Get-Content .github/workflows/jmc-jar.yml -Raw | ConvertFrom-Yaml`（无 powershell-yaml 模块时跳过，靠 review）。
+
+Workflow 真实执行 = 合并推送后人工触发（风险闸门，见「前置条件说明」）。
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add .github/workflows/jmc-jar.yml .github/workflows/vendor-update-check.yml scripts/vendor-update-check.ps1
+git commit -m "feat: jmc-jar build workflow and vendor update check"
 ```
 
 ---
@@ -302,9 +585,13 @@ pub trait JmcClient: Send + Sync {
 }
 
 /// 构造 JMC 工人进程 JVM 参数（纯函数，单独可测）。
-/// UTF-8 强制三件套同 analyzer（issue #6：zh-CN Windows JVM 默认 GBK 输出）。
+/// - `--enable-preview`：JAR 由 jmc-jar.yml 以 release 21 + preview 构建（上游用
+///   unnamed variable `_ ->`，Java 22 转正、21 预览），运行时必须带此 flag；
+///   若降级回退到 25 非预览产物，此 flag 无害保留。
+/// - UTF-8 强制三件套同 analyzer（issue #6：zh-CN Windows JVM 默认 GBK 输出）。
 pub fn jmc_jvm_args(jar_path: &Path, xmx_gb: u32) -> Vec<String> {
     vec![
+        "--enable-preview".to_string(),
         format!("-Xmx{xmx_gb}g"),
         "-Dfile.encoding=UTF-8".to_string(),
         "-Dstdout.encoding=UTF-8".to_string(),
@@ -319,12 +606,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_jmc_jvm_args_force_utf8() {
+    fn test_jmc_jvm_args_force_utf8_and_preview() {
         let args = jmc_jvm_args(Path::new(r"C:\opt\jmc.jar"), 4);
         assert!(args.contains(&"-Dfile.encoding=UTF-8".to_string()), "args: {args:?}");
         assert!(args.contains(&"-Dstdout.encoding=UTF-8".to_string()));
         assert!(args.contains(&"-Dstderr.encoding=UTF-8".to_string()));
-        assert_eq!(args.first().unwrap(), "-Xmx4g");
+        assert_eq!(args.first().unwrap(), "--enable-preview");
+        assert_eq!(args[1], "-Xmx4g");
         assert_eq!(args.last().unwrap(), r"C:\opt\jmc.jar");
     }
 }
@@ -843,6 +1131,24 @@ mod tests {
         let overviews: Vec<_> = calls.iter().filter(|(n, _)| *n == "jfr_overview").collect();
         assert_eq!(overviews.len(), 1, "only .jfr triggers warm_up, calls: {calls:?}");
     }
+
+    /// vendoring 一致性守卫（同 analyzer/arthas）：清单与 JMC_JAR_NAME 必须一致。
+    #[test]
+    fn test_vendor_manifest_matches_jmc_jar_name() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("vendor-versions.json");
+        let text = std::fs::read_to_string(&manifest)
+            .unwrap_or_else(|e| panic!("read manifest {}: {e}", manifest.display()));
+        let v: serde_json::Value =
+            serde_json::from_str(&text).expect("vendor-versions.json must be valid JSON");
+        let asset = v["jmc"]["asset"].as_str().expect("jmc.asset");
+        assert_eq!(
+            asset, JMC_JAR_NAME,
+            "scripts/vendor-versions.json 的 jmc.asset 与 JMC_JAR_NAME 漂移，二者必须同步修改"
+        );
+    }
 }
 ```
 
@@ -1069,7 +1375,7 @@ pub fn download_complete_hook(manager: &Arc<JmcManager>) -> crate::transfer::Dow
 
 /// 生产 client 工厂：Java 探测（Ok 结果进程内缓存）→ stdio 子进程 MCP client。
 /// jar 缺失（未跑 fetch 脚本）→ Unavailable 引导。
-/// Java 阈值 21（fork 已降级；若前置条件降级失败回退，需将 detect_java 的
+/// Java 阈值 21（jmc-jar.yml 已降级；若降级失败回退，需将 detect_java 的
 /// 版本判断参数化并在此要求 25，spec §9）。
 pub fn production_client_factory(jar_path: Option<PathBuf>) -> ClientFactory {
     Arc::new(move || {
@@ -2788,7 +3094,7 @@ git commit -m "feat: JFR workflow guidance in agent tool guidance"
 - [ ] **Step 2: `AGENTS.md` 已实现功能加一条（「堆快照分析」条目之后）**
 
 ```markdown
-- **JFR 飞行记录分析**：`jfr_record`（jcmd JFR.start 一次性定时录制 → 自动拉回 → `.jfr` 下载完成自动预热）+ 21 个 `jfr_*` 分析工具（JMC 内核：规则引擎/一键诊断/GC/热点方法/锁竞争/IO/异常/泄漏/相关性/A-B 对比）。Friday 作为 MCP client 托管 fork 自 jmc-mcp-server 的 JAR 工人进程（stdio，本机 Java 21+，JAR 由 `scripts/fetch-jmc-jar.ps1` 构建时获取、随安装包分发）；无会话层（上游自带缓存），空闲 15min 自动退出、传输错误 invalidate 懒重建；TransferManager 下载完成钩子按扩展名分发（.hprof → MAT 预热 / .jfr → JMC 预热）
+- **JFR 飞行记录分析**：`jfr_record`（jcmd JFR.start 一次性定时录制 → 自动拉回 → `.jfr` 下载完成自动预热）+ 21 个 `jfr_*` 分析工具（JMC 内核：规则引擎/一键诊断/GC/热点方法/锁竞争/IO/异常/泄漏/相关性/A-B 对比）。Friday 作为 MCP client 托管 JMC JAR 工人进程（stdio，本机 Java 21+ + `--enable-preview`；JAR 由 `.github/workflows/jmc-jar.yml` 从上游 pinned SHA 降级构建、发布到本仓库 Releases，`scripts/fetch-jmc-jar.ps1` 构建时获取、随安装包分发）；无会话层（上游自带缓存），空闲 15min 自动退出、传输错误 invalidate 懒重建；TransferManager 下载完成钩子按扩展名分发（.hprof → MAT 预热 / .jfr → JMC 预热）。vendoring 依赖统一管理见 `scripts/vendor-versions.json`（checksum + 一致性单测 + `vendor-update-check.yml` 周期巡检上游）
 ```
 
 同时把「诊断工具面板分组」条目中的「6 组 51 项」改为「7 组 73 项」。
@@ -2812,7 +3118,7 @@ Expected: 全部 PASS，3 个 ignored（jfr client 1 + jfr manager 1 + analyzer 
 Run: `pnpm typecheck`
 Expected: 通过。
 
-可选（若本机 Java 21 + fetch 脚本已跑 + fork Release 已就绪）：
+可选（若 jmc-v1.0.0 Release 已由 jmc-jar.yml 发布 + fetch 脚本已拉取 + 本机 Java 21）：
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored jfr`
 Expected: 2 个集成测试 PASS（真实 JMC worker：握手 + jfr_overview + jfr_rules + verbatim 路径）。
@@ -2828,7 +3134,7 @@ git commit -m "docs: JFR analysis feature docs"
 
 ## 完成标准（对照 spec）
 
-- [x 覆盖核对] spec §2 决策表 10 项全部落地：闭环链路（Task 7/8）、一次性录制（Task 6/7）、fork 分发（前置条件 + Task 1）、Java 21（Task 4 工厂）、无会话层（Task 4）、22 工具（Task 7）、全局唯一 worker + Xmx4g（Task 4）、空闲 15min/invalidate（Task 4）、.jfr 预热（Task 4/5/8）、ToolCategory::Jfr（Task 2）
+- [x 覆盖核对] spec §2 决策表 11 项全部落地：闭环链路（Task 7/8）、一次性录制（Task 6/7）、Friday CI 构建分发（Task 1b）、Java 21 + preview（Task 4 工厂 / Task 3 spawn）、无会话层（Task 4）、22 工具（Task 7）、全局唯一 worker + Xmx4g（Task 4）、空闲 15min/invalidate（Task 4）、.jfr 预热（Task 4/5/8）、ToolCategory::Jfr（Task 2）、vendoring 同步机制（Task 1/1b）
 - [x] spec §3 工具契约 22 个工具 + 超时分层 + async:false 强制（Task 6/7）
 - [x] spec §6 错误码 8 个全部实现（Task 7：invalid_args/invalid_path/java_missing/jmc_unavailable/jmc_timeout/upstream 透传/record_failed/record_not_found）
 - [x] spec §7 测试策略 1-7 全部有对应测试任务；#[ignore] 集成测试含 Java 21 闸门断言
