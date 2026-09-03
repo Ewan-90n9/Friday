@@ -9,6 +9,7 @@
     "repo": "alibaba/arthas",
     "version": "4.3.5",
     "asset": "arthas-bin-4.3.5.zip",
+    "remote_asset": "arthas-bin.zip",
     "sha256": "f4ea8e4ab4bb20a9925c21780bfb91331e73968eae881fd89b855cccaad21f1c"
   },
   "jmc": {

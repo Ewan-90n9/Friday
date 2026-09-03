@@ -1,7 +1,10 @@
 $ErrorActionPreference = "Stop"
 $manifest = Get-Content (Join-Path $PSScriptRoot "vendor-versions.json") -Raw | ConvertFrom-Json
 $dep = $manifest.arthas
-$url = "https://github.com/$($dep.repo)/releases/download/arthas-all-$($dep.version)/$($dep.asset)"
+# 远程资产名（remote_asset）与本地保存名（asset）不同：上游 Release 资产固定叫
+# arthas-bin.zip，本地按带版本号命名（provision/arthas.rs 依赖该名字）
+$remote = if ($dep.remote_asset) { $dep.remote_asset } else { $dep.asset }
+$url = "https://github.com/$($dep.repo)/releases/download/arthas-all-$($dep.version)/$remote"
 $destDir = Join-Path $PSScriptRoot "..\src-tauri\resources\arthas"
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
 $dest = Join-Path $destDir $dep.asset
