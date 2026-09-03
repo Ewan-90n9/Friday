@@ -35,6 +35,7 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
   const [savingUrl, setSavingUrl] = useState(false);
 
   const autoApprove = useSettingsStore((s) => s.autoApprove);
+  const autoApproveError = useSettingsStore((s) => s.autoApproveError);
   const saveAutoApprove = useSettingsStore((s) => s.saveAutoApprove);
 
   const [confirmAutoApprove, setConfirmAutoApprove] = useState(false);
@@ -42,8 +43,9 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
 
   const handleToggleAutoApprove = async (next: boolean) => {
     if (!next) {
-      // 关闭直接生效，不确认
       setConfirmAutoApprove(false);
+      // 仅取消待确认的开启（当前本就未开启）时不做后端写入
+      if (!autoApprove) return;
       setSavingAutoApprove(true);
       try {
         await saveAutoApprove(false);
@@ -71,6 +73,8 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
       loadSettings().then(() => {
         setUrlDraft(useSettingsStore.getState().artifactoryBaseUrl);
       });
+    } else {
+      setConfirmAutoApprove(false);
     }
   }, [open, loadSettings]);
 
@@ -229,7 +233,7 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
               开启后所有工具调用免确认直接执行（含高风险：任意命令、堆 dump、文件上传），仅建议内网非生产环境开启
             </p>
             {confirmAutoApprove && (
-              <div className="rounded-md border border-warning/60 bg-warning/5 px-3 py-2 space-y-2">
+              <div role="alert" className="rounded-md border border-warning/60 bg-warning/5 px-3 py-2 space-y-2">
                 <p className="text-xs text-warning">
                   开启后 agent 执行任何操作都不再需要你确认，包括 run_command、heap_dump、file_upload
                   等高风险操作。确定开启？
@@ -252,8 +256,8 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
                 </div>
               </div>
             )}
-            {settingsError && (
-              <p className="text-xs text-destructive break-words">{settingsError}</p>
+            {autoApproveError && (
+              <p className="text-xs text-destructive break-words">{autoApproveError}</p>
             )}
           </div>
         </div>

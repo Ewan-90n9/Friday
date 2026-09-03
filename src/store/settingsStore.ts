@@ -12,6 +12,7 @@ interface SettingsStore {
   loading: boolean;
   saving: boolean;
   error: string | null;
+  autoApproveError: string | null;
   load: () => Promise<void>;
   saveBaseUrl: (url: string) => Promise<boolean>;
   saveAutoApprove: (enabled: boolean) => Promise<boolean>;
@@ -27,9 +28,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   loading: false,
   saving: false,
   error: null,
+  autoApproveError: null,
 
   load: async () => {
-    set({ loading: true, error: null });
+    set({ loading: true, error: null, autoApproveError: null });
     try {
       const [url, autoApprove] = await Promise.all([
         getArtifactoryBaseUrl(),
@@ -58,13 +60,13 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   saveAutoApprove: async (enabled) => {
-    set({ saving: true, error: null });
+    set({ saving: true, autoApproveError: null });
     try {
       await setAutoApproveTools(enabled);
       set({ autoApprove: enabled });
       return true;
     } catch (e) {
-      set({ error: errMsg(e) });
+      set({ autoApproveError: errMsg(e) });
       return false;
     } finally {
       set({ saving: false });
