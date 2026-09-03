@@ -30,6 +30,7 @@ pub struct AppState {
     pub vec_store: Option<Arc<crate::knowledge::vec_store::VecStore>>,
     pub tool_registry: Arc<crate::tools::registry::ToolRegistry>,
     pub analyzer: Arc<crate::analyzer::HeapAnalyzerManager>,
+    pub jmc: Arc<crate::jfr::JmcManager>,
     pub arthas: Arc<crate::arthas::manager::ArthasManager>,
     pub tunnels: Arc<crate::exec::tunnel::TunnelManager>,
     pub exec_pool: Arc<Mutex<crate::exec::pool::ExecChannelPool>>,
@@ -107,6 +108,26 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 crate::analyzer::ManagerConfig::default(),
             ));
 
+            // JFR 飞行记录分析：vendored JMC 工人进程（resources/jmc JAR + 本机 Java 21+）
+            let jmc_jar = resource_dir.as_ref().and_then(|r| {
+                let candidates = [
+                    r.join("resources").join("jmc").join(crate::jfr::JMC_JAR_NAME),
+                    r.join("jmc").join(crate::jfr::JMC_JAR_NAME),
+                ];
+                candidates.into_iter().find(|p| p.exists())
+            });
+            if jmc_jar.is_none() {
+                tracing::warn!(
+                    "JMC JAR missing (resources/jmc/{}); jfr_* tools will report jmc_unavailable",
+                    crate::jfr::JMC_JAR_NAME
+                );
+            }
+            let jmc_manager = Arc::new(crate::jfr::JmcManager::new(
+                crate::jfr::production_client_factory(jmc_jar),
+                EventBus::new(handle.clone()),
+                crate::jfr::JmcConfig::default(),
+            ));
+
             // Create shared state for MCP server
             let exec_pool = Arc::new(Mutex::new(crate::exec::pool::ExecChannelPool::new()));
 
@@ -122,6 +143,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             );
             transfer_manager
                 .add_download_complete_hook(crate::analyzer::download_complete_hook(&analyzer_manager));
+            transfer_manager
+                .add_download_complete_hook(crate::jfr::download_complete_hook(&jmc_manager));
             let transfer_manager = Arc::new(transfer_manager);
 
             // Build tool registry
@@ -192,13 +215,21 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
             crate::tools::builtin::jvm::register_all(
                 &mut tool_registry,
-                jvm_core,
+                jvm_core.clone(),
                 EventBus::new(handle.clone()),
                 transfer_manager.clone(),
             );
             crate::tools::builtin::heap::register_all(
                 &mut tool_registry,
                 analyzer_manager.clone(),
+                paths.artifacts_dir(),
+            );
+            crate::tools::builtin::jfr::register_all(
+                &mut tool_registry,
+                jmc_manager.clone(),
+                jvm_core.clone(),
+                EventBus::new(handle.clone()),
+                transfer_manager.clone(),
                 paths.artifacts_dir(),
             );
             crate::tools::builtin::arthas::register_all(
@@ -275,6 +306,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 vec_store,
                 tool_registry,
                 analyzer: analyzer_manager,
+                jmc: jmc_manager,
                 arthas: arthas_manager,
                 tunnels,
                 exec_pool,
