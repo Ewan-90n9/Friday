@@ -285,4 +285,24 @@ mod tests {
         // 不再有任何 artifactory 下载
         assert!(calls.iter().all(|c| !c.contains("curl") && !c.contains("wget")), "calls: {calls:?}");
     }
+
+    /// vendoring 一致性守卫：scripts/vendor-versions.json 与 ARTHAS_VERSION 必须一致。
+    #[test]
+    fn test_vendor_manifest_matches_arthas_version() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("vendor-versions.json");
+        let text = std::fs::read_to_string(&manifest)
+            .unwrap_or_else(|e| panic!("read manifest {}: {e}", manifest.display()));
+        let v: serde_json::Value =
+            serde_json::from_str(&text).expect("vendor-versions.json must be valid JSON");
+        let version = v["arthas"]["version"].as_str().expect("arthas.version");
+        assert_eq!(
+            version, ARTHAS_VERSION,
+            "scripts/vendor-versions.json 的 arthas.version 与 ARTHAS_VERSION 漂移，二者必须同步修改"
+        );
+        let asset = v["arthas"]["asset"].as_str().expect("arthas.asset");
+        assert_eq!(asset, format!("arthas-bin-{ARTHAS_VERSION}.zip"));
+    }
 }

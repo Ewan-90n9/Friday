@@ -41,3 +41,7 @@ src-tauri/resources/analyzer/*.downloading
 # Arthas vendored package (fetched at build time, see scripts/fetch-arthas.ps1)
 src-tauri/resources/arthas/*.zip
 src-tauri/resources/arthas/*.downloading
+
+# JMC vendored JAR (fetched at build time, see scripts/fetch-jmc-jar.ps1)
+src-tauri/resources/jmc/*.jar
+src-tauri/resources/jmc/*.downloading

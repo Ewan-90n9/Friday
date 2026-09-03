@@ -29,7 +29,8 @@
       "resources/model/*",
       "resources/model/onnx/*",
       "resources/analyzer/*",
-      "resources/arthas/*"
+      "resources/arthas/*",
+      "resources/jmc/*"
     ],
     "icon": [
       "icons/32x32.png",

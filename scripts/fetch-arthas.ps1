@@ -1,11 +1,10 @@
-param(
-    [string]$Version = "4.3.5"
-)
 $ErrorActionPreference = "Stop"
-$url = "https://github.com/alibaba/arthas/releases/download/arthas-all-$Version/arthas-bin.zip"
+$manifest = Get-Content (Join-Path $PSScriptRoot "vendor-versions.json") -Raw | ConvertFrom-Json
+$dep = $manifest.arthas
+$url = "https://github.com/$($dep.repo)/releases/download/arthas-all-$($dep.version)/$($dep.asset)"
 $destDir = Join-Path $PSScriptRoot "..\src-tauri\resources\arthas"
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
-$dest = Join-Path $destDir "arthas-bin-$Version.zip"
+$dest = Join-Path $destDir $dep.asset
 if (Test-Path $dest) {
     Write-Host "arthas package already present: $dest"
     exit 0
@@ -13,5 +12,10 @@ if (Test-Path $dest) {
 Write-Host "Downloading $url"
 $tmp = "$dest.downloading"
 Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+$hash = (Get-FileHash -Algorithm SHA256 $tmp).Hash.ToLower()
+if ($hash -ne $dep.sha256) {
+    Remove-Item $tmp -Force
+    throw "SHA256 mismatch for $($dep.asset): expected $($dep.sha256), got $hash"
+}
 Move-Item $tmp $dest
-Write-Host "Downloaded: $dest ($((Get-Item $dest).Length) bytes)"
+Write-Host "Downloaded and verified: $dest ($((Get-Item $dest).Length) bytes)"

@@ -1,0 +1,22 @@
+{
+  "analyzer": {
+    "repo": "Djaler/jvm-heap-dump-mcp",
+    "version": "0.2.0",
+    "asset": "jvm-heap-dump-mcp-0.2.0-all.jar",
+    "sha256": "91929fc3d70c9780eca361e103496e5040d02b878a1b285b7713e2f7184c6e03"
+  },
+  "arthas": {
+    "repo": "alibaba/arthas",
+    "version": "4.3.5",
+    "asset": "arthas-bin-4.3.5.zip",
+    "sha256": "f4ea8e4ab4bb20a9925c21780bfb91331e73968eae881fd89b855cccaad21f1c"
+  },
+  "jmc": {
+    "repo": "scarletbean01/jmc-mcp-server",
+    "upstream_sha": "e6c35671e6351b0ab4c8f04599ec93fcfb5a3b20",
+    "release_repo": "Ewan-90n9/Friday",
+    "tag": "jmc-v1.0.0",
+    "asset": "jmc-mcp-1.0.0.jar",
+    "sha256": null
+  }
+}

@@ -1348,4 +1348,28 @@ mod tests {
         assert_eq!(opens.len(), 1, "only the hprof must be warmed");
         assert!(opens[0].1["path"].as_str().unwrap().ends_with("a.hprof"));
     }
+
+    /// vendoring 一致性守卫：scripts/vendor-versions.json 与 ANALYZER_JAR_NAME 必须一致。
+    /// 版本升级必须同时改清单与常量，漏一处此测试即红。
+    #[test]
+    fn test_vendor_manifest_matches_analyzer_jar_name() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("vendor-versions.json");
+        let text = std::fs::read_to_string(&manifest)
+            .unwrap_or_else(|e| panic!("read manifest {}: {e}", manifest.display()));
+        let v: serde_json::Value =
+            serde_json::from_str(&text).expect("vendor-versions.json must be valid JSON");
+        let asset = v["analyzer"]["asset"].as_str().expect("analyzer.asset");
+        assert_eq!(
+            asset, ANALYZER_JAR_NAME,
+            "scripts/vendor-versions.json 的 analyzer.asset 与 ANALYZER_JAR_NAME 漂移，二者必须同步修改"
+        );
+        let version = v["analyzer"]["version"].as_str().expect("analyzer.version");
+        assert!(
+            ANALYZER_JAR_NAME.contains(version),
+            "ANALYZER_JAR_NAME 应内嵌版本 {version}"
+        );
+    }
 }
