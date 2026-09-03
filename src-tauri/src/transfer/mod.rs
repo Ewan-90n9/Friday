@@ -19,7 +19,8 @@ pub type ChannelFactory = Arc<
         + Sync,
 >;
 
-/// 下载完成回调注入点（heap dump 拉回 → 分析预热）。必须在 Arc 包装前设置。
+/// 下载完成回调注入点（.hprof → MAT 预热、.jfr → JMC 预热等，按注册序全部触发）。
+/// 必须在 Arc 包装前注册。
 pub type DownloadCompleteHook = Arc<dyn Fn(&TransferState) + Send + Sync>;
 
 pub struct TransferManager {
@@ -28,7 +29,7 @@ pub struct TransferManager {
     transfers: Mutex<HashMap<String, ManagedTransfer>>,
     /// None = 真实专用 SSH 连连（fetch_environment + build_transport）
     channel_factory: Option<ChannelFactory>,
-    download_complete_hook: Option<DownloadCompleteHook>,
+    download_complete_hooks: Vec<DownloadCompleteHook>,
 }
 
 struct ManagedTransfer {
@@ -43,7 +44,7 @@ impl TransferManager {
             bus,
             transfers: Mutex::new(HashMap::new()),
             channel_factory: None,
-            download_complete_hook: None,
+            download_complete_hooks: Vec::new(),
         }
     }
 
@@ -52,9 +53,9 @@ impl TransferManager {
         self.channel_factory = Some(factory);
     }
 
-    /// 注入下载完成回调（heap dump 拉回 → 分析预热）。必须在 Arc 包装前调用。
-    pub fn set_download_complete_hook(&mut self, hook: DownloadCompleteHook) {
-        self.download_complete_hook = Some(hook);
+    /// 注册下载完成回调（按注册序触发）。必须在 Arc 包装前调用，可多次。
+    pub fn add_download_complete_hook(&mut self, hook: DownloadCompleteHook) {
+        self.download_complete_hooks.push(hook);
     }
 
     /// 后台任务专用连接：优先测试注入工厂，否则真实 SSH 直连（不走 ExecChannelPool）
@@ -239,9 +240,9 @@ impl TransferManager {
         );
         tracing::info!(transfer_id = %event.id, status = ?event.status, error = ?event.error, "transfer finished");
         self.evict_finished().await;
-        // 下载完成回调（heap dump 拉回 → 分析预热）。失败不影响传输终态。
+        // 下载完成回调（heap dump → MAT 预热、jfr → JMC 预热）。失败不影响传输终态。
         if event.direction == Direction::Download && event.status == Status::Completed {
-            if let Some(hook) = &self.download_complete_hook {
+            for hook in &self.download_complete_hooks {
                 hook(&event);
             }
         }
@@ -449,7 +450,7 @@ mod tests {
         let mut mgr = TransferManager::new(db, EventBus::disabled());
         let seen = Arc::new(std::sync::Mutex::new(Vec::<(Direction, Status)>::new()));
         let s2 = seen.clone();
-        mgr.set_download_complete_hook(Arc::new(move |state: &TransferState| {
+        mgr.add_download_complete_hook(Arc::new(move |state: &TransferState| {
             s2.lock().unwrap().push((state.direction, state.status));
         }));
         let mgr = Arc::new(mgr);
@@ -466,5 +467,28 @@ mod tests {
 
         let seen = seen.lock().unwrap().clone();
         assert_eq!(seen, vec![(Direction::Download, Status::Completed)]);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_download_complete_hooks_all_fire() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::infra::db::init(tmp.path().join("t.db")).await.unwrap();
+        let mut mgr = TransferManager::new(db, EventBus::disabled());
+        let hits = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        for name in ["mat", "jmc"] {
+            let h = hits.clone();
+            mgr.add_download_complete_hook(Arc::new(move |state: &TransferState| {
+                h.lock().unwrap().push(format!("{name}:{}", state.remote_path));
+            }));
+        }
+        let mgr = Arc::new(mgr);
+        let id = mgr.start(make_state(Direction::Download, "/tmp/a.jfr", "s1")).await;
+        mgr.finish(&id, Status::Completed, None, 10, 10).await;
+        let hits = hits.lock().unwrap().clone();
+        assert_eq!(
+            hits,
+            vec!["mat:/tmp/a.jfr", "jmc:/tmp/a.jfr"],
+            "both hooks fire in registration order"
+        );
     }
 }

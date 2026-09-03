@@ -121,7 +121,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 EventBus::new(handle.clone()),
             );
             transfer_manager
-                .set_download_complete_hook(crate::analyzer::download_complete_hook(&analyzer_manager));
+                .add_download_complete_hook(crate::analyzer::download_complete_hook(&analyzer_manager));
             let transfer_manager = Arc::new(transfer_manager);
 
             // Build tool registry
