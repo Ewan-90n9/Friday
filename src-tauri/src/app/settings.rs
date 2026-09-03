@@ -73,7 +73,7 @@ pub async fn auto_approve_tools(pool: &SqlitePool) -> bool {
         Err(e) => {
             tracing::warn!(
                 key = KEY_AUTO_APPROVE_TOOLS,
-                error = %e,
+                error = ?e,
                 "failed to read auto_approve_tools, falling back to false"
             );
             false
@@ -121,7 +121,7 @@ pub async fn set_auto_approve_tools_cmd(
     set_setting(&state.db, KEY_AUTO_APPROVE_TOOLS, value)
         .await
         .map_err(|e| {
-            tracing::error!(key = KEY_AUTO_APPROVE_TOOLS, error = %e, "failed to persist auto_approve_tools");
+            tracing::error!(key = KEY_AUTO_APPROVE_TOOLS, error = ?e, "failed to persist auto_approve_tools");
             e.to_string()
         })
 }
@@ -241,6 +241,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
         set_setting(&pool, KEY_AUTO_APPROVE_TOOLS, "yes").await.unwrap();
+        assert!(!auto_approve_tools(&pool).await);
+    }
+
+    #[tokio::test]
+    async fn test_auto_approve_tools_db_error_falls_back_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
+        pool.close().await;
         assert!(!auto_approve_tools(&pool).await);
     }
 }
