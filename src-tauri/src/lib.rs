@@ -4,6 +4,7 @@ mod app;
 mod arthas;
 mod exec;
 mod infra;
+mod jfr;
 mod knowledge;
 mod mcp;
 mod provision;
