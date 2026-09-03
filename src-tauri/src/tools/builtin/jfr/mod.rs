@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 /// (default_secs, max_secs)
 type Timeouts = (u64, u64);
-const RECORD: Timeouts = (600, 1800);
 const QUERY: Timeouts = (60, 300);
 const HEAVY: Timeouts = (300, 1800);
 
