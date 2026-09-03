@@ -36,6 +36,7 @@ const TOOL_GUIDANCE: &str = "## 工具使用
 - 文件传输：拉取/推送大文件（堆快照、日志包、工具包）必须用 file_download / file_upload 后台传输工具。启动后立即返回 transfer_id，轮询 transfer_status(transfer_id) 直到终态：completed（下载场景把 local_path 告知用户；堆快照会自动预热并可直接用 heap_* 工具分析）；failed（远端文件保留，file_download 同一文件可断点续传，不要放弃）；retrying（自动重试中，稍等再查，不要重复启动新任务）。不要用 run_command + cat/base64 拉大文件。
 - 堆快照分析（本机 MAT 引擎）：jvm_heap_dump 拉回完成后自动预热建索引，用 heap_open(local_path) 获取总览（预热命中秒回）→ heap_leak_suspects（泄漏嫌疑）/ heap_dominator_tree（支配树下钻）→ heap_path_to_gc_roots（引用链定责）→ heap_object_info / heap_references / heap_threads / heap_histogram 按需下钻；object_id 取自 heap_dominator_tree / heap_histogram / heap_references 的返回。全程自主完成根因分析，不要让用户手动开 MAT。分析结束调 heap_close 释放内存。
 - arthas 动态诊断（attach 到运行中的 JVM）：list_processes 找 PID → arthas_open(environment, pid)（首次自动下发 arthas 包并 attach，需确认；已 attach 秒回）→ arthas_* 工具诊断（dashboard / thread / sc / sm / jad / watch / trace / stack / monitor / tt / ognl / vmtool / memory / jvm / sysprop / vmoption / profiler 等；args 对象的字段与 arthas 命令参数一致）→ 完成后 arthas_close 或留给空闲自动回收。注意：堆快照走 jvm_heap_dump（不用 arthas 的 heapdump）；arthas_open 报「运行用户不一致且未录入凭证」时，引导用户在环境管理中为该环境添加对应 JVM 用户的凭证后重试；arthas_not_open 报「正在 attach」时稍候重试即可。
+- JFR 飞行记录（低开销全维度观测）：性能类问题（CPU 飙高、慢请求、GC 异常、锁竞争）优先 jfr_record(environment, pid, duration_secs) 热开启录制（目标 JDK 11+，profile 档开销 1~3%）→ 轮询 transfer_status → completed 后自动预热，用 jfr_quick_analysis(local_path) 一键诊断 / jfr_rules(local_path) 规则引擎 → 按维度下钻：jfr_gc_detail / jfr_hot_methods / jfr_thread_cpu / jfr_thread_contention / jfr_io_hotspots / jfr_memory_leaks / jfr_safepoints / jfr_stack_trace_search / jfr_correlate / jfr_request_waterfall；两次录制对比用 jfr_compare(baseline_local_path, target_local_path)。目标 JDK 8 不支持 JFR 热开启，改用 arthas_profiler。
 - 用户提到的环境先与 list_environments 的结果匹配；没有匹配时引导用户在右侧「环境」面板添加，不要瞎猜 host。";
 
 pub fn build_system_prompt(override_path: Option<&Path>) -> String {
@@ -249,5 +250,13 @@ mod tests {
         assert!(TOOL_GUIDANCE.contains("heap_path_to_gc_roots"));
         assert!(TOOL_GUIDANCE.contains("heap_close"));
         assert!(TOOL_GUIDANCE.contains("不要让用户手动开 MAT"));
+    }
+
+    #[test]
+    fn test_tool_guidance_mentions_jfr_tools() {
+        assert!(TOOL_GUIDANCE.contains("jfr_record"));
+        assert!(TOOL_GUIDANCE.contains("jfr_quick_analysis"));
+        assert!(TOOL_GUIDANCE.contains("jfr_compare"));
+        assert!(TOOL_GUIDANCE.contains("arthas_profiler"), "JDK 8 fallback guidance required");
     }
 }
