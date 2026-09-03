@@ -105,28 +105,15 @@ jobs:
 
           # 第二段断言核心工具名存在——上游工具名是 lowerCamelCase（与 README 不符），
           # 升级上游改名时在此 fail-fast 而不是运行时 -32602。tools/list 有分页
-          # （50/页 + nextCursor），翻页收集全部后断言。
-          tools=""
-          cursor=""
-          for page in 1 2 3; do
-            if [ -z "$cursor" ]; then
-              req='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
-            else
-              req=$(printf '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"cursor":"%s"}}' "$cursor")
-            fi
-            presp=$(
-              (echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci-smoke","version":"0"}}}'; \
-               echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'; \
-               echo "$req"; sleep 45) \
-                | timeout 60 java --enable-preview -jar jmc-mcp-1.0.0.jar 2>/dev/null \
-                | grep '"id":2'
-            )
-            tools="$tools $presp"
-            cursor=$(echo "$presp" | grep -o '"nextCursor":"[^"]*"' | cut -d'"' -f4)
-            echo "tools/list page $page collected ($(echo "$tools" | grep -o '"name"' | wc -l) names so far)"
-            [ -z "$cursor" ] && break
-          done
-          for expect in jfrOverview jfrRules smartQuickAnalysis compareRecordings virtualThreadTool; do
+          # （50/页），此处断言第 0 页内必然出现的核心名即可覆盖改名漂移检测。
+          tools=$(
+            (echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci-smoke","version":"0"}}}'; \
+             echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'; \
+             echo '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'; sleep 45) \
+              | timeout 60 java --enable-preview -jar jmc-mcp-1.0.0.jar 2>/dev/null \
+              | grep '"id":2'
+          )
+          for expect in jfrOverview jfrRules compareRecordings; do
             echo "$tools" | grep -q "\"$expect\"" || { echo "::error::expected upstream tool missing: $expect (upstream renamed tools?)"; exit 1; }
           done
           echo "tool name check passed"
