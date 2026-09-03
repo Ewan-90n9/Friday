@@ -68,7 +68,9 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "25"
+          # JDK 21 工具链：--enable-preview 只对与 JDK 同版本的 release 生效
+          # （JDK 25 下 release 21 + preview 报 invalid source release，见 run 33761985325）
+          java-version: "21"
 
       - name: Build fat JAR (release 21 + preview)
         run: |
