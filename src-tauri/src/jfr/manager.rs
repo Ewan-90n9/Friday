@@ -493,6 +493,34 @@ mod tests {
         );
     }
 
+    /// vendoring 一致性守卫：jmc-jar.yml 的 pinned SHA（env.JMC_SHA，自动构建的
+    /// 触发锚点）与清单 jmc.upstream_sha 必须一致——升级上游两处同步改，
+    /// 漏改 workflow 则不触发自动重建，漏改清单则巡检误报。
+    #[test]
+    fn test_workflow_sha_matches_vendor_manifest() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("vendor-versions.json");
+        let text = std::fs::read_to_string(&manifest)
+            .unwrap_or_else(|e| panic!("read manifest {}: {e}", manifest.display()));
+        let v: serde_json::Value =
+            serde_json::from_str(&text).expect("vendor-versions.json must be valid JSON");
+        let upstream_sha = v["jmc"]["upstream_sha"].as_str().expect("jmc.upstream_sha");
+        let workflow = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(".github")
+            .join("workflows")
+            .join("jmc-jar.yml");
+        let wf = std::fs::read_to_string(&workflow)
+            .unwrap_or_else(|e| panic!("read workflow {}: {e}", workflow.display()));
+        assert!(
+            wf.contains(upstream_sha),
+            ".github/workflows/jmc-jar.yml 未包含清单 pin 的 upstream_sha {upstream_sha}——\
+             升级上游时 workflow env.JMC_SHA 与 vendor-versions.json 必须同步修改"
+        );
+    }
+
     /// 端到端集成（spec §7.5）：真实 spawn → jfr_overview → jfr_rules。
     /// 样例 .jfr 由 jcmd 对本机 JVM 录制生成。需要本机 Java 21（不是 25——
     /// 这才是降级闸门的真实验证）、jcmd、以及 fetch 脚本已下载的 JAR。

@@ -4,24 +4,44 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. jmc-v1.0.0)"
-        required: true
-        default: "jmc-v1.0.0"
+        description: "Release tag（留空则用 vendor-versions.json 的 jmc.tag）"
+        required: false
   push:
-    tags:
-      - "jmc-v*"
+    branches: [main]
+    # 本文件是 pinned SHA 的所在地：SHA 升级/工作流修改 → 自动重建发布（零人工）。
+    # 回填步骤只改 vendor-versions.json，不命中此 paths → 无自触发循环。
+    paths: [".github/workflows/jmc-jar.yml"]
 
 permissions:
   contents: write
 
+concurrency:
+  group: jmc-jar
+  cancel-in-progress: false
+
 env:
   # SHA 同时记录在 scripts/vendor-versions.json（jmc.upstream_sha），升级上游两处同步改
+  # （jfr::manager::tests::test_workflow_sha_matches_vendor_manifest 守卫一致性）
   JMC_SHA: e6c35671e6351b0ab4c8f04599ec93fcfb5a3b20
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4 # Friday 仓库：读 manifest tag + 发布后回填 sha256
+
+      - name: Resolve release tag
+        id: tag
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.tag }}"
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            $manifest = Get-Content scripts/vendor-versions.json -Raw | ConvertFrom-Json
+            $tag = $manifest.jmc.tag
+          }
+          Write-Host "release tag: $tag"
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
       - name: Clone upstream at pinned SHA
         run: |
           git clone https://github.com/scarletbean01/jmc-mcp-server.git jmc
@@ -66,11 +86,27 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ inputs.tag || github.ref_name }}
+          tag_name: ${{ steps.tag.outputs.tag }}
           files: jmc-mcp-1.0.0.jar
           body: |
             Built from scarletbean01/jmc-mcp-server @ ${{ env.JMC_SHA }}
 
             - Bytecode: Java 21 + `--enable-preview`（运行需 JVM 21+ 且启动参数带 `--enable-preview`）
             - SHA256: `${{ steps.hash.outputs.sha256 }}`
-            - → 首次发布后把该哈希回填 `scripts/vendor-versions.json` 的 `jmc.sha256`
+
+      - name: Backfill sha256 into vendor-versions.json
+        shell: bash
+        run: |
+          HASH="${{ steps.hash.outputs.sha256 }}"
+          jq --arg h "$HASH" '.jmc.sha256 = $h' scripts/vendor-versions.json > vendor.tmp.json
+          mv vendor.tmp.json scripts/vendor-versions.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/vendor-versions.json
+          if git diff --cached --quiet; then
+            echo "sha256 already up to date, nothing to commit"
+          else
+            git commit -m "chore: backfill jmc sha256 from ${{ steps.tag.outputs.tag }} [skip ci]"
+            git pull --rebase --autostash
+            git push
+          fi

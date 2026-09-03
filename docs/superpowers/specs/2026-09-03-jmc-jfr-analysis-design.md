@@ -138,22 +138,26 @@ agent CLI ──HTTP──▶ Friday MCP server (ToolRegistry: jfr_* 工具)
 ### 工件分发链
 
 ```
-Friday 仓库 .github/workflows/jmc-jar.yml（手动/ tag jmc-v* 触发）
-  ├─ clone scarletbean01/jmc-mcp-server @ pinned SHA e6c35671
-  ├─ sed 降级：所有 pom 的 maven.compiler.release 25→21，compiler plugin 加 --enable-preview
-  ├─ JDK 25 toolchain：mvn -B clean package -DskipTests
-  ├─ 产物重命名 jmc-mcp-1.0.0.jar + 计算 SHA256 写入 Release 说明
-  └─ softprops/action-gh-release 发到 Ewan-90n9/Friday Releases（tag jmc-v1.0.0）
+Friday 仓库 .github/workflows/jmc-jar.yml（push 到 main 且本文件变更时自动触发；workflow_dispatch 兜底手动）
+  ├─ checkout Friday 仓库，读 scripts/vendor-versions.json 的 jmc.tag 作为发布 tag
+  ├─ clone scarletbean01/jmc-mcp-server @ pinned SHA e6c35671（workflow env.JMC_SHA，
+  │   与清单 jmc.upstream_sha 由单测 test_workflow_sha_matches_vendor_manifest 守卫一致）
+  ├─ sed 降级：所有 pom 的 maven.compiler.release 25→21（fail-fast 断言 sed 命中）
+  ├─ JDK 25 toolchain：mvn -B clean package -DskipTests --enable-preview
+  ├─ 产物重命名 jmc-mcp-1.0.0.jar + 计算 SHA256
+  ├─ softprops/action-gh-release 发到 Ewan-90n9/Friday Releases
+  └─ 自动回填：jq 更新清单 jmc.sha256 → commit "[skip ci]" push 回 main
+      （回填只改 vendor-versions.json，不命中 workflow 的 paths 触发器 → 无循环）
                                          │
 scripts/vendor-versions.json（单一事实来源：upstream_sha / tag / sha256）
-  │
+   │
 scripts/fetch-jmc-jar.ps1（读清单 → 下载 → 校验 sha256 → 幂等/.downloading 原子落盘）
   → src-tauri/resources/jmc/jmc-mcp-1.0.0.jar
   → tauri.conf.json bundle.resources 加 "resources/jmc/*"
   → lib.rs 双候选 resource_dir 解析（resources/jmc/ 与 jmc/，dev/打包两布局）
 ```
 
-上游同步：`vendor-update-check.yml` 周期（每周）比对上游 master HEAD 与清单 `upstream_sha`，不一致开 issue 提醒人工评审升级（改 workflow SHA 重跑 + 更新清单，随 Friday 发版）。analyzer/arthas 同机制纳入清单与巡检（查 `releases/latest`），fetch 脚本同步改造为读清单 + checksum 校验。
+零人工链路：推送含 jmc-jar.yml 变更（即 SHA 升级）的 commit → 自动构建发布 → 自动回填哈希，全程无手工操作。上游同步：`vendor-update-check.yml` 周期（每周）比对上游 master HEAD 与清单 `upstream_sha`，不一致开 issue 提醒人工**评审**升级决策（评审通过后改 SHA 依然是 push 即生效）。analyzer/arthas 同机制纳入清单与巡检（查 `releases/latest`），fetch 脚本同步改造为读清单 + checksum 校验。
 
 启动时 JAR 缺失只 `tracing::warn!`（工具返回结构化错误，不阻断应用）。
 
@@ -220,4 +224,4 @@ scripts/fetch-jmc-jar.ps1（读清单 → 下载 → 校验 sha256 → 幂等/.d
 
 ## 9. 实施风险闸门
 
-降级 Java 21 是第一张多米诺，实施计划的前两步即：`jmc-jar.yml` workflow（clone pinned SHA → 降级构建 → 发布）跑通出 JAR → 跑通最小集成测试（§7.5）。若降级失败（上游使用 21 无法启用预览的 25-only API），回退方案：JMC worker 单独要求 Java 25（`detect_java` 阈值参数化，每个 worker 各自最低版本），heap analyzer 维持 21，仅更新探测逻辑与文档，Friday 侧其余设计不变。
+降级 Java 21 是第一张多米诺：`jmc-jar.yml`（clone pinned SHA → 降级构建 → 发布）在本设计合入 main 时自动触发首次构建（§4 分发链），构建失败即闸门报警；构建成功后跑通最小集成测试（§7.5，本机 Java 21 + `-- --ignored jfr`）。若降级失败（上游使用 21 无法启用预览的 25-only API），回退方案：JMC worker 单独要求 Java 25（`detect_java` 阈值参数化，每个 worker 各自最低版本），heap analyzer 维持 21，仅更新探测逻辑与文档，Friday 侧其余设计不变。
