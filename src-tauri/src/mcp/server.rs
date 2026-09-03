@@ -15,6 +15,7 @@ use rmcp::{
 use tokio::sync::Mutex;
 
 use crate::app::events::{AppEvent, EventBus};
+use crate::app::settings::auto_approve_tools;
 use crate::exec::pool::ExecChannelPool;
 use crate::mcp::session_mapper::SessionMapper;
 use crate::tools::confirm::{ConfirmRegistry, ConfirmResult};
@@ -165,16 +166,10 @@ impl ServerHandler for FridayMcpServer {
                 .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
             // Confirmation flow for Low/High risk tools; skipped entirely
-            // when auto-approve mode is enabled (global setting)
-            let auto_approve = crate::app::settings::auto_approve_tools(&self.pool).await;
-            if auto_approve && matches!(risk_level, RiskLevel::Low | RiskLevel::High) {
-                tracing::info!(
-                    session_id = %session_id,
-                    tool = %tool_name,
-                    ?risk_level,
-                    "tool call auto-approved (auto-approve mode enabled)"
-                );
-            }
+            // when auto-approve mode is enabled (global setting). The
+            // auto-approve log below must fire exactly when a Low/High tool
+            // skips confirmation — hence the else-if on the same gate.
+            let auto_approve = auto_approve_tools(&self.pool).await;
             if should_confirm(risk_level, auto_approve) {
                 let confirm_id = uuid::Uuid::new_v4().to_string();
                 let (tx, rx) = tokio::sync::oneshot::channel();
@@ -229,6 +224,13 @@ impl ServerHandler for FridayMcpServer {
                         .into());
                     }
                 }
+            } else if auto_approve && matches!(risk_level, RiskLevel::Low | RiskLevel::High) {
+                tracing::info!(
+                    session_id = %session_id,
+                    tool = %tool_name,
+                    ?risk_level,
+                    "tool call auto-approved (auto-approve mode enabled)"
+                );
             }
 
             // Get or create exec channel (only for tools that need one).
