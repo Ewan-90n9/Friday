@@ -80,7 +80,7 @@ impl JmcManager {
             spawn_lock: Arc::new(tokio::sync::Mutex::new(())),
             client_factory,
             bus,
-            config: config.clone(),
+            config,
         }
     }
 
@@ -124,10 +124,13 @@ impl JmcManager {
                 session_id,
                 progress(format!("分析就绪，jfr_* 工具可直接查询：{}", path.display())),
             ),
-            Err(e) => self.bus.emit(
-                session_id,
-                progress(format!("JFR 分析预热失败（不影响对话，可直接用 jfr_overview 重试）：{e}")),
-            ),
+            Err(e) => {
+                tracing::warn!(session_id, error = %e, jfr = %path.display(), "jfr warm_up failed");
+                self.bus.emit(
+                    session_id,
+                    progress(format!("JFR 分析预热失败（不影响对话，可直接用 jfr_overview 重试）：{e}")),
+                )
+            }
         }
     }
 
@@ -183,7 +186,13 @@ impl JmcManager {
                 return Ok(c.clone());
             }
         }
-        let client = (self.client_factory)().await?;
+        let client = match (self.client_factory)().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "jmc worker spawn failed (factory)");
+                return Err(e);
+            }
+        };
         tracing::info!("jmc worker process started");
         let mut spawn_reaper = false;
         {
@@ -496,11 +505,25 @@ mod tests {
         assert_eq!(java.major, 21, "run with Java 21 to validate the downgrade gate (found {})", java.major);
         let jcmd = java.path.parent().unwrap().join(if cfg!(windows) { "jcmd.exe" } else { "jcmd" });
         assert!(jcmd.is_file(), "jcmd not found next to java: {}", jcmd.display());
+        let jar = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/jmc")
+            .join(JMC_JAR_NAME);
+        assert!(jar.is_file(), "JAR missing: {} (run scripts/fetch-jmc-jar.ps1)", jar.display());
         let tmp = tempfile::tempdir().unwrap();
         let jfr = tmp.path().join("sample.jfr");
+        // 拉起一个真实 JVM 作为录制目标（-jar JMC server 阻塞等 stdin，天然长驻）
+        let mut jvm = tokio::process::Command::new(&java.path)
+            .arg("-jar")
+            .arg(&jar)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("target JVM must spawn");
+        let target_pid = jvm.id().expect("target JVM must have a pid");
         let out = std::process::Command::new(&jcmd)
             .args([
-                format!("{}", std::process::id()),
+                format!("{}", target_pid),
                 "JFR.start".to_string(),
                 "name=friday-it".to_string(),
                 "settings=default".to_string(),
@@ -521,10 +544,6 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
 
-        let jar = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("resources/jmc")
-            .join(JMC_JAR_NAME);
-        assert!(jar.is_file(), "JAR missing: {} (run scripts/fetch-jmc-jar.ps1)", jar.display());
         let java_f = java.clone();
         let jar_f = jar.clone();
         let factory: ClientFactory = Arc::new(move || {
@@ -544,5 +563,6 @@ mod tests {
         let out = mgr.query("jfr_rules", &args, 300).await.expect("jfr_rules");
         assert!(!out.text.trim().is_empty(), "rules output should not be empty");
         mgr.shutdown().await;
+        let _ = jvm.kill().await;
     }
 }
