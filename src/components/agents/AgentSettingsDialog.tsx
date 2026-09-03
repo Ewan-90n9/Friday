@@ -34,6 +34,38 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
   const [urlDraft, setUrlDraft] = useState("");
   const [savingUrl, setSavingUrl] = useState(false);
 
+  const autoApprove = useSettingsStore((s) => s.autoApprove);
+  const saveAutoApprove = useSettingsStore((s) => s.saveAutoApprove);
+
+  const [confirmAutoApprove, setConfirmAutoApprove] = useState(false);
+  const [savingAutoApprove, setSavingAutoApprove] = useState(false);
+
+  const handleToggleAutoApprove = async (next: boolean) => {
+    if (!next) {
+      // 关闭直接生效，不确认
+      setConfirmAutoApprove(false);
+      setSavingAutoApprove(true);
+      try {
+        await saveAutoApprove(false);
+      } finally {
+        setSavingAutoApprove(false);
+      }
+      return;
+    }
+    // 开启需确认一次
+    setConfirmAutoApprove(true);
+  };
+
+  const handleConfirmAutoApprove = async () => {
+    setSavingAutoApprove(true);
+    try {
+      const ok = await saveAutoApprove(true);
+      if (ok) setConfirmAutoApprove(false);
+    } finally {
+      setSavingAutoApprove(false);
+    }
+  };
+
   useEffect(() => {
     if (open) {
       loadSettings().then(() => {
@@ -175,6 +207,51 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
                 {savingUrl ? "保存中..." : "保存"}
               </button>
             </div>
+            {settingsError && (
+              <p className="text-xs text-destructive break-words">{settingsError}</p>
+            )}
+          </div>
+        </div>
+
+        {/* Auto-approve tools */}
+        <div className="border-t border-border shrink-0">
+          <div className="px-5 py-3 space-y-2">
+            <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
+              <input
+                type="checkbox"
+                checked={autoApprove || confirmAutoApprove}
+                onChange={(e) => handleToggleAutoApprove(e.target.checked)}
+                disabled={savingAutoApprove}
+              />
+              免确认模式
+            </label>
+            <p className="text-xs text-muted-foreground">
+              开启后所有工具调用免确认直接执行（含高风险：任意命令、堆 dump、文件上传），仅建议内网非生产环境开启
+            </p>
+            {confirmAutoApprove && (
+              <div className="rounded-md border border-warning/60 bg-warning/5 px-3 py-2 space-y-2">
+                <p className="text-xs text-warning">
+                  开启后 agent 执行任何操作都不再需要你确认，包括 run_command、heap_dump、file_upload
+                  等高风险操作。确定开启？
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleConfirmAutoApprove}
+                    disabled={savingAutoApprove}
+                    className="px-3 py-1 rounded-md bg-warning text-warning-foreground text-xs hover:bg-warning/80 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {savingAutoApprove ? "开启中..." : "确认开启"}
+                  </button>
+                  <button
+                    onClick={() => setConfirmAutoApprove(false)}
+                    disabled={savingAutoApprove}
+                    className="px-3 py-1 rounded-md border border-border bg-surface-2 text-xs text-foreground hover:bg-surface-3 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    取消
+                  </button>
+                </div>
+              </div>
+            )}
             {settingsError && (
               <p className="text-xs text-destructive break-words">{settingsError}</p>
             )}
