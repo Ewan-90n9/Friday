@@ -14,6 +14,10 @@ on:
 permissions:
   contents: write
 
+env:
+  # SHA 同时记录在 scripts/vendor-versions.json（jmc.upstream_sha），升级上游两处同步改
+  JMC_SHA: e6c35671e6351b0ab4c8f04599ec93fcfb5a3b20
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,13 +26,18 @@ jobs:
         run: |
           git clone https://github.com/scarletbean01/jmc-mcp-server.git jmc
           cd jmc
-          git checkout e6c35671e6351b0ab4c8f04599ec93fcfb5a3b20
+          git checkout "$JMC_SHA"
 
       - name: Downgrade to Java 21 bytecode
         run: |
           cd jmc
-          # SHA 同时记录在 scripts/vendor-versions.json（jmc.upstream_sha），升级上游两处同步改
           find . -name pom.xml -print -exec sed -i 's|<maven.compiler.release>25</maven.compiler.release>|<maven.compiler.release>21</maven.compiler.release>|g' {} +
+          # 断言：sed 必须命中且无残留非 21 的 release 声明，否则 fail-fast
+          grep -rq '<maven.compiler.release>21</maven.compiler.release>' --include=pom.xml . || { echo "::error::downgrade to 21 failed (upstream pom layout changed?)"; exit 1; }
+          if grep -rn '<maven.compiler.release>' --include=pom.xml . | grep -v '<maven.compiler.release>21</maven.compiler.release>'; then
+            echo "::error::non-21 maven.compiler.release remains after sed"
+            exit 1
+          fi
           grep -rn "maven.compiler.release" --include=pom.xml .
 
       - uses: actions/setup-java@v4
@@ -46,7 +55,7 @@ jobs:
       - name: Locate and rename fat JAR
         run: |
           cd jmc
-          jar=$(find . -name "*.jar" -path "*/target/*" ! -name "*-sources.jar" ! -name "original-*" | xargs ls -S | head -1)
+          jar=$(find . -name "*.jar" -path "*/target/*" ! -name "*-sources.jar" ! -name "original-*" -printf '%s\t%p\n' | sort -rn | head -1 | cut -f2-)
           echo "found: $jar"
           cp "$jar" ../jmc-mcp-1.0.0.jar
 
@@ -55,12 +64,12 @@ jobs:
         run: echo "sha256=$(sha256sum jmc-mcp-1.0.0.jar | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           files: jmc-mcp-1.0.0.jar
           body: |
-            Built from scarletbean01/jmc-mcp-server @ e6c35671e6351b0ab4c8f04599ec93fcfb5a3b20
+            Built from scarletbean01/jmc-mcp-server @ ${{ env.JMC_SHA }}
 
             - Bytecode: Java 21 + `--enable-preview`（运行需 JVM 21+ 且启动参数带 `--enable-preview`）
             - SHA256: `${{ steps.hash.outputs.sha256 }}`

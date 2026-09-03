@@ -1,6 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 $manifest = Get-Content (Join-Path $PSScriptRoot "vendor-versions.json") -Raw | ConvertFrom-Json
 $headers = @{ Accept = "application/vnd.github+json" }
+if ($env:GH_TOKEN) { $headers.Authorization = "Bearer $env:GH_TOKEN" }
 $findings = @()
 
 # analyzer / arthas：查 releases/latest 与 pin 的 tag 比对
@@ -31,9 +32,9 @@ Write-Host "Outdated vendored deps:`n$body"
 
 # 幂等开/更新 tracking issue（gh CLI 为 GitHub runner 内置）
 $label = "vendor-update"
-gh label create $label --force 2>$null | Out-Null
+gh label create $label --force | Out-Null
 $title = "vendored 依赖有上游更新"
-$existing = gh issue list --label $label --state open --json number --jq ".[0].number" 2>$null
+$existing = gh issue list --label $label --state open --json number --jq ".[0].number"
 if ($existing) {
     gh issue comment $existing --body "巡检更新（$(Get-Date -Format yyyy-MM-dd)）：`n`n$body"
     Write-Host "Updated issue #$existing"
