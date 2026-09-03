@@ -1,7 +1,7 @@
 # Friday JFR 飞行记录分析设计（jfr_* 工具 + JMC 工人进程 + 远程录制闭环）
 
 - 日期：2026-09-03
-- 状态：已评审（各节均与用户逐节确认）
+- 状态：已实施（计划见 [2026-09-03-jmc-jfr-analysis](../plans/2026-09-03-jmc-jfr-analysis.md)）
 - 上游：[JDK 原生命令结构化工具设计](2026-08-28-jdk-native-tools-design.md)（jcmd 执行模式）；[文件传输设计](2026-08-29-file-transfer-design.md)（拉回 + download_complete_hook）；[堆快照分析设计](2026-08-29-heap-analysis-design.md)（本地 Java 工人进程模式，本设计大量复用其形态）
 - 外部依赖：[scarletbean01/jmc-mcp-server](https://github.com/scarletbean01/jmc-mcp-server)（MIT，JMC 9.1.1 核心库驱动的 JFR 分析 MCP server；无 Releases，由 Friday 仓库内 `jmc-jar.yml` workflow 从 pinned SHA 构建分发，见 §2/§4）
 
