@@ -114,6 +114,7 @@ export type ToolCategory =
   | "environment"
   | "jvm"
   | "heap"
+  | "jfr"
   | "arthas"
   | "file_transfer"
   | "builtin";
