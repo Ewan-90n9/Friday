@@ -105,6 +105,30 @@ pub async fn spawn_jmc_client(
     })
 }
 
+/// rmcp 调用结果 → JmcClient 语义映射（纯函数可测）：
+/// - `McpError`（JSON-RPC 错误响应，如上游工具内 NPE 的 -32603）：传输层完好、
+///   工人进程存活 → 工具级错误（is_error=true，业务透传，不 invalidate）
+/// - 其余 ServiceError（TransportClosed 等）→ 传输层错误（进程疑似死亡 → invalidate）
+/// - 非 Complete 响应 → 传输层错误（JMC 工具为一次性请求/响应）
+/// issue #10：此前 JSON-RPC 错误响应被误判为传输错误，一次业务失败即
+/// invalidate 整个工人进程并丢失上游录制缓存。
+fn map_call_result(
+    result: Result<rmcp::model::CallToolResponse, rmcp::ServiceError>,
+) -> Result<CallOutcome, String> {
+    match result {
+        Err(rmcp::ServiceError::McpError(err)) => Ok(CallOutcome {
+            text: format!("MCP error: {err}"),
+            is_error: true,
+        }),
+        Err(e) => Err(format!("MCP 调用失败: {e}")),
+        Ok(rmcp::model::CallToolResponse::Complete(result)) => Ok(CallOutcome {
+            text: crate::analyzer::client::extract_text(&result),
+            is_error: result.is_error.unwrap_or(false),
+        }),
+        Ok(other) => Err(format!("MCP 调用返回非最终结果: {other:?}")),
+    }
+}
+
 #[async_trait]
 impl JmcClient for McpJmcClient {
     async fn call_tool(&self, name: &str, args: &Value) -> Result<CallOutcome, String> {
@@ -122,19 +146,7 @@ impl JmcClient for McpJmcClient {
         let mut params = rmcp::model::CallToolRequestParams::default();
         params.name = name.to_string().into();
         params.arguments = Some(arguments);
-        let result = self
-            .peer
-            .call_tool_once(params)
-            .await
-            .map_err(|e| format!("MCP 调用失败: {e}"))?;
-        let result = match result {
-            rmcp::model::CallToolResponse::Complete(result) => result,
-            other => return Err(format!("MCP 调用返回非最终结果: {other:?}")),
-        };
-        Ok(CallOutcome {
-            text: crate::analyzer::client::extract_text(&result),
-            is_error: result.is_error.unwrap_or(false),
-        })
+        map_call_result(self.peer.call_tool_once(params).await)
     }
 
     async fn shutdown(&self) {
@@ -246,6 +258,42 @@ mod tests {
             mock.shutdown_count.load(std::sync::atomic::Ordering::SeqCst),
             2
         );
+    }
+
+    /// issue #10 回归：JSON-RPC 错误响应（McpError，如上游工具内 NPE 的 -32603）
+    /// 是服务器正常应答——必须归类为工具级错误（is_error=true）而非传输错误，
+    /// 否则 manager 会 invalidate 存活的工人进程并丢失上游录制缓存。
+    #[test]
+    fn test_map_call_result_mcp_error_is_tool_level_error() {
+        let err = rmcp::model::ErrorData::internal_error("Internal error", None);
+        let out = map_call_result(Err(rmcp::ServiceError::McpError(err))).unwrap();
+        assert!(out.is_error, "McpError must map to tool-level error");
+        assert!(out.text.contains("-32603"), "text should carry the JSON-RPC code: {}", out.text);
+        assert!(out.text.contains("Internal error"), "text should carry the message: {}", out.text);
+    }
+
+    /// issue #10 回归：真传输错误（TransportClosed）仍走 Err → Unavailable → invalidate
+    #[test]
+    fn test_map_call_result_transport_error_still_err() {
+        assert!(map_call_result(Err(rmcp::ServiceError::TransportClosed)).is_err());
+    }
+
+    #[test]
+    fn test_map_call_result_complete_and_non_complete() {
+        // Complete + is_error=false → Ok
+        let ok_result = rmcp::model::CallToolResult::success(Vec::new());
+        let out = map_call_result(Ok(rmcp::model::CallToolResponse::Complete(ok_result))).unwrap();
+        assert!(!out.is_error);
+        // Complete + is_error=true → 工具级错误透传
+        let mut err_result = rmcp::model::CallToolResult::default();
+        err_result.is_error = Some(true);
+        let out = map_call_result(Ok(rmcp::model::CallToolResponse::Complete(err_result))).unwrap();
+        assert!(out.is_error);
+        // 非 Complete 响应 → 传输层错误
+        let input_required = rmcp::model::CallToolResponse::InputRequired(
+            rmcp::model::InputRequiredResult::new(None, None),
+        );
+        assert!(map_call_result(Ok(input_required)).is_err());
     }
 
     /// verbatim（\\?\）前缀的 JAR 路径必须仍能完成 MCP 握手（issue #6 回归，对齐 analyzer 同名测试）。
