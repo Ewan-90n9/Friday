@@ -135,6 +135,10 @@ impl HeapAnalyzerClient for McpHeapAnalyzerClient {
         let mut params = rmcp::model::CallToolRequestParams::default();
         params.name = name.to_string().into();
         params.arguments = Some(arguments);
+        // TODO(遗留): 所有 rmcp 错误（含 ServiceError::McpError——JSON-RPC 错误响应，worker 存活）
+        // 被统一当传输错误 → manager invalidate 误杀工人进程。jfr/client.rs 已修（issue #10
+        // 的 map_call_result 模式）；暂无 MAT 上游返回 JSON-RPC 错误的证据故未动，触发即照抄。
+        // 见 docs/superpowers/specs/2026-09-04-jmc-error-classification-followups.md §3.2。
         let result = self
             .peer
             .call_tool_once(params)
@@ -295,7 +299,8 @@ mod tests {
             .await
             .expect("Java 21+ required for this test");
         let jar = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("resources/analyzer/jvm-heap-dump-mcp-0.2.0-all.jar");
+            .join("resources/analyzer")
+            .join(crate::analyzer::ANALYZER_JAR_NAME);
         assert!(jar.is_file(), "JAR missing: {} (run scripts/fetch-analyzer-jar.ps1)", jar.display());
         // 复现 Tauri resource_dir() 返回的 verbatim 形式
         let verbatim = std::path::PathBuf::from(format!(r"\\?\{}", jar.display()));
@@ -322,7 +327,8 @@ mod tests {
             .await
             .expect("Java 21+ required for this test");
         let jar = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("resources/analyzer/jvm-heap-dump-mcp-0.2.0-all.jar");
+            .join("resources/analyzer")
+            .join(crate::analyzer::ANALYZER_JAR_NAME);
         assert!(jar.is_file(), "JAR missing: {} (run scripts/fetch-analyzer-jar.ps1)", jar.display());
 
         // 与 spawn_analyzer_client 完全一致的命令行，但 stderr 由本测试直接消费

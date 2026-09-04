@@ -4,14 +4,20 @@ $headers = @{ Accept = "application/vnd.github+json" }
 if ($env:GH_TOKEN) { $headers.Authorization = "Bearer $env:GH_TOKEN" }
 $findings = @()
 
-# analyzer / arthas：查 releases/latest 与 pin 的 tag 比对
-foreach ($name in @("analyzer", "arthas")) {
-    $dep = $manifest.$name
-    $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/$($dep.repo)/releases/latest" -Headers $headers
-    $pinnedTag = if ($name -eq "analyzer") { "v$($dep.version)" } else { "arthas-all-$($dep.version)" }
-    if ($latest.tag_name -ne $pinnedTag) {
-        $findings += "$name 上游最新 release 为 $($latest.tag_name)（当前 pin $pinnedTag）：$($latest.html_url)"
-    }
+# analyzer：查上游 releases/latest 与 pin 的基线 tag 比对（产物虽由本仓库
+# analyzer-jar.yml 补丁构建，升级基线仍需人工评审 + 重跑 workflow）
+$analyzer = $manifest.analyzer
+$latestAnalyzer = Invoke-RestMethod -Uri "https://api.github.com/repos/$($analyzer.repo)/releases/latest" -Headers $headers
+if ($latestAnalyzer.tag_name -ne $analyzer.upstream_base) {
+    $findings += "analyzer 上游最新 release 为 $($latestAnalyzer.tag_name)（当前 pin 基线 $($analyzer.upstream_base)）：$($latestAnalyzer.html_url)"
+}
+
+# arthas：查 releases/latest 与 pin 的 tag 比对
+$arthas = $manifest.arthas
+$latestArthas = Invoke-RestMethod -Uri "https://api.github.com/repos/$($arthas.repo)/releases/latest" -Headers $headers
+$pinnedTag = "arthas-all-$($arthas.version)"
+if ($latestArthas.tag_name -ne $pinnedTag) {
+    $findings += "arthas 上游最新 release 为 $($latestArthas.tag_name)（当前 pin $pinnedTag）：$($latestArthas.html_url)"
 }
 
 # jmc：查上游 master HEAD 与 pin 的 SHA 比对

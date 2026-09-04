@@ -1,0 +1,35 @@
+﻿diff --git a/src/main/kotlin/com/github/djaler/jvmheapdumpmcp/mat/MatFacade.kt b/src/main/kotlin/com/github/djaler/jvmheapdumpmcp/mat/MatFacade.kt
+index 6110b99..5f0d6ec 100644
+--- a/src/main/kotlin/com/github/djaler/jvmheapdumpmcp/mat/MatFacade.kt
++++ b/src/main/kotlin/com/github/djaler/jvmheapdumpmcp/mat/MatFacade.kt
+@@ -83,11 +83,19 @@ object MatFacade {
+                 records.onEach { rec ->
+                     if (rec.retainedHeapSize == 0L) {
+                         try {
+-                            rec.calculateRetainedSize(snapshot, false, false, NoOpProgress)
++                            // Friday patch (issue #9): the second MAT parameter is
++                            // calculateIfNotAvailable, not "exact vs approximate" 鈥?passing
++                            // false made MAT skip the calculation entirely (all retained
++                            // sizes stayed 0 and the sort degenerated to the natural order,
++                            // surfacing zero-object classes at the top).
++                            // calculateIfNotAvailable=true + approximation=true computes
++                            // minimum retained sizes (per-object retained summed over the
++                            // dominator tree); MAT reports approximate values NEGATED.
++                            rec.calculateRetainedSize(snapshot, true, true, NoOpProgress)
+                         } catch (_: Exception) {
+                         }
+                     }
+-                }.sortedByDescending { it.retainedHeapSize }
++                }.sortedByDescending { kotlin.math.abs(it.retainedHeapSize) }
+             }
+ 
+             "OBJECTS" -> records.sortedByDescending { it.numberOfObjects }
+@@ -98,7 +106,7 @@ object MatFacade {
+                 className = rec.label,
+                 objectCount = rec.numberOfObjects,
+                 shallowHeap = rec.usedHeapSize,
+-                retainedHeap = rec.retainedHeapSize,
++                retainedHeap = kotlin.math.abs(rec.retainedHeapSize),
+             )
+         }
+     }

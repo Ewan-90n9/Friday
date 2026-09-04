@@ -582,8 +582,9 @@ pub fn download_complete_hook(manager: &Arc<HeapAnalyzerManager>) -> crate::tran
     })
 }
 
-/// vendored 分析器 JAR 文件名（scripts/fetch-analyzer-jar.ps1 下载）
-pub const ANALYZER_JAR_NAME: &str = "jvm-heap-dump-mcp-0.2.0-all.jar";
+/// vendored 分析器 JAR 文件名（.github/workflows/analyzer-jar.yml 从上游 pinned tag
+/// + scripts/analyzer-retained-fix.patch 构建、scripts/fetch-analyzer-jar.ps1 下载）
+pub const ANALYZER_JAR_NAME: &str = "jvm-heap-dump-mcp-0.2.0-friday.jar";
 
 /// 生产 client 工厂：Java 探测（Ok 结果进程内缓存）→ stdio 子进程 MCP client。
 /// jar 缺失（未跑 fetch 脚本）→ Unavailable 引导。
@@ -1366,10 +1367,39 @@ mod tests {
             asset, ANALYZER_JAR_NAME,
             "scripts/vendor-versions.json 的 analyzer.asset 与 ANALYZER_JAR_NAME 漂移，二者必须同步修改"
         );
-        let version = v["analyzer"]["version"].as_str().expect("analyzer.version");
+        let base = v["analyzer"]["upstream_base"].as_str().expect("analyzer.upstream_base");
+        let version = base.strip_prefix('v').unwrap_or(base);
         assert!(
             ANALYZER_JAR_NAME.contains(version),
-            "ANALYZER_JAR_NAME 应内嵌版本 {version}"
+            "ANALYZER_JAR_NAME 应内嵌上游基线版本 {version}"
+        );
+    }
+
+    /// vendoring 一致性守卫：analyzer-jar.yml 的 pinned tag（env.ANALYZER_TAG）与清单
+    /// analyzer.upstream_base 必须一致——升级上游两处同步改，漏改 workflow 则不会
+    /// 触发自动重建。
+    #[test]
+    fn test_workflow_tag_matches_vendor_manifest() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("vendor-versions.json");
+        let text = std::fs::read_to_string(&manifest)
+            .unwrap_or_else(|e| panic!("read manifest {}: {e}", manifest.display()));
+        let v: serde_json::Value =
+            serde_json::from_str(&text).expect("vendor-versions.json must be valid JSON");
+        let base = v["analyzer"]["upstream_base"].as_str().expect("analyzer.upstream_base");
+        let workflow = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(".github")
+            .join("workflows")
+            .join("analyzer-jar.yml");
+        let wf = std::fs::read_to_string(&workflow)
+            .unwrap_or_else(|e| panic!("read workflow {}: {e}", workflow.display()));
+        assert!(
+            wf.contains(&format!("ANALYZER_TAG: {base}")),
+            ".github/workflows/analyzer-jar.yml 的 ANALYZER_TAG 不是 {base}——\
+             升级上游时 workflow 与 vendor-versions.json 必须同步修改"
         );
     }
 }

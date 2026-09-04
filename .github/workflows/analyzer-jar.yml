@@ -1,0 +1,120 @@
+name: Analyzer JAR
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    # 本文件与补丁文件是构建输入：任一变更 → 自动重建发布（零人工）。
+    # 回填步骤只改 vendor-versions.json，不命中此 paths → 无自触发循环。
+    paths:
+      - ".github/workflows/analyzer-jar.yml"
+      - "scripts/analyzer-retained-fix.patch"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: analyzer-jar
+  cancel-in-progress: false
+
+env:
+  # 上游基线 tag（同时记录在 scripts/vendor-versions.json 的 analyzer.upstream_base，
+  # 升级上游两处同步改；analyzer::manager 一致性单测守卫）
+  ANALYZER_TAG: v0.2.0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4 # Friday 仓库：读补丁 + 发布后回填 sha256
+
+      - name: Clone upstream at pinned tag
+        run: |
+          git clone --depth 1 --branch "$ANALYZER_TAG" https://github.com/Djaler/jvm-heap-dump-mcp.git analyzer
+          cd analyzer
+          git rev-parse HEAD
+
+      - name: Apply Friday patch (issue #9 retained-sort fix)
+        run: |
+          cd analyzer
+          git apply --check "$GITHUB_WORKSPACE/scripts/analyzer-retained-fix.patch"
+          git apply "$GITHUB_WORKSPACE/scripts/analyzer-retained-fix.patch"
+          git diff --stat
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Build fat JAR
+        run: |
+          cd analyzer
+          # p2deps 会从 download.eclipse.org 拉取 MAT 1.16.1；VERSION 决定产物版本号
+          VERSION="${ANALYZER_TAG#v}" ./gradlew shadowJar --no-daemon
+
+      - name: Locate and rename fat JAR
+        run: |
+          cd analyzer
+          jar=$(find build/libs -name "*-all.jar" -printf '%s\t%p\n' | sort -rn | head -1 | cut -f2-)
+          echo "found: $jar"
+          cp "$jar" ../jvm-heap-dump-mcp-0.2.0-friday.jar
+
+      - name: Smoke test — histogram retained sort on the patched JAR
+        run: |
+          # 功能性闸门（issue #9 回归）：RETAINED_HEAP 排序不得返回 0 对象/0 B 的行。
+          # 用上游测试 hprof（其生成器含已知保留结构）实测 MCP stdio 全链路。
+          curl -sSL -o test-heap-dump.hprof \
+            https://raw.githubusercontent.com/Djaler/jvm-heap-dump-mcp/"$ANALYZER_TAG"/src/test/resources/test-heap-dump.hprof
+          hp=$(realpath test-heap-dump.hprof)
+          resp=$(
+            (echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci-smoke","version":"0"}}}'; \
+             echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'; \
+             echo "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"open_heap_dump\",\"arguments\":{\"path\":\"$hp\",\"id\":\"smoke\"}}}"; sleep 30; \
+             echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_class_histogram","arguments":{"id":"smoke","sortBy":"RETAINED_HEAP","limit":10}}}'; sleep 60) \
+              | timeout 150 java -Xmx2g -Dfile.encoding=UTF-8 -jar jvm-heap-dump-mcp-0.2.0-friday.jar 2>/dev/null \
+              | grep '"id":3'
+          )
+          echo "histogram response head: ${resp:0:400}"
+          echo "$resp" | grep -q 'Sorted by: RETAINED_HEAP' || { echo "::error::histogram call failed (no table in response)"; exit 1; }
+          if echo "$resp" | grep -q ' | 0 | 0 B | 0 B |'; then
+            echo "::error::retained sort degenerated to zero-object rows (issue #9 regression: patch not applied?)"
+            exit 1
+          fi
+          echo "retained sort smoke test passed"
+
+      - name: Compute SHA256
+        id: hash
+        run: echo "sha256=$(sha256sum jvm-heap-dump-mcp-0.2.0-friday.jar | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: analyzer-v0.2.0-friday
+          files: jvm-heap-dump-mcp-0.2.0-friday.jar
+          body: |
+            Built from Djaler/jvm-heap-dump-mcp @ ${{ env.ANALYZER_TAG }} + scripts/analyzer-retained-fix.patch
+
+            - Patch: fix `get_class_histogram` RETAINED_HEAP sort (issue #9 — `calculateRetainedSize`
+              was called with `calculateIfNotAvailable=false`, so retained sizes stayed 0 and the sort
+              degenerated to natural order, surfacing zero-object classes at the top)
+            - Retained sizes are approximate (minimum retained, via dominator tree)
+            - SHA256: `${{ steps.hash.outputs.sha256 }}`
+
+      - name: Backfill sha256 into vendor-versions.json
+        shell: bash
+        run: |
+          HASH="${{ steps.hash.outputs.sha256 }}"
+          jq --arg h "$HASH" '.analyzer.sha256 = $h' scripts/vendor-versions.json > vendor.tmp.json
+          mv vendor.tmp.json scripts/vendor-versions.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/vendor-versions.json
+          if git diff --cached --quiet; then
+            echo "sha256 already up to date, nothing to commit"
+          else
+            # 不加 [skip ci]：本提交不命中本 workflow 的 paths 过滤器，无需跳过；
+            # 且 skip 指令会让指向该提交的 release tag（v*）跳过所有 workflow。
+            git commit -m "chore: backfill analyzer sha256 from analyzer-v0.2.0-friday"
+            git pull --rebase --autostash
+            git push
+          fi
