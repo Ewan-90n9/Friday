@@ -34,7 +34,7 @@ export interface PresetContext {
 
 interface ModeSpec {
   count: number;
-  color: (c: ParticleColors) => string;
+  colorKey: keyof ParticleColors;
   sizeMin: number;
   sizeMax: number;
   speed: number;
@@ -53,48 +53,53 @@ interface ModeSpec {
 /** 六态参数表（spec §4）。瞬态用 life.count=1 + outMode "out" 实现一次绽放后消散。 */
 const SPECS: Record<ParticleMode, ModeSpec> = {
   thinking: {
-    count: 36, color: (c) => c.accent,
+    count: 36, colorKey: "accent",
     sizeMin: 0.8, sizeMax: 2.2,
     speed: 0.6, direction: "none", straight: false, outMode: "bounce",
     opacityMin: 0.25, opacityMax: 0.85, twinkleSpeed: 0.8, syncTwinkle: false,
     lifeSeconds: null, lifeDelayMax: null, glowBlur: 8,
   },
   executing: {
-    count: 40, color: (c) => c.success,
+    count: 40, colorKey: "success",
     sizeMin: 1.0, sizeMax: 2.6,
     speed: 2.2, direction: "none", straight: false, outMode: "bounce",
     opacityMin: 0.35, opacityMax: 1.0, twinkleSpeed: 2.4, syncTwinkle: false,
     lifeSeconds: null, lifeDelayMax: null, glowBlur: 10,
   },
   awaiting: {
-    count: 24, color: (c) => c.warning,
+    count: 24, colorKey: "warning",
     sizeMin: 0.8, sizeMax: 1.8,
     speed: 0.15, direction: "none", straight: false, outMode: "bounce",
     opacityMin: 0.4, opacityMax: 0.8, twinkleSpeed: 0.4, syncTwinkle: true,
     lifeSeconds: null, lifeDelayMax: null, glowBlur: 6,
   },
   error: {
-    count: 40, color: (c) => c.destructive,
+    count: 40, colorKey: "destructive",
     sizeMin: 1.0, sizeMax: 2.4,
     speed: 3.0, direction: "outside", straight: true, outMode: "out",
     opacityMin: 0.4, opacityMax: 1.0, twinkleSpeed: 1.2, syncTwinkle: false,
     lifeSeconds: 3, lifeDelayMax: 1.2, glowBlur: 10,
   },
   done: {
-    count: 40, color: (c) => c.celebration,
+    count: 40, colorKey: "celebration",
     sizeMin: 1.0, sizeMax: 2.4,
     speed: 1.2, direction: "outside", straight: true, outMode: "out",
     opacityMin: 0.5, opacityMax: 1.0, twinkleSpeed: 1.5, syncTwinkle: false,
     lifeSeconds: 2.6, lifeDelayMax: 1.0, glowBlur: 12,
   },
   idle: {
-    count: 14, color: (c) => c.accent,
+    count: 14, colorKey: "accent",
     sizeMin: 0.6, sizeMax: 1.4,
     speed: 0.1, direction: "none", straight: false, outMode: "bounce",
     opacityMin: 0.04, opacityMax: 0.12, twinkleSpeed: 0.15, syncTwinkle: false,
     lifeSeconds: null, lifeDelayMax: null, glowBlur: 3,
   },
 };
+
+/** 模式 → 颜色（单一事实来源：SPECS.colorKey，StaticCore 与 buildPreset 共用） */
+export function modeColor(mode: ParticleMode, colors: ParticleColors): string {
+  return colors[SPECS[mode].colorKey];
+}
 
 /**
  * 构建指定模式的 tsParticles 选项。
@@ -106,7 +111,7 @@ export function buildPreset(
   ctx: PresetContext,
 ): RecursivePartial<IOptions> {
   const spec = SPECS[mode];
-  const color = spec.color(ctx.colors);
+  const color = ctx.colors[spec.colorKey];
   return {
     fpsLimit: 60,
     detectRetina: true,

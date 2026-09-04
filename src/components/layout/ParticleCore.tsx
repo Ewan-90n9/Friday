@@ -5,6 +5,7 @@ import { useThemeStore } from "@/store/themeStore";
 import { useParticleMode } from "./particles/useParticleMode";
 import {
   buildPreset,
+  modeColor,
   readParticleColors,
   type ParticleColors,
 } from "./particles/presets";
@@ -17,7 +18,11 @@ const ZONE_HEIGHT = 36;
 // 引擎只加载一次（StrictMode 双挂载/组件重挂载时复用）
 let engineReady: Promise<void> | null = null;
 function ensureEngine(): Promise<void> {
-  engineReady ??= loadSlim(tsParticles);
+  engineReady ??= loadSlim(tsParticles).catch((e) => {
+    // 加载失败：重置单例，下次挂载重试（而非永久卡死在 rejected promise）
+    engineReady = null;
+    throw e;
+  });
   return engineReady;
 }
 
@@ -78,7 +83,9 @@ export function ParticleCore() {
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !ready) return;
-    void container.reset(buildPreset(mode, { colors, glow }));
+    container.reset(buildPreset(mode, { colors, glow })).catch(() => {
+      // 容器已销毁（卸载/快速模式切换）——静默忽略
+    });
   }, [mode, colors, glow, ready]);
 
   if (reducedMotion) {
@@ -97,16 +104,7 @@ export function ParticleCore() {
 
 /** reduced-motion 静态形态：当前模式颜色 的 4 个静止色点，无任何动画（spec §6） */
 function StaticCore({ mode, colors }: { mode: ParticleMode; colors: ParticleColors }) {
-  const color =
-    mode === "executing"
-      ? colors.success
-      : mode === "awaiting"
-        ? colors.warning
-        : mode === "error"
-          ? colors.destructive
-          : mode === "done"
-            ? colors.celebration
-            : colors.accent;
+  const color = modeColor(mode, colors);
   return (
     <div
       className="flex items-center gap-1.5 shrink-0"
