@@ -17,7 +17,9 @@ describe("buildPreset（六态映射，spec §4）", () => {
     const p = buildPreset("thinking", ctx);
     expect(p.particles?.number?.value).toBe(36);
     expect(p.particles?.color?.value).toBe(ctx.colors.accent);
-    expect((p.particles?.life as any)?.enable).toBe(false);
+    // 字段在 v3 engine 全局类型未声明/为联合类型（life/links 为插件声明，outModes/fullScreen 为非递归联合），叶子级 as any 是最小妥协
+    expect((p.particles?.life as any)?.count).toBe(0);
+    expect((p.particles?.life as any)?.duration?.value).toBe(0);
   });
 
   it("executing 用 success、40 粒子、高速", () => {

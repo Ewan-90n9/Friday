@@ -10,6 +10,7 @@ export interface ParticleColors {
   celebration: string;
 }
 
+/** fallback 值与 globals.css :root 保持同步 */
 export function readParticleColors(): ParticleColors {
   const css = getComputedStyle(document.documentElement);
   const get = (name: string, fallback: string) => {
@@ -97,8 +98,8 @@ const SPECS: Record<ParticleMode, ModeSpec> = {
 
 /**
  * 构建指定模式的 tsParticles 选项。
- * 注意：每个预设必须显式声明全部可变字段——container.loadOptions 是深合并，
- * 残留上一模式的生命期/方向/速度会造成"粒子全体消失"等 bug。
+ * 注意：每个预设显式声明全部可变字段——无论上层用整体重建（reset）还是
+ * 深合并（options.load）方式应用，都不会残留上一模式的状态。
  */
 export function buildPreset(
   mode: ParticleMode,
@@ -138,7 +139,7 @@ export function buildPreset(
               duration: { value: spec.lifeSeconds },
               delay: { value: { min: 0, max: spec.lifeDelayMax ?? 0 } },
             }
-          : { enable: false },
+          : { count: 0, duration: { value: 0 }, delay: { value: 0 } },
       links: { enable: false },
       shadow: { enable: true, blur: spec.glowBlur * ctx.glow, color: { value: color } },
     },

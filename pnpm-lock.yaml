@@ -18,10 +18,10 @@ importers:
         specifier: ^2
         version: 2.3.5
       '@tsparticles/engine':
-        specifier: ^3.9.1
+        specifier: 3.9.1
         version: 3.9.1
       '@tsparticles/slim':
-        specifier: ^3.9.1
+        specifier: 3.9.1
         version: 3.9.1
       react:
         specifier: ^19
