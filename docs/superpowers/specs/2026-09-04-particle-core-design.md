@@ -67,14 +67,14 @@ tsParticles v3 模块化架构，预计引入约 40-60KB gzip，对桌面 Tauri 
 | executing | `--success` | ~40 | 快（2.2） | 扩散半径、轻微抖动、高频明灭 |
 | awaiting | `--warning` | ~24 | 极慢 | 收紧成环、同步微起伏 |
 | error | `--destructive` | ~40 | 中 | 一次性向外 burst 后余烬漂浮 |
-| done | #A78BFA（庆祝专用，非语义色） | ~40 | 中 | 一次性绽放、2600ms 内 opacity 衰减至 idle 水平 |
+| done | `--particle-celebration`（#A78BFA，庆祝专用，无语义对应） | ~40 | 中 | 一次性绽放、2600ms 内 opacity 衰减至 idle 水平 |
 | idle | `--accent` 低饱和 | ~14 | 近零 | alpha≈4%，6-8s 超慢明灭 |
 
 瞬态（error / done）用 tsParticles emitter burst 实现。
 
 ## 5. 主题处理
 
-- 粒子颜色不硬编码：初始化时从 CSS 变量（`--accent` / `--success` / `--warning` / `--destructive`）读取；唯一例外是 done 态的庆祝紫 #A78BFA（见 §4，无对应语义 token，各主题通用）
+- 粒子颜色不硬编码：初始化时从 CSS 变量（`--accent` / `--success` / `--warning` / `--destructive` / `--particle-celebration`）读取；done 态庆祝紫定义在 `globals.css` 的 `:root`（`--particle-celebration: #A78BFA`，无对应语义 token、三主题通用，是颜色走 token 约定的合规实现）
 - `MutationObserver` 监听 `<html data-theme>` 变化，主题切换后刷新粒子颜色
 - 三主题（暗色 / 浅色 / 暖白）自动适配：浅色系主题的语义色本就是加深过的变体（如 accent #2563EB），亮色顶栏上对比度足够
 - 辉光强度：暗色全辉光；浅色 / 暖白降为约 40%（亮底上强辉光发灰）
@@ -82,6 +82,7 @@ tsParticles v3 模块化架构，预计引入约 40-60KB gzip，对桌面 Tauri 
 ## 6. 边界情况
 
 - **`prefers-reduced-motion`**：遵循设计语言强制约束——粒子区渲染静态形态（当前模式的 3-5 个静止色点），无任何动画
+- **持续动画备案**：idle 待机呼吸是无限循环动画，但其语义为「待机状态指示」（近设备待机灯）而非纯装饰；强度仅约 4%、周期 6-8s，且为全应用唯一环境动画，符合动画克制原则。动画时长 token（`--duration-*`）为 UI 过渡专用，不适用环境循环动画，粒子节奏独立成体系
 - **窗口最小化 / 后台**：rAF 自动暂停，无额外处理
 - **组件卸载 / 会话切换**：destroy 容器、清理 MutationObserver 与瞬态 timer；粒子只反映当前活跃会话
 - **降级**：tsParticles 初始化失败时粒子区静默隐藏，顶栏布局不受影响（容器占位保留，内容为空）

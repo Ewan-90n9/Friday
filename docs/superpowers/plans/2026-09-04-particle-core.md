@@ -234,6 +234,7 @@ git commit -m "feat(ui): particle mode state machine (pure) with tests"
 **Files:**
 - Test: `src/components/layout/particles/presets.test.ts`
 - Create: `src/components/layout/particles/presets.ts`
+- Modify: `src/styles/globals.css`（`:root` 语义色区，约 27-38 行）
 
 - [ ] **Step 1: 写失败测试**
 
@@ -241,7 +242,7 @@ git commit -m "feat(ui): particle mode state machine (pure) with tests"
 
 ```ts
 import { describe, expect, it } from "vitest";
-import { buildPreset, DONE_COLOR, type PresetContext } from "./presets";
+import { buildPreset, type PresetContext } from "./presets";
 
 const ctx: PresetContext = {
   colors: {
@@ -249,6 +250,7 @@ const ctx: PresetContext = {
     success: "#22C55E",
     warning: "#EAB308",
     destructive: "#EF4444",
+    celebration: "#A78BFA",
   },
   glow: 1,
 };
@@ -283,9 +285,9 @@ describe("buildPreset（六态映射，spec §4）", () => {
     expect(p.particles?.move?.outModes?.default).toBe("out");
   });
 
-  it("done 用庆祝紫（唯一硬编码色，spec §5）", () => {
+  it("done 用庆祝紫 token（--particle-celebration，spec §5）", () => {
     const p = buildPreset("done", ctx);
-    expect(p.particles?.color?.value).toBe(DONE_COLOR);
+    expect(p.particles?.color?.value).toBe(ctx.colors.celebration);
     expect(p.particles?.life?.count).toBe(1);
   });
 
@@ -321,18 +323,26 @@ Expected: FAIL —— `Cannot find module './presets'`
 
 - [ ] **Step 3: 实现**
 
-`src/components/layout/particles/presets.ts`：
+先加 token。`src/styles/globals.css` 的 `:root` 语义色区（`--info` 之后、`--ring` 之前）插入：
+
+```css
+  /* ── 粒子区专用（spec §5：庆祝紫，无语义对应，三主题通用） ── */
+  --particle-celebration: #A78BFA;
+```
+
+然后 `src/components/layout/particles/presets.ts`：
 
 ```ts
 import type { IOptions, RecursivePartial } from "@tsparticles/engine";
 import type { ParticleMode } from "./deriveMode";
 
-/** 从 CSS 变量读取语义色（三主题自动适配，spec §5） */
+/** 从 CSS 变量读取粒子色板（三主题自动适配，spec §5） */
 export interface ParticleColors {
   accent: string;
   success: string;
   warning: string;
   destructive: string;
+  celebration: string;
 }
 
 export function readParticleColors(): ParticleColors {
@@ -346,11 +356,9 @@ export function readParticleColors(): ParticleColors {
     success: get("--success", "#22C55E"),
     warning: get("--warning", "#EAB308"),
     destructive: get("--destructive", "#EF4444"),
+    celebration: get("--particle-celebration", "#A78BFA"),
   };
 }
-
-/** 完成瞬态庆祝色：无对应语义 token，各主题通用（spec §5 唯一例外） */
-export const DONE_COLOR = "#A78BFA";
 
 export interface PresetContext {
   colors: ParticleColors;
@@ -407,7 +415,7 @@ const SPECS: Record<ParticleMode, ModeSpec> = {
     lifeSeconds: 3, lifeDelayMax: 1.2, glowBlur: 10,
   },
   done: {
-    count: 40, color: () => DONE_COLOR,
+    count: 40, color: (c) => c.celebration,
     sizeMin: 1.0, sizeMax: 2.4,
     speed: 1.2, direction: "outside", straight: true, outMode: "out",
     opacityMin: 0.5, opacityMax: 1.0, twinkleSpeed: 1.5, syncTwinkle: false,
@@ -481,7 +489,7 @@ Expected: PASS（deriveMode + presets 全绿）
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add src/components/layout/particles/presets.ts src/components/layout/particles/presets.test.ts
+git add src/components/layout/particles/presets.ts src/components/layout/particles/presets.test.ts src/styles/globals.css
 git commit -m "feat(ui): six-state particle presets with theme-aware colors"
 ```
 
@@ -624,7 +632,6 @@ import { useThemeStore } from "@/store/themeStore";
 import { useParticleMode } from "./particles/useParticleMode";
 import {
   buildPreset,
-  DONE_COLOR,
   readParticleColors,
   type ParticleColors,
 } from "./particles/presets";
@@ -724,7 +731,7 @@ function StaticCore({ mode, colors }: { mode: ParticleMode; colors: ParticleColo
         : mode === "error"
           ? colors.destructive
           : mode === "done"
-            ? DONE_COLOR
+            ? colors.celebration
             : colors.accent;
   return (
     <div
