@@ -590,6 +590,12 @@ export function useParticleMode(): ParticleMode {
 
     const t = detectTransient(prev.run, run);
     prevRef.current = { sessionId: signals.sessionId, run };
+
+    // 新一轮运行开始：清除上一轮可能残留的瞬态（timer 已被 cleanup 清掉，但 state 未必）
+    if (run.streaming) {
+      setTransient(null);
+    }
+
     if (t) {
       setTransient({ mode: t.mode });
       const timer = window.setTimeout(() => setTransient(null), t.durationMs);
