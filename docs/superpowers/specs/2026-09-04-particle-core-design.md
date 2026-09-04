@@ -3,6 +3,7 @@
 > 日期：2026-09-04
 > 状态：已评审通过（brainstorming 产出）
 > 范围：纯前端（React + tsParticles），无 Rust 后端改动
+> **修订 2026-09-04（v0.15.0 发布后）**：v1 的 thinking（蓝）/executing（绿）按状态切换在实际使用中出现高频蓝绿抖动、切换生硬。修订为**颜色跟时间走**：两态合并为单一 `running` 态（绿色），随运行时间经 CSS filter 渐进增强激烈度（saturate/brightness/hue-rotate，5 分钟到满强度）；awaiting/error/done/idle 不变。§3/§4 已按修订后口径更新。
 
 ## 1. 背景与目标
 
@@ -47,30 +48,41 @@ tsParticles v3 模块化架构，预计引入约 40-60KB gzip，对桌面 Tauri 
 
 ## 3. 状态机
 
-派生 selector（优先级从高到低）：
+派生 selector（优先级从高到低，修订后）：
 
 | 优先级 | 条件 | 模式 |
 |---|---|---|
 | 1 | 存在待确认卡片（pendingConfirm） | `awaiting` |
-| 2 | 任一 tool part `status === "running"` | `executing` |
-| 3 | 当前 agent 消息 `status === "streaming"` | `thinking` |
-| 4 | 最近一次运行结束（瞬态，本地计时） | `error`（3s）/ `done`（2.6s） |
-| 5 | 默认 | `idle` |
+| 2 | 运行中（agent streaming **或** 任一工具执行中，合并判断） | `running` |
+| 3 | 最近一次运行结束（瞬态，本地计时） | `error`（3s）/ `done`（2.6s） |
+| 4 | 默认 | `idle` |
 
-瞬态规则：消息 status 离开 `streaming` 且为 `error` / `done` 时触发对应瞬态预设 + 组件本地 timer，到时回落 `idle`。`stopped`（用户手动停止）归入沉寂路径，不做绽放。
+瞬态规则：运行结束（streaming 与工具全部结束）且消息 status 为 `error` / `done` 时触发对应瞬态预设 + 组件本地 timer，到时回落 `idle`。`stopped`（用户手动停止）归入沉寂路径，不做绽放。
 
-## 4. 六态预设
+`running` 态携带 `runStartedAt` 时间戳：首次进入 running 时记录；awaiting 打断期间保留（恢复后激烈度从原进度继续）；回到 idle 清除；会话切换清除并重新播种。
+
+## 4. 五态预设 + 时间激烈度
 
 | 模式 | 颜色源 | 粒子数 | 速度 | 关键行为 |
 |---|---|---|---|---|
-| thinking | `--accent`（暗色 #3B82F6） | ~36 | 慢（0.6） | 小范围漂移 + opacity 呼吸动画 |
-| executing | `--success` | ~40 | 快（2.2） | 扩散半径、轻微抖动、高频明灭 |
-| awaiting | `--warning` | ~24 | 极慢 | 收紧成环、同步微起伏 |
-| error | `--destructive` | ~40 | 中 | 一次性向外 burst 后余烬漂浮 |
+| running | `--success`（绿） | ~36 | 1.4 | 中等能量漂移；叠加时间激烈度 filter（见下） |
+| awaiting | `--warning` | ~24 | 极慢 | 收紧集群、同步微起伏 |
+| error | `--destructive` | ~40 | 快 | 一次性向外 burst 后余烬漂浮 |
 | done | `--particle-celebration`（#A78BFA，庆祝专用，无语义对应） | ~40 | 中 | 一次性绽放、2600ms 内 opacity 衰减至 idle 水平 |
-| idle | `--accent` 低饱和 | ~14 | 近零 | alpha≈4%，6-8s 超慢明灭 |
+| idle | `--accent` 低饱和 | ~14 | 近零 | alpha≈12%→30%、size 0.8-1.8、微辉光，6-8s 超慢明灭（纯黑底上可辨认的待机微光；v0.15.0 后修正：原 4-12% 在暗色下不可见） |
 
-瞬态（error / done）用 tsParticles emitter burst 实现。
+瞬态（error / done）用 life.count=1 + outMode "out" 实现一次绽放后消散。
+
+**时间激烈度（running 态专属）**：粒子区 wrapper 上应用 CSS filter，随 `now - runStartedAt` 线性增强，**5 分钟（300s）到满强度后保持**：
+
+| 时刻 | filter |
+|---|---|
+| 0s | `saturate(1) brightness(1) hue-rotate(0deg)` |
+| 300s | `saturate(1.45) brightness(1.25) hue-rotate(25deg)`（向黄绿偏移） |
+
+- filter 作用于 canvas 整体合成像素（粒子 + 辉光一起增强），GPU 合成零粒子重建，全程平滑
+- 激烈度由纯函数 `runIntensity(elapsedMs)` 计算（intensity.ts），组件以 1s tick 更新
+- 语义：运行越久 = 诊断进入越深的阶段，颜色越"热"
 
 ## 5. 主题处理
 

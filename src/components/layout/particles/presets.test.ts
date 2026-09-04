@@ -44,10 +44,10 @@ describe("buildPreset（五态映射，spec §4 修订）", () => {
     expect((p.particles?.life as any)?.count).toBe(1);
   });
 
-  it("idle 极低透明度待机呼吸", () => {
+  it("idle 低透明度待机呼吸（暗色下可辨认）", () => {
     const p = buildPreset("idle", ctx);
     expect(p.particles?.number?.value).toBe(14);
-    expect(p.particles?.opacity?.value).toEqual({ min: 0.04, max: 0.12 });
+    expect(p.particles?.opacity?.value).toEqual({ min: 0.12, max: 0.3 });
     expect(p.particles?.move?.speed).toBe(0.1);
   });
 

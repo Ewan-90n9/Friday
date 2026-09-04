@@ -82,10 +82,10 @@ const SPECS: Record<ParticleMode, ModeSpec> = {
   },
   idle: {
     count: 14, colorKey: "accent",
-    sizeMin: 0.6, sizeMax: 1.4,
+    sizeMin: 0.8, sizeMax: 1.8,
     speed: 0.1, direction: "none", straight: false, outMode: "bounce",
-    opacityMin: 0.04, opacityMax: 0.12, twinkleSpeed: 0.15, syncTwinkle: false,
-    lifeSeconds: null, lifeDelayMax: null, glowBlur: 3,
+    opacityMin: 0.12, opacityMax: 0.3, twinkleSpeed: 0.15, syncTwinkle: false,
+    lifeSeconds: null, lifeDelayMax: null, glowBlur: 5,
   },
 };
 
