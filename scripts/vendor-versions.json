@@ -5,7 +5,7 @@
     "release_repo": "Ewan-90n9/Friday",
     "tag": "analyzer-v0.2.0-friday",
     "asset": "jvm-heap-dump-mcp-0.2.0-friday.jar",
-    "sha256": null
+    "sha256": "abad19652ca5e62bdc8b67c9c776f7df5a0c3f96b3146cbd589e8f91d43e9597"
   },
   "arthas": {
     "repo": "alibaba/arthas",
