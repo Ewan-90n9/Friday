@@ -1,40 +1,161 @@
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
-@theme inline {
+/* ── 主题色板：暗色（默认） ── */
+:root {
   /* ── 纯黑基底 ── */
-  --color-background: #000000;
-  --color-foreground: #E8E8E8;
+  --background: #000000;
+  --foreground: #E8E8E8;
 
   /* ── 层级表面（黑色之上的微亮分层） ── */
-  --color-surface-1: #0A0A0A;
-  --color-surface-2: #121212;
-  --color-surface-3: #1A1A1A;
+  --surface-1: #0A0A0A;
+  --surface-2: #121212;
+  --surface-3: #1A1A1A;
 
   /* ── 兼容旧 token ── */
-  --color-card: #0D0D0D;
-  --color-card-foreground: #E8E8E8;
-  --color-primary: #121212;
-  --color-primary-foreground: #FFFFFF;
-  --color-secondary: #1A1A1A;
-  --color-secondary-foreground: #E8E8E8;
-  --color-muted: #121212;
-  --color-muted-foreground: #909090;
-  --color-border: rgba(255, 255, 255, 0.08);
-  --color-border-strong: rgba(255, 255, 255, 0.14);
+  --card: #0D0D0D;
+  --card-foreground: #E8E8E8;
+  --primary: #121212;
+  --primary-foreground: #FFFFFF;
+  --secondary: #1A1A1A;
+  --secondary-foreground: #E8E8E8;
+  --muted: #121212;
+  --muted-foreground: #909090;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
 
   /* ── 语义色 ── */
-  --color-accent: #3B82F6;
-  --color-accent-foreground: #FFFFFF;
-  --color-accent-glow: rgba(59, 130, 246, 0.15);
-  --color-success: #22C55E;
-  --color-success-foreground: #000000;
-  --color-destructive: #EF4444;
-  --color-destructive-foreground: #FFFFFF;
-  --color-warning: #EAB308;
-  --color-warning-foreground: #000000;
-  --color-info: #3B82F6;
-  --color-ring: #3B82F6;
+  --accent: #3B82F6;
+  --accent-foreground: #FFFFFF;
+  --accent-glow: rgba(59, 130, 246, 0.15);
+  --success: #22C55E;
+  --success-foreground: #000000;
+  --destructive: #EF4444;
+  --destructive-foreground: #FFFFFF;
+  --warning: #EAB308;
+  --warning-foreground: #000000;
+  --info: #3B82F6;
+  --ring: #3B82F6;
+
+  /* ── 主题相关基础样式 ── */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.08);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.15);
+  --selection-background: rgba(59, 130, 246, 0.25);
+  --selection-foreground: #FFFFFF;
+  --dialog-backdrop: rgba(0, 0, 0, 0.6);
+
+  color-scheme: dark;
+}
+
+/* ── 主题色板：浅色（冷调中性） ── */
+[data-theme="light"] {
+  --background: #FFFFFF;
+  --foreground: #1A1A1A;
+
+  --surface-1: #F6F6F7;
+  --surface-2: #EFEFF1;
+  --surface-3: #E6E6E9;
+
+  --card: #FFFFFF;
+  --card-foreground: #1A1A1A;
+  --primary: #1A1A1A;
+  --primary-foreground: #FFFFFF;
+  --secondary: #E6E6E9;
+  --secondary-foreground: #1A1A1A;
+  --muted: #EFEFF1;
+  --muted-foreground: #6B6B6B;
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.14);
+
+  --accent: #2563EB;
+  --accent-foreground: #FFFFFF;
+  --accent-glow: rgba(37, 99, 235, 0.10);
+  --success: #15803D;
+  --success-foreground: #FFFFFF;
+  --destructive: #DC2626;
+  --destructive-foreground: #FFFFFF;
+  --warning: #B45309;
+  --warning-foreground: #FFFFFF;
+  --info: #2563EB;
+  --ring: #2563EB;
+
+  --scrollbar-thumb: rgba(0, 0, 0, 0.18);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.30);
+  --selection-background: rgba(37, 99, 235, 0.20);
+  --selection-foreground: #1A1A1A;
+  --dialog-backdrop: rgba(0, 0, 0, 0.45);
+
+  color-scheme: light;
+}
+
+/* ── 主题色板：暖白（纸感暖调） ── */
+[data-theme="warm"] {
+  --background: #FAF7F1;
+  --foreground: #292524;
+
+  --surface-1: #F3EEE4;
+  --surface-2: #ECE5D8;
+  --surface-3: #E2D9C8;
+
+  --card: #FFFEFA;
+  --card-foreground: #292524;
+  --primary: #292524;
+  --primary-foreground: #FFFFFF;
+  --secondary: #E2D9C8;
+  --secondary-foreground: #292524;
+  --muted: #EFE8DB;
+  --muted-foreground: #6F675C;
+  --border: rgba(0, 0, 0, 0.10);
+  --border-strong: rgba(0, 0, 0, 0.18);
+
+  --accent: #2563EB;
+  --accent-foreground: #FFFFFF;
+  --accent-glow: rgba(37, 99, 235, 0.10);
+  --success: #15803D;
+  --success-foreground: #FFFFFF;
+  --destructive: #DC2626;
+  --destructive-foreground: #FFFFFF;
+  --warning: #B45309;
+  --warning-foreground: #FFFFFF;
+  --info: #2563EB;
+  --ring: #2563EB;
+
+  --scrollbar-thumb: rgba(87, 75, 49, 0.22);
+  --scrollbar-thumb-hover: rgba(87, 75, 49, 0.36);
+  --selection-background: rgba(37, 99, 235, 0.20);
+  --selection-foreground: #292524;
+  --dialog-backdrop: rgba(0, 0, 0, 0.45);
+
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-glow: var(--accent-glow);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-ring: var(--ring);
 
   /* ── 间距（8dp 节奏） ── */
   --spacing-1: 4px;
@@ -80,10 +201,6 @@
 }
 
 @layer base {
-  * {
-    color-scheme: dark;
-  }
-
   html, body, #root {
     height: 100%;
   }
@@ -112,12 +229,12 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--scrollbar-thumb);
     border-radius: 9999px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.15);
+    background: var(--scrollbar-thumb-hover);
   }
 
   ::-webkit-scrollbar-corner {
@@ -126,8 +243,8 @@
 
   /* ── 文本选中 ── */
   ::selection {
-    background: rgba(59, 130, 246, 0.25);
-    color: #FFFFFF;
+    background: var(--selection-background);
+    color: var(--selection-foreground);
   }
 
   /* ── 焦点环 ── */
@@ -169,7 +286,7 @@ dialog {
 }
 
 dialog::backdrop {
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--dialog-backdrop);
   backdrop-filter: blur(2px);
 }
 

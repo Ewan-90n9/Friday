@@ -30,7 +30,7 @@ Friday 是面向软件开发人员的**远程环境运行时故障诊断 Agent**
 
 ## 已实现功能
 
-- **骨架层**：SQLite 初始化、tracing 日志、Tauri IPC 命令注册、三栏暗色布局
+- **骨架层**：SQLite 初始化、tracing 日志、Tauri IPC 命令注册、三栏布局；多主题（暗色默认/浅色/暖白，CSS 变量 + `data-theme`，顶栏切换、localStorage 持久化，详见 [设计语言 · 多主题](docs/design/design-language.md)）
 - **Agent 自动识别**：检测 PATH 上的 opencode / codeagentcli 二进制、版本探测、持久化到 SQLite、UI 设置弹窗、手动添加路径、切换 active agent
 - **多 Provider 支持**：opencode 和 codeagentcli 同时支持，用户可在设置中切换。spawn 通过 `CommandConfig` 按 provider 分发不同 CLI 参数，stream 解析器同时处理两种 NDJSON 格式（opencode 的 `part.*` 和 codeagentcli 的 Claude API 风格 `message.content[]`）
 - **对话管道**：多轮对话、NDJSON 流式解析、Friday 人格 system prompt、会话列表、流式渲染（文本 + 工具卡片）
