@@ -8,9 +8,10 @@
 
 **Tech Stack:** React 19 + zustand v5、`@tsparticles/engine` + `@tsparticles/slim`（v3，vanilla API，不用 React wrapper）、vitest（本仓库首个前端测试，仅测纯函数，零配置）。
 
-**与 spec 的两处实现细化**（行为不变）：
+**与 spec 的三处实现细化**（行为不变）：
 1. 主题色刷新用 `useThemeStore` 订阅替代 MutationObserver——`themeStore.applyTheme` 是 `dataset.theme` 唯一写入方，store 即事实来源。
 2. 粒子颜色在主题切换时整组重读（`getComputedStyle` 读 `--accent` 等），替代逐粒子换色。
+3. 模式切换用 `container.reset(preset)` 而非 `loadOptions+refresh`——v3.9.1 Container 无 `loadOptions` 方法；`reset()` 全新重建 options（无深合并残留）、内部自带 `refresh()`、保留 canvas DOM。依赖精确锁定 `3.9.1`（v4 移除了 shadow/paint 重构，与设计不符）。
 
 ---
 
@@ -256,11 +257,12 @@ const ctx: PresetContext = {
 };
 
 describe("buildPreset（六态映射，spec §4）", () => {
-  it("thinking 用 accent、36 粒子、无生命期", () => {
+  it("thinking 用 accent、36 粒子、无限生命期（显式重置）", () => {
     const p = buildPreset("thinking", ctx);
     expect(p.particles?.number?.value).toBe(36);
     expect(p.particles?.color?.value).toBe(ctx.colors.accent);
-    expect(p.particles?.life?.enable).toBe(false);
+    expect((p.particles?.life as any)?.count).toBe(0);
+    expect((p.particles?.life as any)?.duration.value).toBe(0);
   });
 
   it("executing 用 success、40 粒子、高速", () => {
@@ -432,8 +434,9 @@ const SPECS: Record<ParticleMode, ModeSpec> = {
 
 /**
  * 构建指定模式的 tsParticles 选项。
- * 注意：每个预设必须显式声明全部可变字段——container.loadOptions 是深合并，
- * 残留上一模式的生命期/方向/速度会造成"粒子全体消失"等 bug。
+ * 注意：每个预设显式声明全部可变字段——无论上层用整体重建（reset）还是
+ * 深合并（options.load）方式应用，都不会残留上一模式的生命期/方向/速度。
+ * 非瞬态模式的 life 显式置 count:0（v3 ILife 无 enable 字段，count≤0 即无限）。
  */
 export function buildPreset(
   mode: ParticleMode,
@@ -473,7 +476,7 @@ export function buildPreset(
               duration: { value: spec.lifeSeconds },
               delay: { value: { min: 0, max: spec.lifeDelayMax ?? 0 } },
             }
-          : { enable: false },
+          : { count: 0, duration: { value: 0 }, delay: { value: 0 } },
       links: { enable: false },
       shadow: { enable: true, blur: spec.glowBlur * ctx.glow, color: { value: color } },
     },
@@ -700,11 +703,12 @@ export function ParticleCore() {
   }, [reducedMotion]);
 
   // 模式/主题/颜色变化：应用对应预设，不销毁容器（spec §2.1）
+  // v3.9.1 无 container.loadOptions；reset() 全新重建 options（无深合并残留）、
+  // 内部自带 refresh()、保留 canvas DOM 与容器实例
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !ready) return;
-    container.loadOptions(buildPreset(mode, { colors, glow }));
-    void container.refresh();
+    void container.reset(buildPreset(mode, { colors, glow }));
   }, [mode, colors, glow, ready]);
 
   if (reducedMotion) {
