@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { GearSix, ShieldWarning } from "@phosphor-icons/react";
 import { FridayMark } from "@/components/FridayMark";
+import { ParticleCore } from "@/components/layout/ParticleCore";
 import { useAgentStore } from "@/store/agentStore";
 import { useSettingsStore } from "@/store/settingsStore";
 import { AgentSettingsDialog } from "@/components/agents/AgentSettingsDialog";
@@ -66,6 +67,7 @@ export function TopBar() {
           >
             Friday
           </span>
+          <ParticleCore />
         </div>
       </div>
 
