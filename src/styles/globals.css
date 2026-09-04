@@ -35,6 +35,8 @@
   --warning: #EAB308;
   --warning-foreground: #000000;
   --info: #3B82F6;
+  /* ── 粒子区专用（spec §5：庆祝紫，无语义对应，三主题通用） ── */
+  --particle-celebration: #A78BFA;
   --ring: #3B82F6;
 
   /* ── 主题相关基础样式 ── */
