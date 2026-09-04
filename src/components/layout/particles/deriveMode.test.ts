@@ -52,12 +52,16 @@ describe("detectTransient（瞬态检测）", () => {
     expect(
       detectTransient(
         { streaming: false, status: "done" },
-        { streaming: false, status: "idle" as never },
+        { streaming: false, status: null },
       ),
     ).toBeNull();
   });
 
   it("仍在 streaming 不触发", () => {
     expect(detectTransient(streaming, streaming)).toBeNull();
+  });
+
+  it("瞬态时长钉住 spec 值（error 3s / done 2.6s）", () => {
+    expect(TRANSIENT_MS).toEqual({ error: 3000, done: 2600 });
   });
 });
