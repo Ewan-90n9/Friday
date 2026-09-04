@@ -74,7 +74,7 @@ tsParticles v3 模块化架构，预计引入约 40-60KB gzip，对桌面 Tauri 
 
 ## 5. 主题处理
 
-- 粒子颜色不硬编码：初始化时从 CSS 变量（`--accent` / `--success` / `--warning` / `--destructive`）读取
+- 粒子颜色不硬编码：初始化时从 CSS 变量（`--accent` / `--success` / `--warning` / `--destructive`）读取；唯一例外是 done 态的庆祝紫 #A78BFA（见 §4，无对应语义 token，各主题通用）
 - `MutationObserver` 监听 `<html data-theme>` 变化，主题切换后刷新粒子颜色
 - 三主题（暗色 / 浅色 / 暖白）自动适配：浅色系主题的语义色本就是加深过的变体（如 accent #2563EB），亮色顶栏上对比度足够
 - 辉光强度：暗色全辉光；浅色 / 暖白降为约 40%（亮底上强辉光发灰）
