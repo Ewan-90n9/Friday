@@ -78,10 +78,12 @@ export function useParticleMode(): ParticleState {
     };
     const prev = prevRef.current;
 
-    // 会话切换：直接重置快照并清除旧瞬态，防止把旧会话的完成误判成本会话瞬态
+    // 会话切换：直接重置快照并清除旧瞬态与 run 计时，防止把旧会话的完成误判成本会话瞬态、
+    // 以及新会话继承旧会话的起点（A running → B running 时 base 不变，只能在这里清）
     if (prev.sessionId !== signals.sessionId) {
       prevRef.current = { sessionId: signals.sessionId, run };
       setTransient(null);
+      setRunStartedAt(null);
       return;
     }
 
@@ -99,14 +101,17 @@ export function useParticleMode(): ParticleState {
     }
   }, [signals.sessionId, signals.active, signals.lastAgentStatus]);
 
-  // run 计时：running 且尚无起点 → 记下当前时刻；回到 idle → 清空；awaiting 不动
+  // run 计时：running 且尚无起点 → 记下当前时刻；回到 idle → 清空；awaiting 不动。
+  // 注意顺序依赖：上方会话守卫 effect 声明在前，切换会话时先入队 setRunStartedAt(null)，
+  // 本 effect（sessionId 入 deps 才会被唤醒）随后的 prev ?? Date.now() 基于清空后的
+  // null 重新播种——effect 声明顺序不可颠倒。
   useEffect(() => {
     if (base === "running") {
       setRunStartedAt((prev) => prev ?? Date.now());
     } else if (base === "idle") {
       setRunStartedAt(null);
     }
-  }, [base]);
+  }, [base, signals.sessionId]);
 
   // 基础模式非 idle 时压倒瞬态（spec §3 优先级）；瞬态期间 base 已是 idle，计时随之清空
   const mode: ParticleMode = base !== "idle" ? base : (transient?.mode ?? "idle");
