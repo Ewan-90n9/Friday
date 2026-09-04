@@ -2,27 +2,21 @@ import { describe, expect, it } from "vitest";
 import { detectTransient, deriveBaseMode, TRANSIENT_MS } from "./deriveMode";
 
 describe("deriveBaseMode（优先级从高到低）", () => {
-  it("优先级1：待确认压倒工具执行与思考", () => {
+  it("优先级1：待确认压倒运行", () => {
     expect(
-      deriveBaseMode({ pendingConfirm: true, toolRunning: true, agentStreaming: true }),
+      deriveBaseMode({ pendingConfirm: true, active: true }),
     ).toBe("awaiting");
   });
 
-  it("优先级2：工具执行压倒思考", () => {
+  it("优先级2：运行中（思考与工具执行合并为一个状态）", () => {
     expect(
-      deriveBaseMode({ pendingConfirm: false, toolRunning: true, agentStreaming: true }),
-    ).toBe("executing");
-  });
-
-  it("优先级3：仅思考", () => {
-    expect(
-      deriveBaseMode({ pendingConfirm: false, toolRunning: false, agentStreaming: true }),
-    ).toBe("thinking");
+      deriveBaseMode({ pendingConfirm: false, active: true }),
+    ).toBe("running");
   });
 
   it("全部静止则沉寂", () => {
     expect(
-      deriveBaseMode({ pendingConfirm: false, toolRunning: false, agentStreaming: false }),
+      deriveBaseMode({ pendingConfirm: false, active: false }),
     ).toBe("idle");
   });
 });
@@ -46,6 +40,10 @@ describe("detectTransient（瞬态检测）", () => {
 
   it("streaming → stopped 无瞬态（用户手动停止，直接沉寂）", () => {
     expect(detectTransient(streaming, { streaming: false, status: "stopped" })).toBeNull();
+  });
+
+  it("streaming → 无状态（异常断流）无瞬态", () => {
+    expect(detectTransient(streaming, { streaming: false, status: null })).toBeNull();
   });
 
   it("非 streaming 起点不触发", () => {

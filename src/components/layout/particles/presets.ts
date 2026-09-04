@@ -50,21 +50,14 @@ interface ModeSpec {
   glowBlur: number;
 }
 
-/** 六态参数表（spec §4）。瞬态用 life.count=1 + outMode "out" 实现一次绽放后消散。 */
+/** 五态参数表（spec §4 修订）。瞬态用 life.count=1 + outMode "out" 实现一次绽放后消散。 */
 const SPECS: Record<ParticleMode, ModeSpec> = {
-  thinking: {
-    count: 36, colorKey: "accent",
-    sizeMin: 0.8, sizeMax: 2.2,
-    speed: 0.6, direction: "none", straight: false, outMode: "bounce",
-    opacityMin: 0.25, opacityMax: 0.85, twinkleSpeed: 0.8, syncTwinkle: false,
-    lifeSeconds: null, lifeDelayMax: null, glowBlur: 8,
-  },
-  executing: {
-    count: 40, colorKey: "success",
-    sizeMin: 1.0, sizeMax: 2.6,
-    speed: 2.2, direction: "none", straight: false, outMode: "bounce",
-    opacityMin: 0.35, opacityMax: 1.0, twinkleSpeed: 2.4, syncTwinkle: false,
-    lifeSeconds: null, lifeDelayMax: null, glowBlur: 10,
+  running: {
+    count: 36, colorKey: "success",
+    sizeMin: 0.9, sizeMax: 2.4,
+    speed: 1.4, direction: "none", straight: false, outMode: "bounce",
+    opacityMin: 0.3, opacityMax: 0.9, twinkleSpeed: 1.2, syncTwinkle: false,
+    lifeSeconds: null, lifeDelayMax: null, glowBlur: 9,
   },
   awaiting: {
     count: 24, colorKey: "warning",

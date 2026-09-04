@@ -1,7 +1,6 @@
-/** ParticleCore 六态（spec §3/§4） */
+/** ParticleCore 五态（spec §3/§4 修订：思考与工具执行合并为 running，颜色跟时间走） */
 export type ParticleMode =
-  | "thinking"
-  | "executing"
+  | "running"
   | "awaiting"
   | "error"
   | "done"
@@ -12,15 +11,14 @@ export type BaseMode = Exclude<ParticleMode, "error" | "done">;
 
 export interface ModeInput {
   pendingConfirm: boolean;
-  toolRunning: boolean;
-  agentStreaming: boolean;
+  /** 运行中：LLM 流式输出或任一工具执行中（思考与工具执行合并为一个状态） */
+  active: boolean;
 }
 
-/** 优先级：awaiting > executing > thinking > idle（spec §3） */
+/** 优先级：awaiting > running > idle（spec §3 修订） */
 export function deriveBaseMode(input: ModeInput): BaseMode {
   if (input.pendingConfirm) return "awaiting";
-  if (input.toolRunning) return "executing";
-  if (input.agentStreaming) return "thinking";
+  if (input.active) return "running";
   return "idle";
 }
 

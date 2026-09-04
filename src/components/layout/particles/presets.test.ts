@@ -12,21 +12,15 @@ const ctx: PresetContext = {
   glow: 1,
 };
 
-describe("buildPreset（六态映射，spec §4）", () => {
-  it("thinking 用 accent、36 粒子、无生命期", () => {
-    const p = buildPreset("thinking", ctx);
+describe("buildPreset（五态映射，spec §4 修订）", () => {
+  it("running 用 success、36 粒子、速度 1.4、无生命期", () => {
+    const p = buildPreset("running", ctx);
+    expect(p.particles?.color?.value).toBe(ctx.colors.success);
     expect(p.particles?.number?.value).toBe(36);
-    expect(p.particles?.color?.value).toBe(ctx.colors.accent);
+    expect(p.particles?.move?.speed).toBe(1.4);
     // 字段在 v3 engine 全局类型未声明/为联合类型（life/links 为插件声明，outModes/fullScreen 为非递归联合），叶子级 as any 是最小妥协
     expect((p.particles?.life as any)?.count).toBe(0);
     expect((p.particles?.life as any)?.duration?.value).toBe(0);
-  });
-
-  it("executing 用 success、40 粒子、高速", () => {
-    const p = buildPreset("executing", ctx);
-    expect(p.particles?.color?.value).toBe(ctx.colors.success);
-    expect(p.particles?.number?.value).toBe(40);
-    expect(p.particles?.move?.speed).toBe(2.2);
   });
 
   it("awaiting 用 warning 且明暗动画同步（屏息）", () => {
@@ -58,8 +52,8 @@ describe("buildPreset（六态映射，spec §4）", () => {
   });
 
   it("辉光按 glow 缩放（亮色主题 0.4）", () => {
-    const full = buildPreset("thinking", ctx).particles?.shadow?.blur ?? 0;
-    const dim = buildPreset("thinking", { ...ctx, glow: 0.4 }).particles?.shadow?.blur ?? 0;
+    const full = buildPreset("running", ctx).particles?.shadow?.blur ?? 0;
+    const dim = buildPreset("running", { ...ctx, glow: 0.4 }).particles?.shadow?.blur ?? 0;
     expect(dim).toBeCloseTo(full * 0.4, 5);
   });
 
@@ -68,7 +62,7 @@ describe("buildPreset（六态映射，spec §4）", () => {
   });
 
   it("每个预设都显式关闭 links（防 loadOptions 深合并残留）", () => {
-    for (const mode of ["thinking", "executing", "awaiting", "error", "done", "idle"] as const) {
+    for (const mode of ["running", "awaiting", "error", "done", "idle"] as const) {
       expect((buildPreset(mode, ctx).particles?.links as any)?.enable).toBe(false);
     }
   });

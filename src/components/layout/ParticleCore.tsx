@@ -9,6 +9,7 @@ import {
   readParticleColors,
   type ParticleColors,
 } from "./particles/presets";
+import { runIntensity } from "./particles/intensity";
 import type { ParticleMode } from "./particles/deriveMode";
 
 const CANVAS_ID = "friday-particle-core";
@@ -32,13 +33,22 @@ export function ParticleCore() {
   const [ready, setReady] = useState(false);
   const [colors, setColors] = useState<ParticleColors>(() => readParticleColors());
   const theme = useThemeStore((s) => s.theme);
-  const mode = useParticleMode();
+  const { mode, runStartedAt } = useParticleMode();
+  const [now, setNow] = useState(() => Date.now());
   const reducedMotion = useMemo(
     () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     [],
   );
 
   const glow = theme === "dark" ? 1 : 0.4;
+
+  // 运行中每秒刷新当前时刻，驱动激烈度插值（仅重渲染本小组件，可接受）
+  useEffect(() => {
+    if (mode !== "running") return;
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [mode]);
 
   // 主题切换：整组重读 CSS 变量色板（spec §5）
   useEffect(() => {
@@ -88,6 +98,13 @@ export function ParticleCore() {
     });
   }, [mode, colors, glow, ready]);
 
+  // 运行激烈度滤镜：颜色跟时间走，从平静绿渐变到激烈黄绿（spec 修订）
+  let filter: string | undefined;
+  if (mode === "running" && runStartedAt !== null) {
+    const intensity = runIntensity(now - runStartedAt);
+    filter = `saturate(${intensity.saturate}) brightness(${intensity.brightness}) hue-rotate(${intensity.hueRotate}deg)`;
+  }
+
   if (reducedMotion) {
     return <StaticCore mode={mode} colors={colors} />;
   }
@@ -96,7 +113,7 @@ export function ParticleCore() {
     <div
       ref={zoneRef}
       className="shrink-0"
-      style={{ width: ZONE_WIDTH, height: ZONE_HEIGHT }}
+      style={{ width: ZONE_WIDTH, height: ZONE_HEIGHT, filter }}
       aria-hidden="true"
     />
   );

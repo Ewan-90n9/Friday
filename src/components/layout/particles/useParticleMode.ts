@@ -12,8 +12,7 @@ import {
 interface RunSignals {
   sessionId: string | null;
   pendingConfirm: boolean;
-  toolRunning: boolean;
-  agentStreaming: boolean;
+  active: boolean;
   lastAgentStatus: LastRunState["status"];
 }
 
@@ -40,10 +39,18 @@ function readSignals(
     }
   }
   const agentStreaming = running || lastAgentStatus === "streaming";
-  return { sessionId, pendingConfirm, toolRunning, agentStreaming, lastAgentStatus };
+  // 思考与工具执行合并为一个 running 状态（spec 修订：颜色跟时间走）
+  const active = agentStreaming || toolRunning;
+  return { sessionId, pendingConfirm, active, lastAgentStatus };
 }
 
-export function useParticleMode(): ParticleMode {
+export interface ParticleState {
+  mode: ParticleMode;
+  /** 当前 run 的开始时间戳（ms）；无进行中的 run 时为 null。awaiting 中途不打断计时 */
+  runStartedAt: number | null;
+}
+
+export function useParticleMode(): ParticleState {
   const signals = useSessionStore(
     useShallow((s) =>
       readSignals(
@@ -57,6 +64,8 @@ export function useParticleMode(): ParticleMode {
   const base = deriveBaseMode(signals);
 
   const [transient, setTransient] = useState<{ mode: "error" | "done" } | null>(null);
+  // 当前 run 起点：running 且尚无起点时记下，idle 清空；awaiting 保持（同 run 内不打断计时）
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const prevRef = useRef<{ sessionId: string | null; run: LastRunState }>({
     sessionId: null,
     run: { streaming: false, status: null },
@@ -64,8 +73,8 @@ export function useParticleMode(): ParticleMode {
 
   useEffect(() => {
     const run: LastRunState = {
-      streaming: signals.agentStreaming,
-      status: signals.agentStreaming ? "streaming" : signals.lastAgentStatus,
+      streaming: signals.active,
+      status: signals.active ? "streaming" : signals.lastAgentStatus,
     };
     const prev = prevRef.current;
 
@@ -88,9 +97,18 @@ export function useParticleMode(): ParticleMode {
       const timer = window.setTimeout(() => setTransient(null), t.durationMs);
       return () => window.clearTimeout(timer);
     }
-  }, [signals.sessionId, signals.agentStreaming, signals.lastAgentStatus]);
+  }, [signals.sessionId, signals.active, signals.lastAgentStatus]);
 
-  // 基础模式非 idle 时压倒瞬态（spec §3 优先级）
-  if (base !== "idle") return base;
-  return transient?.mode ?? "idle";
+  // run 计时：running 且尚无起点 → 记下当前时刻；回到 idle → 清空；awaiting 不动
+  useEffect(() => {
+    if (base === "running") {
+      setRunStartedAt((prev) => prev ?? Date.now());
+    } else if (base === "idle") {
+      setRunStartedAt(null);
+    }
+  }, [base]);
+
+  // 基础模式非 idle 时压倒瞬态（spec §3 优先级）；瞬态期间 base 已是 idle，计时随之清空
+  const mode: ParticleMode = base !== "idle" ? base : (transient?.mode ?? "idle");
+  return { mode, runStartedAt };
 }
