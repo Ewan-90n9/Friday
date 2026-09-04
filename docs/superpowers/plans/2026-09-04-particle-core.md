@@ -871,3 +871,16 @@ git commit -m "fix(ui): particle core walkthrough fixes"
 **Placeholder scan：** 无 TBD/TODO；所有代码步骤含完整代码；走查步骤含具体操作与预期。✓
 
 **Type consistency：** `ParticleMode` 定义于 deriveMode.ts，presets/useParticleMode/ParticleCore 均从该处导入；`buildPreset(mode, ctx)` 签名与所有调用一致；`Transient`/`TRANSIENT_MS` 名称前后一致。✓
+
+## 执行过程中的实现偏差记录（以提交代码为准）
+
+执行中发现/修正的偏差，最终代码为事实来源：
+
+1. **tsParticles 版本**：安装时最新为 v4.4.0，但 v4 移除 `particles.shadow`（辉光）并将 `particles.color` 迁移到 `paint`，与已批准视觉设计不符 → 降级精确锁定 **3.9.1**（package.json 无 caret）。
+2. **运行时重载 API**：v3.9.1 Container 无 `loadOptions` 方法；正确 API 为 `container.reset(preset)`（全新重建 options、无深合并残留、内部自带 refresh、保留 canvas DOM）。
+3. **life 重置**：v3 `ILife` 无 `enable` 字段，非瞬态预设显式 `life: { count: 0, duration: { value: 0 }, delay: { value: 0 } }`（count≤0 = 无限）。
+4. **stale transient 修复**（Task 4 代码评审产出）：新一轮运行开始（`run.streaming`）时 `setTransient(null)`，防止上轮瞬态残留。
+5. **单一色彩映射源**（Task 5 代码评审产出）：SPECS 用 `colorKey: keyof ParticleColors` 取代 color 闭包；新增 `modeColor(mode, colors)` 导出供 StaticCore 与 buildPreset 共用。
+6. **引擎重试与 reset 兜底**（Task 5 代码评审产出）：`ensureEngine` 失败时重置单例允许重试；`container.reset(...).catch(()=>{})` 吞掉卸载竞态的 rejection。
+7. **测试类型窄化**：presets.test.ts 有 6 处叶子级 `as any`（life/links 为插件声明字段、outModes/fullScreen 为非递归联合），已加注释说明。
+8. **pnpm-workspace.yaml**：pnpm 11 为 @tsparticles/engine 的 advisory install script 写入 `allowBuilds: false`（脚本纯提示性，跳过零影响）。
