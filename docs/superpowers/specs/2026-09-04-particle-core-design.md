@@ -29,9 +29,9 @@ Friday 是远程环境故障诊断 Agent。诊断过程中 Agent 思考、执行
 
 新增 `src/components/layout/ParticleCore.tsx`：
 
-- 画布尺寸约 **112×36px**，插入 `TopBar.tsx` 左侧品牌区（`FridayMark` + "Friday" 文字之后，`gap-3`），与 logo 组成身份簇
+- 画布尺寸约 **80×36px**（v0.15.1 修订：原 112px 收窄），紧跟 `FridayMark`（gap 1.5；顶栏 "Friday" 文字已移除，logo 与粒子直接相连组成身份簇）
 - 组件持有单个 tsParticles 容器实例（ref）；模式切换时通过 `container.reset()` 应用对应预设（v3.9.1 无 `loadOptions`；`reset` 全新重建 options、无深合并残留，内部自带 refresh，保留 canvas DOM 与容器实例），**不销毁重建**——粒子空间位置连续，过渡自然
-- `fpsLimit: 60`，`detectRetina: true`；40 粒子在 112×36 画布上性能开销可忽略
+- `fpsLimit: 60`，`detectRetina: true`；40 粒子在 80×36 画布上性能开销可忽略
 
 ### 2.2 依赖
 

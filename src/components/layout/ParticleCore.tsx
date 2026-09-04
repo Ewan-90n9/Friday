@@ -13,7 +13,7 @@ import { runIntensity } from "./particles/intensity";
 import type { ParticleMode } from "./particles/deriveMode";
 
 const CANVAS_ID = "friday-particle-core";
-const ZONE_WIDTH = 112;
+const ZONE_WIDTH = 80;
 const ZONE_HEIGHT = 36;
 
 // 引擎只加载一次（StrictMode 双挂载/组件重挂载时复用）

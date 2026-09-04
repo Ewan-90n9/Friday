@@ -57,16 +57,10 @@ export function TopBar() {
       className="flex items-center justify-between h-12 px-4 shrink-0 border-b border-border bg-surface-1"
       style={{ backgroundImage: "linear-gradient(180deg, var(--color-surface-2) 0%, var(--color-surface-1) 100%)" }}
     >
-      {/* 左侧：品牌 */}
+      {/* 左侧：品牌（logo + 粒子生命力簇） */}
       <div className="flex items-center gap-3 min-w-0">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <FridayMark size={22} />
-          <span
-            className="text-foreground text-sm font-semibold tracking-wide"
-            style={{ fontFamily: "var(--font-mono)" }}
-          >
-            Friday
-          </span>
           <ParticleCore />
         </div>
       </div>
