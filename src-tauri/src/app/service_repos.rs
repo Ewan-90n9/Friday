@@ -128,21 +128,50 @@ mod tests {
     #[tokio::test]
     async fn test_get_refreshes_last_used_at() {
         let pool = test_pool().await;
-        upsert_service_repo(&pool, "S", "https://a.git", None).await.unwrap();
-        let before = get_service_repo(&pool, "S").await.unwrap().unwrap().last_used_at;
-        // 时间戳至少非空且再次读取成功（rfc3339 精度内可能相等，断言可再读）
-        let after = get_service_repo(&pool, "S").await.unwrap().unwrap().last_used_at;
-        assert!(!before.is_empty());
-        assert!(!after.is_empty());
+        // raw SQL 钉死旧 last_used_at，get 命中后应刷新（不依赖时钟精度，读库验证而非返回值）
+        sqlx::query(
+            "INSERT INTO service_repos (service, repo_url, last_ref, updated_at, last_used_at) \
+             VALUES ('S', 'https://a.git', NULL, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        get_service_repo(&pool, "S").await.unwrap().unwrap();
+        let refreshed: String =
+            sqlx::query_scalar("SELECT last_used_at FROM service_repos WHERE service = 'S'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_ne!(refreshed, "2020-01-01T00:00:00Z");
     }
 
     #[tokio::test]
     async fn test_list_orders_by_last_used_desc_and_delete() {
         let pool = test_pool().await;
-        upsert_service_repo(&pool, "A", "https://a.git", None).await.unwrap();
-        upsert_service_repo(&pool, "B", "https://b.git", None).await.unwrap();
+        // raw SQL 钉死已知时间戳：A 较新、B 较旧，DESC 则 A 在前
+        sqlx::query(
+            "INSERT INTO service_repos (service, repo_url, last_ref, updated_at, last_used_at) \
+             VALUES ('A', 'https://a.git', NULL, '2020-01-01T00:00:00Z', '2020-01-02T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO service_repos (service, repo_url, last_ref, updated_at, last_used_at) \
+             VALUES ('B', 'https://b.git', NULL, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         let list = list_service_repos(&pool).await.unwrap();
         assert_eq!(list.len(), 2);
+        assert_eq!(list[0].service, "A");
+        assert_eq!(list[1].service, "B");
+        // get 刷新 B 的 last_used_at 至当前时间，B 应跃升队首
+        get_service_repo(&pool, "B").await.unwrap().unwrap();
+        let list = list_service_repos(&pool).await.unwrap();
+        assert_eq!(list[0].service, "B");
+        assert_eq!(list[1].service, "A");
         delete_service_repo(&pool, "A").await.unwrap();
         let list = list_service_repos(&pool).await.unwrap();
         assert_eq!(list.len(), 1);
