@@ -2,6 +2,7 @@ mod agent;
 mod analyzer;
 mod app;
 mod arthas;
+mod code;
 mod exec;
 mod infra;
 mod jfr;
