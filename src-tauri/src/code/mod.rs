@@ -44,6 +44,8 @@ pub(crate) mod testutil {
         git(dir, &["init", "-b", "main"]);
         git(dir, &["config", "user.email", "friday@test.local"]);
         git(dir, &["config", "user.name", "friday-test"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+        git(dir, &["config", "tag.gpgsign", "false"]);
         std::fs::write(dir.join("README.md"), "hello friday\n").unwrap();
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(

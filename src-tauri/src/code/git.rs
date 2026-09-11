@@ -7,7 +7,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -88,8 +88,13 @@ fn base_command(args: &[&str], cwd: Option<&Path>) -> Command {
 fn log_result(args: &[&str], res: &GitResult) {
     let cmd_line = args.join(" ");
     if !res.stderr.trim().is_empty() {
-        // git 进度输出以 \r 刷新；规范化为 \n 后全量记录（不截断）
-        tracing::debug!(cmd = %cmd_line, stderr = %res.stderr.replace('\r', "\n"), "git stderr");
+        // git 进度输出以 \r 刷新；规范化为 \n 后全量记录（不截断）；
+        // 失败命令的 stderr 提级 warn（日志规范：错误路径可观测）
+        if res.success {
+            tracing::debug!(cmd = %cmd_line, stderr = %res.stderr.replace('\r', "\n"), "git stderr");
+        } else {
+            tracing::warn!(cmd = %cmd_line, stderr = %res.stderr.replace('\r', "\n"), "git stderr");
+        }
     }
     tracing::info!(cmd = %cmd_line, success = res.success, "git finished");
 }
@@ -109,16 +114,16 @@ pub async fn run_git(args: &[&str], cwd: Option<&Path>, timeout: Duration) -> Gi
     };
     let mut stdout_pipe = child.stdout.take().expect("stdout piped");
     let mut stderr_pipe = child.stderr.take().expect("stderr piped");
-    // stdout/stderr 并发读，防单流管道缓冲写满死锁
+    // stdout/stderr 并发读，防单流管道缓冲写满死锁；lossy 解码防非 UTF-8 字节丢流
     let out_task = tokio::spawn(async move {
-        let mut s = String::new();
-        stdout_pipe.read_to_string(&mut s).await.ok();
-        s
+        let mut buf = Vec::new();
+        stdout_pipe.read_to_end(&mut buf).await.ok();
+        String::from_utf8_lossy(&buf).into_owned()
     });
     let err_task = tokio::spawn(async move {
-        let mut s = String::new();
-        stderr_pipe.read_to_string(&mut s).await.ok();
-        s
+        let mut buf = Vec::new();
+        stderr_pipe.read_to_end(&mut buf).await.ok();
+        String::from_utf8_lossy(&buf).into_owned()
     });
     let result = tokio::time::timeout(timeout, child.wait()).await;
     let res = match result {
@@ -134,12 +139,21 @@ pub async fn run_git(args: &[&str], cwd: Option<&Path>, timeout: Duration) -> Gi
         Err(_) => {
             // kill_on_drop 兜底；显式 kill 加速退出
             let _ = child.start_kill();
-            let _ = out_task.await;
-            let _ = err_task.await;
+            let partial_stderr = match tokio::time::timeout(Duration::from_secs(5), err_task).await {
+                Ok(joined) => joined.unwrap_or_default(),
+                Err(_) => {
+                    tracing::warn!(cmd = %args.join(" "), "stderr drain did not finish after kill; discarding");
+                    String::new()
+                }
+            };
+            if tokio::time::timeout(Duration::from_secs(5), out_task).await.is_err() {
+                tracing::warn!(cmd = %args.join(" "), "stdout drain did not finish after kill; discarding");
+            }
+            tracing::warn!(cmd = %args.join(" "), timeout_secs = timeout.as_secs(), stderr = %partial_stderr.replace('\r', "\n"), "git command timed out, killed");
             GitResult {
                 success: false,
                 stdout: String::new(),
-                stderr: format!("git {} timed out after {}s", args.join(" "), timeout.as_secs()),
+                stderr: format!("git {} timed out after {}s\n{}", args.join(" "), timeout.as_secs(), partial_stderr),
             }
         }
     };
@@ -166,25 +180,14 @@ pub async fn run_git_streaming(
         }
     };
     let mut stdout_pipe = child.stdout.take().expect("stdout piped");
-    let mut stderr_pipe = child.stderr.take().expect("stderr piped");
+    let stderr_pipe = child.stderr.take().expect("stderr piped");
     let out_task = tokio::spawn(async move {
         let mut s = String::new();
         stdout_pipe.read_to_string(&mut s).await.ok();
         s
     });
-    let progress_tx = std::sync::Arc::new(progress_tx);
-    let tx = progress_tx.clone();
     let err_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        stderr_pipe.read_to_end(&mut buf).await.ok();
-        // \r / \n 分隔的进度行流
-        let text = String::from_utf8_lossy(&buf);
-        for line in text.split(['\r', '\n']) {
-            if let Some(p) = parse_progress(line) {
-                let _ = tx.send(p);
-            }
-        }
-        text.into_owned()
+        drain_stderr_with_progress(stderr_pipe, progress_tx).await
     });
     let result = tokio::time::timeout(timeout, child.wait()).await;
     let res = match result {
@@ -199,17 +202,67 @@ pub async fn run_git_streaming(
         }
         Err(_) => {
             let _ = child.start_kill();
-            let _ = out_task.await;
-            let _ = err_task.await;
+            let partial_stderr = match tokio::time::timeout(Duration::from_secs(5), err_task).await {
+                Ok(joined) => joined.unwrap_or_default(),
+                Err(_) => {
+                    tracing::warn!(cmd = %args.join(" "), "stderr drain did not finish after kill; discarding");
+                    String::new()
+                }
+            };
+            if tokio::time::timeout(Duration::from_secs(5), out_task).await.is_err() {
+                tracing::warn!(cmd = %args.join(" "), "stdout drain did not finish after kill; discarding");
+            }
+            tracing::warn!(cmd = %args.join(" "), timeout_secs = timeout.as_secs(), stderr = %partial_stderr.replace('\r', "\n"), "git command timed out, killed");
             GitResult {
                 success: false,
                 stdout: String::new(),
-                stderr: format!("git {} timed out after {}s", args.join(" "), timeout.as_secs()),
+                stderr: format!("git {} timed out after {}s\n{}", args.join(" "), timeout.as_secs(), partial_stderr),
             }
         }
     };
     log_result(args, &res);
     res
+}
+
+/// 增量读取 stderr：每读完一个 \r / \n 分隔段立即解析转发进度（长 clone 实时
+/// 上报），同时保留全量原始字节，最终以 lossy UTF-8 返回完整文本。
+async fn drain_stderr_with_progress<R: AsyncRead + Unpin>(
+    reader: R,
+    tx: UnboundedSender<String>,
+) -> String {
+    let mut reader = BufReader::new(reader);
+    let mut full = Vec::new();
+    let mut seg = Vec::new();
+    loop {
+        let available = match reader.fill_buf().await {
+            Ok(buf) => buf,
+            Err(_) => break,
+        };
+        if available.is_empty() {
+            break;
+        }
+        for &b in available {
+            full.push(b);
+            if b == b'\r' || b == b'\n' {
+                let text = String::from_utf8_lossy(&seg);
+                if let Some(p) = parse_progress(&text) {
+                    let _ = tx.send(p);
+                }
+                seg.clear();
+            } else {
+                seg.push(b);
+            }
+        }
+        let len = available.len();
+        reader.consume(len);
+    }
+    if !seg.is_empty() {
+        let text = String::from_utf8_lossy(&seg);
+        if let Some(p) = parse_progress(&text) {
+            let _ = tx.send(p);
+        }
+    }
+    String::from_utf8_lossy(&full).into_owned()
 }
 
 /// 解析 git 进度行，如 "Receiving objects:  45% (123/273), 1.2 MiB | 2.3 MiB/s"
@@ -300,6 +353,37 @@ mod tests {
         );
         assert_eq!(parse_progress("Resolving deltas: 100% (273/273)"), Some("Resolving deltas: 100%".to_string()));
         assert_eq!(parse_progress("Unpacking objects: 100%"), None); // 不在白名单
+    }
+
+    #[tokio::test]
+    async fn test_drain_stderr_with_progress_incremental() {
+        use tokio::io::{duplex, AsyncWriteExt};
+        let (mut writer, reader) = duplex(1024);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let drain = tokio::spawn(drain_stderr_with_progress(reader, tx));
+        writer
+            .write_all(b"Receiving objects:  10% (1/10)\r")
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(rx.try_recv().unwrap(), "Receiving objects: 10%");
+        writer
+            .write_all(b"remote: Enumerating objects: 12, done.\n")
+            .await
+            .unwrap();
+        writer
+            .write_all(b"Receiving objects:  50% (5/10)\r")
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(rx.try_recv().unwrap(), "Receiving objects: 50%");
+        drop(writer);
+        let text = drain.await.unwrap();
+        assert_eq!(
+            text,
+            "Receiving objects:  10% (1/10)\rremote: Enumerating objects: 12, done.\nReceiving objects:  50% (5/10)\r"
+        );
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]
