@@ -177,6 +177,8 @@ async fn resolve_session_flag(exe_path: &Path, provider: &str, preferred: &'stat
     }
 }
 
+/// 优先级：experiences（新会话记忆召回）> history（issue #21 全新会话重试的
+/// 本地历史注入）> 普通 prompt。experiences 与 history 不会同时出现。
 #[tracing::instrument(skip(pool))]
 pub async fn spawn_active(
     pool: &sqlx::SqlitePool,
@@ -185,6 +187,7 @@ pub async fn spawn_active(
     agent_session_id: Option<String>,
     prompt_override_path: Option<PathBuf>,
     experiences: Option<&[crate::knowledge::experience::Experience]>,
+    history: Option<&str>,
 ) -> Result<AgentProcess, SpawnError> {
     let row: Option<(String, String)> =
         sqlx::query_as("SELECT path, provider FROM agents WHERE is_active = 1 LIMIT 1")
@@ -222,14 +225,16 @@ pub async fn spawn_active(
         cmd.arg(flag).arg(id);
     }
 
-    let prompt_text = if let Some(exps) = experiences {
-        if !exps.is_empty() {
+    let prompt_text = match (experiences.filter(|e| !e.is_empty()), history) {
+        (Some(exps), _) => {
             prompt::build_prompt_with_experiences(&message, prompt_override_path.as_deref(), &session_id, exps)
-        } else {
+        }
+        (None, Some(history)) => {
+            prompt::build_prompt_with_history(&message, prompt_override_path.as_deref(), &session_id, history)
+        }
+        (None, None) => {
             prompt::build_prompt(&message, prompt_override_path.as_deref(), &session_id)
         }
-    } else {
-        prompt::build_prompt(&message, prompt_override_path.as_deref(), &session_id)
     };
     tracing::info!(prompt_len = prompt_text.len(), "prompt built");
 
@@ -427,7 +432,7 @@ mod tests {
     async fn test_spawn_active_accepts_session_id_param() {
         let tmp = tempfile::tempdir().unwrap();
         let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
-        let result = spawn_active(&pool, "test-sid".to_string(), String::new(), None, None, None).await;
+        let result = spawn_active(&pool, "test-sid".to_string(), String::new(), None, None, None, None).await;
         assert!(matches!(result, Err(SpawnError::NoActiveAgent)));
     }
 
@@ -435,7 +440,7 @@ mod tests {
     async fn test_spawn_active_returns_no_active_agent_when_db_empty() {
         let tmp = tempfile::tempdir().unwrap();
         let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
-        let result = spawn_active(&pool, "test-session".to_string(), String::new(), None, None, None).await;
+        let result = spawn_active(&pool, "test-session".to_string(), String::new(), None, None, None, None).await;
         assert!(matches!(result, Err(SpawnError::NoActiveAgent)));
     }
 
@@ -452,7 +457,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = spawn_active(&pool, "test-session".to_string(), "test message".to_string(), None, None, None).await;
+        let result = spawn_active(&pool, "test-session".to_string(), "test message".to_string(), None, None, None, None).await;
         assert!(matches!(result, Err(SpawnError::BinaryMissing { .. })));
     }
 

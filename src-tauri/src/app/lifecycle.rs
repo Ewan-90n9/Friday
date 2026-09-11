@@ -156,6 +156,14 @@ pub async fn send_message_cmd(
         experience_count = experiences.len(),
         "spawning agent"
     );
+    // issue #21：resume 场景下 CLI 可能因旧 session 锁拒绝启动
+    // （Session ID ... already in use）。携带重试配置：流消费侧检测到该冲突时
+    // 自动降级为全新会话重试（本地历史注入 prompt），存量 agent_session_id
+    // 被新会话 id 覆盖后自愈。
+    let resume_retry = agent_session_id.as_ref().map(|_| stream::ResumeRetry {
+        user_message: message.clone(),
+        prompt_override_path: Some(prompt_override_path.clone()),
+    });
     let agent_process = match spawn_active(
         &pool,
         friday_session_id.clone(),
@@ -163,6 +171,7 @@ pub async fn send_message_cmd(
         agent_session_id,
         Some(prompt_override_path),
         Some(&experiences),
+        None,
     )
     .await
     {
@@ -217,6 +226,7 @@ pub async fn send_message_cmd(
             cancel_for_task,
             embedding_clone,
             vec_store_clone,
+            resume_retry,
         )
         .await;
     });
