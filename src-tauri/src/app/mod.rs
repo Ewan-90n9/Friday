@@ -5,5 +5,6 @@ pub mod environments;
 pub mod env_save;
 pub mod events;
 pub mod lifecycle;
+pub mod service_repos;
 pub mod session;
 pub mod settings;

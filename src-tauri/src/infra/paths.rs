@@ -41,6 +41,10 @@ impl Paths {
         self.root.join("cache")
     }
 
+    pub fn repos_dir(&self) -> PathBuf {
+        self.root.join("repos")
+    }
+
     pub fn session_artifacts_dir(&self, session_id: &str) -> PathBuf {
         self.artifacts_dir().join(session_id)
     }
@@ -54,6 +58,7 @@ impl Paths {
             self.artifacts_dir(),
             self.models_dir(),
             self.cache_dir(),
+            self.repos_dir(),
         ] {
             std::fs::create_dir_all(&dir)?;
         }
@@ -117,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_dirs_creates_all_seven_subdirs() {
+    fn test_ensure_dirs_creates_all_eight_subdirs() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = Paths::new(tmp.path().to_path_buf());
         paths.ensure_dirs().unwrap();
@@ -129,6 +134,14 @@ mod tests {
         assert!(tmp.path().join("artifacts").is_dir());
         assert!(tmp.path().join("models").is_dir());
         assert!(tmp.path().join("cache").is_dir());
+        assert!(tmp.path().join("repos").is_dir());
+    }
+
+    #[test]
+    fn test_repos_dir_returns_root_join_repos() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(tmp.path().to_path_buf());
+        assert_eq!(paths.repos_dir(), tmp.path().join("repos"));
     }
 
     #[test]

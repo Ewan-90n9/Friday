@@ -32,6 +32,9 @@ pub async fn init(db_path: PathBuf) -> Result<SqlitePool, sqlx::Error> {
     // Migration (arthas)：环境多用户凭证表
     let schema9 = include_str!("../../migrations/0009_env_credentials.sql");
     sqlx::query(schema9).execute(&pool).await?;
+    // Migration (code reading)：服务 → 代码仓映射记忆
+    let schema10 = include_str!("../../migrations/0010_service_repos.sql");
+    sqlx::query(schema10).execute(&pool).await?;
     // Migration (env type semantics)：transport_type 值域 ssh/k8s → vm/container
     //（环境类型从"宿主机形态提示"升级为"服务运行位置"，驱动工具差异逻辑）
     sqlx::query("UPDATE environments SET transport_type = 'vm' WHERE transport_type = 'ssh'")
