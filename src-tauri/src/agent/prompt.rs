@@ -57,6 +57,21 @@ pub fn build_prompt(message: &str, override_path: Option<&Path>, session_id: &st
     )
 }
 
+/// 全新会话重试（issue #21：CLI session 锁死导致 resume 被拒）专用 prompt：
+/// CLI 侧会话历史不可达，改为把 Friday 本地存储的对话记录注入 prompt，
+/// 让新会话仍能延续诊断上下文。
+pub fn build_prompt_with_history(
+    message: &str,
+    override_path: Option<&Path>,
+    session_id: &str,
+    history: &str,
+) -> String {
+    let system = build_system_prompt(override_path);
+    format!(
+        "{system}\n\n---\n\n{TOOL_GUIDANCE}\n- 当前会话的 session_id：{session_id}\n\n---\n\n## 此前对话记录\n（底层 CLI 会话恢复失败，已开启新会话；以下记录来自 Friday 本地存储，请基于它继续对话。）\n\n{history}\n\n---\n\n用户消息：{message}"
+    )
+}
+
 pub fn build_prompt_with_experiences(
     message: &str,
     override_path: Option<&Path>,
@@ -210,6 +225,21 @@ mod tests {
         assert!(result.contains("session-abc-123"));
         assert!(result.contains("工具使用"));
         assert!(result.contains("hello"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_history_injects_history_section() {
+        let result = build_prompt_with_history(
+            "继续排查",
+            None,
+            "session-abc-123",
+            "[用户] OOM 排查一下\n[助手] 已定位到内存泄漏\n",
+        );
+        assert!(result.contains("此前对话记录"), "应包含历史记录段标题");
+        assert!(result.contains("已定位到内存泄漏"));
+        assert!(result.contains("继续排查"));
+        assert!(result.contains("session-abc-123"));
+        assert!(result.contains(FRIDAY_SYSTEM_PROMPT));
     }
 
     #[test]
