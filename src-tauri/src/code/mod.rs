@@ -2,7 +2,7 @@
 
 pub mod git;
 pub mod manager;       // Task 3
-// pub mod search;    // Task 4
+pub mod search;        // Task 4
 
 pub use manager::{CodeRepoManager, RepoCacheEntry, RepoPhase, RepoState};  // Task 3
 
