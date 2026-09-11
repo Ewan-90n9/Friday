@@ -351,6 +351,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             app::settings::set_artifactory_base_url_cmd,
             app::settings::get_auto_approve_tools_cmd,
             app::settings::set_auto_approve_tools_cmd,
+            app::settings::get_confirmation_timeout_cmd,
+            app::settings::set_confirmation_timeout_cmd,
         ])
         .run(tauri::generate_context!())?;
     Ok(())

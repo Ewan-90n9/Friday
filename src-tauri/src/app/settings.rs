@@ -7,6 +7,13 @@ pub const DEFAULT_ARTIFACTORY_BASE_URL: &str =
 
 pub const KEY_AUTO_APPROVE_TOOLS: &str = "auto_approve_tools";
 
+pub const KEY_CONFIRMATION_TIMEOUT_SECS: &str = "confirmation_timeout_secs";
+/// 默认确认超时（秒）：与历史硬编码值一致
+pub const DEFAULT_CONFIRMATION_TIMEOUT_SECS: u64 = 120;
+/// 确认超时允许范围（秒）：过小没时间点确认，过大让 agent 长时间挂起
+pub const MIN_CONFIRMATION_TIMEOUT_SECS: u64 = 10;
+pub const MAX_CONFIRMATION_TIMEOUT_SECS: u64 = 3600;
+
 /// 读取设置项，未设置时返回 None
 pub async fn get_setting(pool: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {
     let value: Option<String> = sqlx::query_scalar("SELECT value FROM app_settings WHERE key = ?")
@@ -81,6 +88,52 @@ pub async fn auto_approve_tools(pool: &SqlitePool) -> bool {
     }
 }
 
+/// 读取工具确认超时（秒）：缺失、非法值、DB 错误一律回退默认值 120s
+/// （fail-safe：不因读不到设置而让确认门控失效或永久挂起）
+pub async fn confirmation_timeout_secs(pool: &SqlitePool) -> u64 {
+    match get_setting(pool, KEY_CONFIRMATION_TIMEOUT_SECS).await {
+        Ok(Some(value)) => match value.parse::<u64>() {
+            Ok(secs)
+                if (MIN_CONFIRMATION_TIMEOUT_SECS..=MAX_CONFIRMATION_TIMEOUT_SECS)
+                    .contains(&secs) =>
+            {
+                secs
+            }
+            _ => {
+                tracing::warn!(
+                    key = KEY_CONFIRMATION_TIMEOUT_SECS,
+                    value = %value,
+                    "invalid confirmation_timeout_secs value, falling back to default"
+                );
+                DEFAULT_CONFIRMATION_TIMEOUT_SECS
+            }
+        },
+        Ok(None) => DEFAULT_CONFIRMATION_TIMEOUT_SECS,
+        Err(e) => {
+            tracing::warn!(
+                key = KEY_CONFIRMATION_TIMEOUT_SECS,
+                error = ?e,
+                "failed to read confirmation_timeout_secs, falling back to default"
+            );
+            DEFAULT_CONFIRMATION_TIMEOUT_SECS
+        }
+    }
+}
+
+/// 校验并规范化确认超时（秒）：解析为整数并 clamp 到允许范围
+pub fn normalize_confirmation_timeout_secs(input: &str) -> Result<u64, String> {
+    let trimmed = input.trim();
+    let secs: u64 = trimmed
+        .parse()
+        .map_err(|_| format!("confirmation timeout must be an integer number of seconds, got: {trimmed:?}"))?;
+    if !(MIN_CONFIRMATION_TIMEOUT_SECS..=MAX_CONFIRMATION_TIMEOUT_SECS).contains(&secs) {
+        return Err(format!(
+            "confirmation timeout must be between {MIN_CONFIRMATION_TIMEOUT_SECS} and {MAX_CONFIRMATION_TIMEOUT_SECS} seconds, got: {secs}"
+        ));
+    }
+    Ok(secs)
+}
+
 #[tauri::command]
 #[tracing::instrument(skip(state))]
 pub async fn get_artifactory_base_url_cmd(state: State<'_, crate::AppState>) -> Result<String, String> {
@@ -124,6 +177,33 @@ pub async fn set_auto_approve_tools_cmd(
             tracing::error!(key = KEY_AUTO_APPROVE_TOOLS, error = ?e, "failed to persist auto_approve_tools");
             e.to_string()
         })
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn get_confirmation_timeout_cmd(state: State<'_, crate::AppState>) -> Result<u64, String> {
+    tracing::info!("get_confirmation_timeout_cmd called");
+    Ok(confirmation_timeout_secs(&state.db).await)
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn set_confirmation_timeout_cmd(
+    state: State<'_, crate::AppState>,
+    secs: String,
+) -> Result<(), String> {
+    tracing::info!(secs = %secs, "set_confirmation_timeout_cmd called");
+    let normalized = normalize_confirmation_timeout_secs(&secs)?;
+    set_setting(
+        &state.db,
+        KEY_CONFIRMATION_TIMEOUT_SECS,
+        &normalized.to_string(),
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(key = KEY_CONFIRMATION_TIMEOUT_SECS, error = ?e, "failed to persist confirmation_timeout_secs");
+        e.to_string()
+    })
 }
 
 #[cfg(test)]
@@ -250,5 +330,72 @@ mod tests {
         let pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
         pool.close().await;
         assert!(!auto_approve_tools(&pool).await);
+    }
+
+    #[tokio::test]
+    async fn test_confirmation_timeout_defaults_120_when_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
+        assert_eq!(confirmation_timeout_secs(&pool).await, DEFAULT_CONFIRMATION_TIMEOUT_SECS);
+    }
+
+    #[tokio::test]
+    async fn test_confirmation_timeout_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
+        set_setting(&pool, KEY_CONFIRMATION_TIMEOUT_SECS, "300").await.unwrap();
+        assert_eq!(confirmation_timeout_secs(&pool).await, 300);
+        set_setting(&pool, KEY_CONFIRMATION_TIMEOUT_SECS, "60").await.unwrap();
+        assert_eq!(confirmation_timeout_secs(&pool).await, 60);
+    }
+
+    #[tokio::test]
+    async fn test_confirmation_timeout_out_of_range_falls_back_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
+        set_setting(&pool, KEY_CONFIRMATION_TIMEOUT_SECS, "5").await.unwrap();
+        assert_eq!(confirmation_timeout_secs(&pool).await, DEFAULT_CONFIRMATION_TIMEOUT_SECS);
+        set_setting(&pool, KEY_CONFIRMATION_TIMEOUT_SECS, "99999").await.unwrap();
+        assert_eq!(confirmation_timeout_secs(&pool).await, DEFAULT_CONFIRMATION_TIMEOUT_SECS);
+    }
+
+    #[tokio::test]
+    async fn test_confirmation_timeout_invalid_value_falls_back_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
+        set_setting(&pool, KEY_CONFIRMATION_TIMEOUT_SECS, "abc").await.unwrap();
+        assert_eq!(confirmation_timeout_secs(&pool).await, DEFAULT_CONFIRMATION_TIMEOUT_SECS);
+    }
+
+    #[tokio::test]
+    async fn test_confirmation_timeout_db_error_falls_back_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::infra::db::init(tmp.path().join("friday.db")).await.unwrap();
+        pool.close().await;
+        assert_eq!(confirmation_timeout_secs(&pool).await, DEFAULT_CONFIRMATION_TIMEOUT_SECS);
+    }
+
+    #[test]
+    fn test_normalize_confirmation_timeout_accepts_range() {
+        assert_eq!(normalize_confirmation_timeout_secs("120").unwrap(), 120);
+        assert_eq!(normalize_confirmation_timeout_secs(" 300 ").unwrap(), 300);
+        assert_eq!(
+            normalize_confirmation_timeout_secs(&MIN_CONFIRMATION_TIMEOUT_SECS.to_string()).unwrap(),
+            MIN_CONFIRMATION_TIMEOUT_SECS
+        );
+        assert_eq!(
+            normalize_confirmation_timeout_secs(&MAX_CONFIRMATION_TIMEOUT_SECS.to_string()).unwrap(),
+            MAX_CONFIRMATION_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn test_normalize_confirmation_timeout_rejects_out_of_range_and_non_numeric() {
+        assert!(normalize_confirmation_timeout_secs("5").is_err());
+        assert!(normalize_confirmation_timeout_secs("3601").is_err());
+        assert!(normalize_confirmation_timeout_secs("-1").is_err());
+        assert!(normalize_confirmation_timeout_secs("abc").is_err());
+        assert!(normalize_confirmation_timeout_secs("").is_err());
+        assert!(normalize_confirmation_timeout_secs("1.5").is_err());
     }
 }

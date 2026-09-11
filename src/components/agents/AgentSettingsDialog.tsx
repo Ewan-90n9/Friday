@@ -39,6 +39,13 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
   const autoApproveError = useSettingsStore((s) => s.autoApproveError);
   const saveAutoApprove = useSettingsStore((s) => s.saveAutoApprove);
 
+  const confirmationTimeout = useSettingsStore((s) => s.confirmationTimeout);
+  const confirmationTimeoutError = useSettingsStore((s) => s.confirmationTimeoutError);
+  const saveConfirmationTimeout = useSettingsStore((s) => s.saveConfirmationTimeout);
+
+  const [timeoutDraft, setTimeoutDraft] = useState("");
+  const [savingTimeout, setSavingTimeout] = useState(false);
+
   const [confirmAutoApprove, setConfirmAutoApprove] = useState(false);
   const [savingAutoApprove, setSavingAutoApprove] = useState(false);
   const [logsError, setLogsError] = useState<string | null>(null);
@@ -83,11 +90,23 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
     if (open) {
       loadSettings().then(() => {
         setUrlDraft(useSettingsStore.getState().artifactoryBaseUrl);
+        setTimeoutDraft(String(useSettingsStore.getState().confirmationTimeout));
       });
     } else {
       setConfirmAutoApprove(false);
     }
   }, [open, loadSettings]);
+
+  const handleSaveTimeout = async () => {
+    const trimmed = timeoutDraft.trim();
+    if (!trimmed || savingTimeout) return;
+    setSavingTimeout(true);
+    try {
+      await saveConfirmationTimeout(trimmed);
+    } finally {
+      setSavingTimeout(false);
+    }
+  };
 
   const handleSaveUrl = async () => {
     const trimmed = urlDraft.trim();
@@ -265,6 +284,36 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
             <p className="text-xs text-muted-foreground">
               开启后所有工具调用免确认直接执行（含高风险：任意命令、堆 dump、文件上传），仅建议内网非生产环境开启
             </p>
+            {/* Confirmation timeout (issue #22) */}
+            <div className="flex items-center gap-2 pt-1">
+              <label htmlFor="confirmation-timeout" className="text-xs text-foreground shrink-0">
+                确认等待时长（秒）
+              </label>
+              <input
+                id="confirmation-timeout"
+                type="number"
+                min={10}
+                max={3600}
+                value={timeoutDraft}
+                onChange={(e) => setTimeoutDraft(e.target.value)}
+                className="w-24 bg-muted border border-border rounded-md text-sm text-foreground px-2 py-1 outline-none"
+                style={{ fontFamily: "var(--font-mono)" }}
+                aria-label="确认等待时长（秒）"
+              />
+              <button
+                onClick={handleSaveTimeout}
+                disabled={savingTimeout || timeoutDraft.trim() === String(confirmationTimeout)}
+                className="px-3 py-1 rounded-md bg-accent text-accent-foreground text-xs hover:bg-accent/80 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+              >
+                {savingTimeout ? "保存中..." : "保存"}
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              关闭免确认模式时，工具调用弹窗等待用户确认的最长时间（10–3600 秒，默认 120）；超时后工具不会执行
+            </p>
+            {confirmationTimeoutError && (
+              <p className="text-xs text-destructive break-words">{confirmationTimeoutError}</p>
+            )}
             {confirmAutoApprove && (
               <div role="alert" className="rounded-md border border-warning/60 bg-warning/5 px-3 py-2 space-y-2">
                 <p className="text-xs text-warning">
