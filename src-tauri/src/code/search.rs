@@ -142,7 +142,7 @@ pub fn search(
                 let before = lines[i.saturating_sub(context)..i]
                     .iter()
                     .enumerate()
-                    .map(|(j, l)| (i - context + j + 1, (*l).to_string()))
+                    .map(|(j, l)| (i.saturating_sub(context) + j + 1, (*l).to_string()))
                     .collect();
                 let after_end = (i + 1 + context).min(lines.len());
                 let after = lines[i + 1..after_end]
@@ -264,6 +264,21 @@ mod tests {
         assert_eq!(out.matches[0].file, "src/main/Bar.java");
 
         assert!(search(wt, "class(", None, 1, 10).is_err(), "invalid regex rejected");
+    }
+
+    #[test]
+    fn test_search_context_before_clamped_at_file_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("a.txt"),
+            "alpha\nbeta match\ngamma\n",
+        )
+        .unwrap();
+        let out = search(tmp.path(), "match", None, 2, 10).unwrap();
+        assert_eq!(out.matches.len(), 1);
+        let m = &out.matches[0];
+        assert_eq!(m.line, 2);
+        assert_eq!(m.context_before, vec![(1, "alpha".to_string())]);
     }
 
     #[test]
