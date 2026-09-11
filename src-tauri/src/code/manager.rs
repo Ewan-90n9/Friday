@@ -71,7 +71,8 @@ struct ManagerInner {
     repos_dir: PathBuf,
     states: Mutex<HashMap<String, RepoState>>,
     /// 同 URL（共享主 clone）管线串行化锁：并发 open 不同 ref 时防
-    /// clone/fetch/worktree 互踩（如双 clone 同目录 "already exists"）
+    /// clone/fetch/worktree 互踩（如双 clone 同目录 "already exists"）。
+    /// 条目按 url_hash 只增不减：上界为打开过的不同 URL 数（量级极小），不回收。
     pipeline_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
@@ -117,30 +118,33 @@ impl CodeRepoManager {
         let id = git::repo_id(repo_url, git_ref);
         let uh = git::url_hash(repo_url);
         {
-            let states = self.inner.states.lock().await;
+            // in-flight 去重 + 占位在同一 states 锁内原子完成：并发同
+            // (url,ref) open 不再有双 spawn 窗口（Ready 刷新 respawn 仍
+            // 允许——管线幂等，串行重跑无害）
+            let mut states = self.inner.states.lock().await;
             if let Some(st) = states.get(&id) {
                 if st.phase == RepoPhase::Cloning || st.phase == RepoPhase::Fetching {
                     return id; // in-flight 去重
                 }
             }
+            states.insert(
+                id.clone(),
+                RepoState {
+                    repo_id: id.clone(),
+                    url_hash: uh.clone(),
+                    repo_url: repo_url.to_string(),
+                    git_ref: git_ref.to_string(),
+                    phase: RepoPhase::Cloning,
+                    progress: None,
+                    resolved_commit: None,
+                    stale_warning: None,
+                    error_code: None,
+                    error: None,
+                    worktree_path: Some(self.worktree_dir(&uh, git_ref)).filter(|p| p.exists()),
+                    created_at: chrono::Utc::now(),
+                },
+            );
         }
-        self.inner.states.lock().await.insert(
-            id.clone(),
-            RepoState {
-                repo_id: id.clone(),
-                url_hash: uh.clone(),
-                repo_url: repo_url.to_string(),
-                git_ref: git_ref.to_string(),
-                phase: RepoPhase::Cloning,
-                progress: None,
-                resolved_commit: None,
-                stale_warning: None,
-                error_code: None,
-                error: None,
-                worktree_path: Some(self.worktree_dir(&uh, git_ref)).filter(|p| p.exists()),
-                created_at: chrono::Utc::now(),
-            },
-        );
         let mgr = self.clone();
         let rid = id.clone();
         tokio::spawn(async move {
@@ -153,7 +157,9 @@ impl CodeRepoManager {
         self.inner.states.lock().await.get(repo_id).cloned()
     }
 
-    /// 读工具入口：worktree 已检出即可读（fetch 期间内容稳定，不阻塞并发读）
+    /// 读工具入口：worktree 已检出即可读，不阻塞并发读。读取期间若发生刷新
+    /// checkout 切换，可能观察到单文件 old-or-new、跨文件可能混合版本——
+    /// 设计接受的权衡。
     pub async fn worktree(&self, repo_id: &str) -> Result<PathBuf, String> {
         let st = self.inner.states.lock().await.get(repo_id).cloned();
         match st {
@@ -183,10 +189,15 @@ impl CodeRepoManager {
             let worktrees = std::fs::read_dir(path.join("wt"))
                 .map(|d| d.flatten().filter(|e| e.path().is_dir()).count())
                 .unwrap_or(0);
+            // 递归磁盘扫描放阻塞线程池：大仓缓存可达数 GB，避免卡异步运行时
+            let scan_path = path.clone();
+            let disk_bytes = tokio::task::spawn_blocking(move || dir_size(&scan_path))
+                .await
+                .unwrap_or(0);
             entries.push(RepoCacheEntry {
                 url_hash,
                 repo_url,
-                disk_bytes: dir_size(&path),
+                disk_bytes,
                 worktrees,
             });
         }
@@ -196,23 +207,39 @@ impl CodeRepoManager {
 
     /// 删除某仓全部缓存（主 clone + worktrees）。有进行中任务时拒绝。
     pub async fn delete_cache(&self, url_hash: &str) -> Result<(), String> {
-        {
-            let mut states = self.inner.states.lock().await;
-            let busy: Vec<String> = states
-                .values()
-                .filter(|st| st.url_hash == url_hash && !st.phase.is_terminal())
-                .map(|st| st.repo_id.clone())
-                .collect();
-            if !busy.is_empty() {
-                return Err("repo busy (cloning/fetching in progress); retry later".to_string());
-            }
-            states.retain(|_, st| st.url_hash != url_hash);
+        // 快路径：明显忙直接拒绝，不取管线锁（免无谓等待）
+        if self.url_busy(url_hash).await {
+            return Err("repo busy (cloning/fetching in progress); retry later".to_string());
         }
+        // 与管线互斥：持 URL 管线锁删除，杜绝 remove_dir_all 与 clone/fetch
+        // 交错产生半截主 clone（.git 在、内容缺 → 后续 open 跳过 clone 直接
+        // fetch_failed，且无法自愈）。锁等待期间新 spawn 的管线会在锁释放后
+        // clone 到干净目录；其非 terminal 状态在持锁复查中可见 → 此时拒绝删除
+        let url_lock = self.url_lock(url_hash).await;
+        let _guard = url_lock.lock().await;
+        self.take_url_states_if_idle(url_hash).await?;
         let root = self.repo_root(url_hash);
         if root.exists() {
             std::fs::remove_dir_all(&root).map_err(|e| format!("failed to delete cache: {e}"))?;
             tracing::info!(url_hash, ?root, "repo cache deleted");
         }
+        Ok(())
+    }
+
+    /// 该 URL 是否有进行中（非 terminal）open 管线
+    async fn url_busy(&self, url_hash: &str) -> bool {
+        let states = self.inner.states.lock().await;
+        states.values().any(|st| st.url_hash == url_hash && !st.phase.is_terminal())
+    }
+
+    /// busy 复查 + 状态清除（单次 states 锁内原子完成）：该 URL 存在非
+    /// terminal 状态 → Err(busy)；否则移除该 URL 全部状态（含 terminal 的）
+    async fn take_url_states_if_idle(&self, url_hash: &str) -> Result<(), String> {
+        let mut states = self.inner.states.lock().await;
+        if states.values().any(|st| st.url_hash == url_hash && !st.phase.is_terminal()) {
+            return Err("repo busy (cloning/fetching in progress); retry later".to_string());
+        }
+        states.retain(|_, st| st.url_hash != url_hash);
         Ok(())
     }
 
@@ -262,7 +289,11 @@ impl CodeRepoManager {
 /// effort，失败降级本地缓存）；③ref 解析（分支/tag/commitid）→ worktree 建/检出。
 async fn run_pipeline(mgr: CodeRepoManager, repo_id: String) {
     let st = mgr.inner.states.lock().await.get(&repo_id).cloned();
-    let Some(st) = st else { return };
+    let Some(st) = st else {
+        tracing::debug!(repo_id, "pipeline aborted: state removed before start");
+        return;
+    };
+    tracing::info!(repo_id, url = %st.repo_url, git_ref = %st.git_ref, "code repo open pipeline started");
     // 同 URL 管线全程序串行：clone/fetch/resolve/worktree 均作用于共享主
     // clone，无锁并发会互踩（clone 同目录冲突、worktree 元数据竞争）；
     // 不同 URL 互不影响。锁在管线结束时释放。
@@ -274,14 +305,20 @@ async fn run_pipeline(mgr: CodeRepoManager, repo_id: String) {
     let root = mgr.repo_root(&uh);
     let clone_dir = mgr.clone_dir(&uh);
     let wt_dir = mgr.worktree_dir(&uh, &git_ref);
-    let _ = std::fs::create_dir_all(root.join("wt"));
+    if let Err(e) = std::fs::create_dir_all(root.join("wt")) {
+        tracing::debug!(repo_id, error = %e, "wt dir create failed (best-effort)");
+    }
     // url 标记（缓存列表反查仓地址；clone 前写，半截 clone 也能识别）
-    let _ = std::fs::write(root.join("url.txt"), &url);
+    if let Err(e) = std::fs::write(root.join("url.txt"), &url) {
+        tracing::debug!(repo_id, error = %e, "url.txt write failed (best-effort)");
+    }
     let clone_str = clone_dir.display().to_string();
     let wt_str = wt_dir.display().to_string();
 
     // ① 主 clone 不存在 → 完整克隆
+    let mut cloned_now = false;
     if !clone_dir.join(".git").exists() {
+        cloned_now = true;
         mgr.set_phase(&repo_id, RepoPhase::Cloning).await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let fwd = {
@@ -300,43 +337,57 @@ async fn run_pipeline(mgr: CodeRepoManager, repo_id: String) {
             tx,
         )
         .await;
-        drop(fwd);
+        // 等进度转发任务排空收尾（tx 已随 run_git_streaming 返回关闭 channel，
+        // fwd 很快退出）：防止缓冲中的残留进度事件落在终态之后
+        let _ = fwd.await;
         if !res.success {
             mgr.fail(&repo_id, "clone_failed", res.stderr.trim().to_string()).await;
             return;
         }
     }
 
-    // ② fetch 刷新（分支经常变；best effort）
-    mgr.set_phase(&repo_id, RepoPhase::Fetching).await;
-    let fetch = git::run_git(
-        &["-C", &clone_str, "fetch", "--force", "origin", &git_ref],
-        Some(&clone_dir),
-        Duration::from_secs(FETCH_TIMEOUT_SECS),
-    )
-    .await;
-    let stale_warning = if fetch.success {
-        None
-    } else {
-        Some(format!(
-            "fetch failed ({}); using locally cached code which may be stale",
-            fetch.stderr.trim().lines().last().unwrap_or("network error")
-        ))
-    };
+    // ② fetch 刷新（分支经常变；best effort）。刚完成 clone 或 full-40-hex
+    // commitid 跳过：前者缓存必新；后者对象不可变，本地 resolve 即答案
+    // （https 上 fetch <sha> 几乎必被拒——unadvertised object，会产生误导
+    // 性 stale 告警）
+    let mut stale_warning: Option<String> = None;
+    let mut fetch_error: Option<String> = None;
+    if should_fetch(&git_ref, cloned_now) {
+        mgr.set_phase(&repo_id, RepoPhase::Fetching).await;
+        let fetch = git::run_git(
+            &["-C", &clone_str, "fetch", "--force", "origin", &git_ref],
+            Some(&clone_dir),
+            Duration::from_secs(FETCH_TIMEOUT_SECS),
+        )
+        .await;
+        if !fetch.success {
+            fetch_error = Some(fetch.stderr.trim().to_string());
+            stale_warning = Some(format!(
+                "fetch failed ({}); using locally cached code which may be stale",
+                fetch_error.as_deref().unwrap_or("").lines().last().unwrap_or("network error")
+            ));
+        }
+    }
 
     // ③ ref 解析：分支（本地或 origin/）→ tag → commitid
     let Some(sha) = git::resolve_ref(&clone_dir, &git_ref).await else {
-        // fetch 对「远端没有该 ref」也会失败（couldn't find remote ref），需按
-        // stderr 语义区分：ref 缺失 → invalid_ref；网络/认证 → fetch_failed
-        let ref_missing = fetch.stderr.to_lowercase().contains("couldn't find remote ref");
-        let code = if ref_missing { "invalid_ref" } else { "fetch_failed" };
+        // 失败语义区分：fetch 跑过且远端确实没有该 ref（couldn't find
+        // remote ref）→ invalid_ref；fetch 跑过但网络/认证失败 →
+        // fetch_failed；fetch 被跳过（刚 clone 完 / commitid，连通性未知）
+        // → invalid_ref
+        let (code, detail) = match &fetch_error {
+            None => ("invalid_ref", "absent on remote".to_string()),
+            Some(err) if err.to_lowercase().contains("couldn't find remote ref") => {
+                ("invalid_ref", "absent on remote".to_string())
+            }
+            Some(err) => ("fetch_failed", format!("fetch error: {err}")),
+        };
         mgr.fail(
             &repo_id,
             code,
             format!(
-                "ref '{git_ref}' not found ({}); \
-                 confirm branch/tag/commitid with the user, or check network/credentials",
-                if ref_missing { "absent on remote".to_string() } else { format!("fetch error: {}", fetch.stderr.trim()) }
+                "ref '{git_ref}' not found ({detail}); \
+                 confirm branch/tag/commitid with the user, or check network/credentials"
             ),
         )
         .await;
@@ -408,12 +459,24 @@ fn dir_size(path: &std::path::Path) -> u64 {
     total
 }
 
+/// fetch 刷新决策：刚完成完整 clone → 缓存必新，跳过；full-40-hex
+/// commitid → 对象不可变，本地 resolve 即答案（https 上 fetch <sha> 几乎
+/// 必被拒——unadvertised object，会产生误导性 stale 告警），跳过；命名 ref
+/// （分支/tag）且 clone 已存在 → 刷新（分支经常变）
+fn should_fetch(git_ref: &str, cloned_now: bool) -> bool {
+    if cloned_now {
+        return false;
+    }
+    let is_full_sha = git_ref.len() == 40 && git_ref.chars().all(|c| c.is_ascii_hexdigit());
+    !is_full_sha
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     async fn wait_terminal(mgr: &CodeRepoManager, repo_id: &str) -> RepoState {
-        for _ in 0..300 {
+        for _ in 0..1200 {
             if let Some(st) = mgr.status(repo_id).await {
                 if st.phase.is_terminal() {
                     return st;
@@ -421,7 +484,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        panic!("pipeline did not reach terminal state in 15s");
+        panic!("pipeline did not reach terminal state in 60s");
     }
 
     #[tokio::test]
@@ -467,6 +530,21 @@ mod tests {
         wait_terminal(&mgr, &rid_main).await;
     }
 
+    #[test]
+    fn test_should_fetch_decision() {
+        // 刚完成完整 clone：缓存必新，任何 ref 都跳过
+        assert!(!should_fetch("main", true));
+        assert!(!should_fetch("0123456789abcdef0123456789abcdef01234567", true));
+        // full 40-hex commitid：对象不可变，本地 resolve 即答案
+        assert!(!should_fetch("0123456789abcdef0123456789abcdef01234567", false));
+        // 40 位但含非 hex 字符：不是 commitid，按命名 ref 走 fetch
+        assert!(should_fetch("zzzz456789abcdef0123456789abcdef01234567", false));
+        // 命名 ref（分支/tag）+ clone 已存在：fetch 刷新（分支经常变）
+        assert!(should_fetch("main", false));
+        assert!(should_fetch("v1.0", false));
+        assert!(should_fetch("feature-x", false));
+    }
+
     #[tokio::test]
     async fn test_open_commitid() {
         let src = tempfile::tempdir().unwrap();
@@ -479,6 +557,7 @@ mod tests {
         let st = wait_terminal(&mgr, &rid).await;
         assert_eq!(st.phase, RepoPhase::Ready);
         assert_eq!(st.resolved_commit.as_deref(), Some(sha.as_str()));
+        assert!(st.stale_warning.is_none(), "commitid open must not stamp stale warning");
     }
 
     #[tokio::test]
