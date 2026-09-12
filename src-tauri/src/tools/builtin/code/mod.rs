@@ -193,6 +193,9 @@ impl CodeToolHandler {
             Ok(v) => v,
             Err(out) => return out,
         };
+        if let Err(e) = code::git::validate_git_ref(&git_ref) {
+            return self.fail(ctx, "invalid_params", &format!("invalid ref: {e}"));
+        }
         if let Err(e) = code::git::validate_repo_url(&repo_url) {
             return self.fail(ctx, "invalid_repo_url", &e);
         }
@@ -428,7 +431,7 @@ pub fn register_all(registry: &mut crate::tools::registry::ToolRegistry, deps: A
     ));
     registry.register(code_tool_def(
         "code_repo_status",
-        "轮询 code_open_repo 进度：status = cloning / fetching / ready / failed。progress 为 git 进度百分比；ready 的 resolved_commit 为检出 commit，stale_warning 非空表示 fetch 失败降级用本地缓存（要告知用户代码可能非最新）。failed 看 error_code：clone_failed / fetch_failed / invalid_ref / git_not_found。",
+        "轮询 code_open_repo 进度：status = cloning / fetching / ready / failed。progress 为 git 进度百分比；ready 的 resolved_commit 为检出 commit，stale_warning 非空表示 fetch 失败降级用本地缓存（要告知用户代码可能非最新）。failed 看 error_code：clone_failed / fetch_failed / worktree_failed / invalid_ref / git_not_found。",
         serde_json::json!({
             "type": "object",
             "properties": { "repo_id": { "type": "string", "description": "code_open_repo 返回的 repo_id" } },
@@ -792,6 +795,28 @@ mod tests {
         assert_eq!(out.data["offset"], 1);
         assert_eq!(out.data["lines"][0]["line"], 1);
         assert_eq!(out.data["total_lines"], 4);
+    }
+
+    /// 审查修复 #1：ref 以 `-` 开头会被 git 当选项解析（`--upload-pack=` 配
+    /// file:// 远端可执行任意程序）→ invalid_params，不得进入 manager.open
+    #[tokio::test]
+    async fn test_open_rejects_option_injection_ref() {
+        let repos = tempfile::tempdir().unwrap();
+        let db_tmp = tempfile::tempdir().unwrap();
+        let pool = crate::infra::db::init(db_tmp.path().join("friday.db")).await.unwrap();
+        let deps = Arc::new(CodeToolDeps {
+            manager: Arc::new(CodeRepoManager::new(repos.path().to_path_buf())),
+            db: pool,
+        });
+        let out = CodeToolHandler { deps: deps.clone(), kind: CodeToolKind::OpenRepo }
+            .execute(
+                serde_json::json!({"repo_url": "file:///C:/friday-no-such-repo", "ref": "--upload-pack=evil"}),
+                &ctx(),
+            )
+            .await;
+        assert!(!out.success, "option-injection ref must be rejected, got: {:?}", out.data);
+        assert_eq!(out.data["error"], "invalid_params");
+        assert!(out.data["message"].as_str().unwrap().contains("invalid ref"));
     }
 
     /// READY 仓上 `..` 逃逸 → path_outside_repo

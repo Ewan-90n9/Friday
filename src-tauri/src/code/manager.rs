@@ -207,6 +207,10 @@ impl CodeRepoManager {
 
     /// 删除某仓全部缓存（主 clone + worktrees）。有进行中任务时拒绝。
     pub async fn delete_cache(&self, url_hash: &str) -> Result<(), String> {
+        // url_hash 会拼进路径：先做格式校验，防 `..` 等路径穿越触达仓缓存目录之外
+        if url_hash.len() != 16 || !url_hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!("invalid url_hash: {url_hash}"));
+        }
         // 快路径：明显忙直接拒绝，不取管线锁（免无谓等待）
         if self.url_busy(url_hash).await {
             return Err("repo busy (cloning/fetching in progress); retry later".to_string());
@@ -623,12 +627,13 @@ mod tests {
     async fn test_delete_cache_rejects_inflight() {
         let repos = tempfile::tempdir().unwrap();
         let mgr = CodeRepoManager::new(repos.path().to_path_buf());
-        // 直接注入一个进行中状态（不真跑 clone）
+        // 直接注入一个进行中状态（不真跑 clone）；url_hash 用合法 16 位 hex，
+        // 确保命中的是 busy 拒绝而非格式校验
         mgr.inner.states.lock().await.insert(
             "fake-rid".to_string(),
             RepoState {
                 repo_id: "fake-rid".to_string(),
-                url_hash: "fakehash00000000".to_string(),
+                url_hash: "cafebabe00000000".to_string(),
                 repo_url: "https://example.com/x.git".to_string(),
                 git_ref: "main".to_string(),
                 phase: RepoPhase::Cloning,
@@ -641,7 +646,62 @@ mod tests {
                 created_at: chrono::Utc::now(),
             },
         );
-        let err = mgr.delete_cache("fakehash00000000").await.unwrap_err();
+        let err = mgr.delete_cache("cafebabe00000000").await.unwrap_err();
         assert!(err.contains("busy"));
+    }
+
+    /// 审查修复 #2：delete_cache 的 url_hash 格式校验。`..` 会拼成
+    /// repos_dir/..（父目录！）——修复前直接跑 RED 会真的删系统临时目录，
+    /// 故只对修复后的拒绝行为做 GREEN 断言（非法输入一律 Err）。
+    #[tokio::test]
+    async fn test_delete_cache_rejects_invalid_url_hash() {
+        let repos = tempfile::tempdir().unwrap();
+        let mgr = CodeRepoManager::new(repos.path().to_path_buf());
+        // ".." = 路径穿越（删除目标会逃出仓缓存目录）；"abc" = 长度不足；
+        // "zzzzzzzzzzzzzzzz" = 16 位但非 hex；"a/b" = 分隔符；"" = 空
+        for bad in ["..", "abc", "zzzzzzzzzzzzzzzz", "a/b", ""] {
+            let err = mgr.delete_cache(bad).await.unwrap_err();
+            assert!(err.contains("invalid url_hash"), "expected invalid url_hash for {bad:?}, got: {err}");
+        }
+        // 安全性复核：`..` 尝试后仓缓存目录（及其父）必须安然无恙
+        assert!(repos.path().exists(), "repos dir must survive a '..' attempt");
+        // 合法格式但不存在的 hash：无目录可删 → Ok（既有行为不变）
+        mgr.delete_cache("0123456789abcdef").await.unwrap();
+    }
+
+    /// 审查修复 #7：并发同 (url,ref) open 去重——注入 Cloning 态后再次
+    /// open，必须原位早退（同 repo_id 且 created_at 不变），不得重插状态。
+    #[tokio::test]
+    async fn test_open_inflight_dedup_no_reinsert() {
+        let repos = tempfile::tempdir().unwrap();
+        let mgr = CodeRepoManager::new(repos.path().to_path_buf());
+        let url = "file:///C:/friday-no-such-repo";
+        let git_ref = "main";
+        let rid = git::repo_id(url, git_ref);
+        let uh = git::url_hash(url);
+        // 注入 1 小时前创建的 Cloning 态（同 test_delete_cache_rejects_inflight 模式，
+        // 不真跑 clone）：若早退失效被重插，created_at 会变成 now，断言必挂
+        let created_at = chrono::Utc::now() - chrono::Duration::hours(1);
+        mgr.inner.states.lock().await.insert(
+            rid.clone(),
+            RepoState {
+                repo_id: rid.clone(),
+                url_hash: uh,
+                repo_url: url.to_string(),
+                git_ref: git_ref.to_string(),
+                phase: RepoPhase::Cloning,
+                progress: None,
+                resolved_commit: None,
+                stale_warning: None,
+                error_code: None,
+                error: None,
+                worktree_path: None,
+                created_at,
+            },
+        );
+        let rid2 = mgr.open(url, git_ref).await;
+        assert_eq!(rid, rid2, "in-flight dedup must return the same repo_id");
+        let st = mgr.status(&rid).await.unwrap();
+        assert_eq!(st.created_at, created_at, "in-flight early-return must not re-insert the state");
     }
 }

@@ -4,7 +4,7 @@ pub mod git;
 pub mod manager;       // Task 3
 pub mod search;        // Task 4
 
-pub use manager::{CodeRepoManager, RepoCacheEntry, RepoPhase, RepoState};  // Task 3
+pub use manager::{CodeRepoManager, RepoCacheEntry, RepoState};  // Task 3
 
 #[cfg(test)]
 pub(crate) mod testutil {

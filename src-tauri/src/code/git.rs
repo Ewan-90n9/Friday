@@ -60,7 +60,20 @@ pub fn validate_repo_url(repo_url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// ref 防注入校验：git 把以 `-` 开头的参数当选项解析（如 `--upload-pack=`
+/// 配 file:// 远端可执行任意程序），必须拒绝。正常分支/tag/commitid 不以 `-` 开头。
+pub fn validate_git_ref(git_ref: &str) -> Result<(), String> {
+    if git_ref.starts_with('-') {
+        return Err("ref must not start with '-' (parsed as a git option)".to_string());
+    }
+    if git_ref.chars().any(|c| c.is_whitespace()) {
+        return Err("ref must not contain whitespace".to_string());
+    }
+    Ok(())
+}
+
 /// 本地路径 → file:// URL（Windows 反斜杠转正斜杠）
+#[cfg(test)]
 pub fn file_url(path: &Path) -> String {
     format!("file:///{}", path.display().to_string().replace('\\', "/"))
 }
@@ -339,6 +352,21 @@ mod tests {
         assert!(validate_repo_url("example.com/x").is_err());
         assert!(validate_repo_url("").is_err());
         assert!(validate_repo_url("https://x.com/a b").is_err());
+    }
+
+    #[test]
+    fn test_validate_git_ref_rules() {
+        // 以 `-` 开头：git 选项注入（--upload-pack= 配 file:// 远端可执行任意程序）→ 拒绝
+        assert!(validate_git_ref("--upload-pack=evil").is_err());
+        assert!(validate_git_ref("-x").is_err());
+        // 正常分支 / tag / 40-hex commitid / 含 `/` 的分支（如 release/1.2）
+        assert!(validate_git_ref("main").is_ok());
+        assert!(validate_git_ref("v1.0").is_ok());
+        assert!(validate_git_ref("0123456789abcdef0123456789abcdef01234567").is_ok());
+        assert!(validate_git_ref("release/1.2").is_ok());
+        // 空白字符 → 拒绝
+        assert!(validate_git_ref("ma in").is_err());
+        assert!(validate_git_ref("main\n").is_err());
     }
 
     #[test]
