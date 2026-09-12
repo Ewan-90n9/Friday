@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { EventPayload, AgentRow, SessionRow, SessionLogsExport, MessageRow, ToolInfo, EnvironmentRow, EnvCredentialRow, TestConnectionResult, CredentialInput, SaveEnvironmentResult, EnvironmentTransport } from "@/lib/types";
+import type { EventPayload, AgentRow, SessionRow, SessionLogsExport, MessageRow, ToolInfo, EnvironmentRow, EnvCredentialRow, TestConnectionResult, CredentialInput, SaveEnvironmentResult, EnvironmentTransport, ServiceRepoRow, RepoCacheEntry } from "@/lib/types";
 
 export async function sendMessage(sessionId: string | null, message: string): Promise<string> {
   return invoke<string>("send_message_cmd", { sessionId: sessionId, message: message });
@@ -153,4 +153,20 @@ export async function saveEnvironment(params: {
       credentials: params.credentials,
     },
   });
+}
+
+export async function listServiceRepos(): Promise<ServiceRepoRow[]> {
+  return invoke<ServiceRepoRow[]>("list_service_repos_cmd");
+}
+
+export async function deleteServiceRepo(service: string): Promise<void> {
+  return invoke<void>("delete_service_repo_cmd", { service });
+}
+
+export async function listRepoCache(): Promise<RepoCacheEntry[]> {
+  return invoke<RepoCacheEntry[]>("list_repo_cache_cmd");
+}
+
+export async function deleteRepoCache(urlHash: string): Promise<void> {
+  return invoke<void>("delete_repo_cache_cmd", { urlHash });
 }

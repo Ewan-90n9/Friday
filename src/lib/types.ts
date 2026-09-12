@@ -124,6 +124,7 @@ export type ToolCategory =
   | "heap"
   | "jfr"
   | "arthas"
+  | "code"
   | "file_transfer"
   | "builtin";
 
@@ -190,4 +191,19 @@ export interface ConfirmRequest {
   args: unknown;
   risk_level: RiskLevel;
   resolved: "pending" | "approved" | "rejected" | "timeout";
+}
+
+export interface ServiceRepoRow {
+  service: string;
+  repo_url: string;
+  last_ref: string | null;
+  updated_at: string;
+  last_used_at: string;
+}
+
+export interface RepoCacheEntry {
+  url_hash: string;
+  repo_url: string;
+  disk_bytes: number;
+  worktrees: number;
 }

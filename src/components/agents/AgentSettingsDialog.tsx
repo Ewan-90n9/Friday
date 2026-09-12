@@ -3,6 +3,7 @@ import { X, CircleNotch, Robot, CaretDown, FolderOpen } from "@phosphor-icons/re
 import { useAgentStore } from "@/store/agentStore";
 import { useSettingsStore } from "@/store/settingsStore";
 import { AgentListItem } from "@/components/agents/AgentListItem";
+import { CodeRepoSection } from "@/components/settings/CodeRepoSection";
 import { openLogsDir } from "@/lib/ipc";
 
 interface AgentSettingsDialogProps {
@@ -226,6 +227,11 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
               <p className="text-xs text-destructive break-words">{settingsError}</p>
             )}
           </div>
+        </div>
+
+        {/* Code repos (service mappings + clone cache) */}
+        <div className="border-t border-border shrink-0 max-h-[240px] overflow-y-auto">
+          <CodeRepoSection />
         </div>
 
         {/* Runtime logs */}

@@ -12,6 +12,7 @@ import {
   ArrowsLeftRight,
   Gear,
   Stack,
+  FileCode,
 } from "@phosphor-icons/react";
 import type { Icon } from "@phosphor-icons/react";
 import { listTools } from "@/lib/ipc";
@@ -32,6 +33,7 @@ const CATEGORY_META: { key: ToolCategory; label: string; icon: Icon }[] = [
   { key: "heap", label: "堆快照分析", icon: ChartPie },
   { key: "jfr", label: "JFR 飞行记录", icon: ChartLine },
   { key: "arthas", label: "Arthas 动态诊断", icon: Terminal },
+  { key: "code", label: "代码仓", icon: FileCode },
   { key: "file_transfer", label: "文件传输", icon: ArrowsLeftRight },
   { key: "builtin", label: "通用", icon: Gear },
 ];
@@ -47,6 +49,7 @@ export function ToolsPanel() {
     heap: true,
     jfr: true,
     arthas: true,
+    code: true,
     file_transfer: true,
     builtin: true,
   });
