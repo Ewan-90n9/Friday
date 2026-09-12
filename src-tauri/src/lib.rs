@@ -362,6 +362,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             app::settings::set_artifactory_base_url_cmd,
             app::settings::get_auto_approve_tools_cmd,
             app::settings::set_auto_approve_tools_cmd,
+            app::service_repos::list_service_repos_cmd,
+            app::service_repos::delete_service_repo_cmd,
+            app::service_repos::list_repo_cache_cmd,
+            app::service_repos::delete_repo_cache_cmd,
         ])
         .run(tauri::generate_context!())?;
     Ok(())

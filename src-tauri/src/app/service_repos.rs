@@ -1,5 +1,6 @@
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};
+use tauri::State;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceRepoError {
@@ -87,6 +88,46 @@ pub async fn delete_service_repo(pool: &SqlitePool, service: &str) -> Result<(),
         .execute(pool)
         .await?;
     Ok(())
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn list_service_repos_cmd(
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<ServiceRepoRow>, String> {
+    tracing::info!("list_service_repos_cmd called");
+    list_service_repos(&state.db).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn delete_service_repo_cmd(
+    state: State<'_, crate::AppState>,
+    service: String,
+) -> Result<(), String> {
+    tracing::info!(service = %service, "delete_service_repo_cmd called");
+    delete_service_repo(&state.db, &service)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn list_repo_cache_cmd(
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<crate::code::RepoCacheEntry>, String> {
+    tracing::info!("list_repo_cache_cmd called");
+    Ok(state.code_repos.list_cache().await)
+}
+
+#[tauri::command]
+#[tracing::instrument(skip(state))]
+pub async fn delete_repo_cache_cmd(
+    state: State<'_, crate::AppState>,
+    url_hash: String,
+) -> Result<(), String> {
+    tracing::info!(url_hash = %url_hash, "delete_repo_cache_cmd called");
+    state.code_repos.delete_cache(&url_hash).await
 }
 
 #[cfg(test)]
