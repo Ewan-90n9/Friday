@@ -131,6 +131,14 @@ export async function setAutoApproveTools(enabled: boolean): Promise<void> {
   return invoke<void>("set_auto_approve_tools_cmd", { enabled });
 }
 
+export async function getConfirmationTimeout(): Promise<number> {
+  return invoke<number>("get_confirmation_timeout_cmd");
+}
+
+export async function setConfirmationTimeout(secs: string): Promise<void> {
+  return invoke<void>("set_confirmation_timeout_cmd", { secs });
+}
+
 export async function listEnvCredentials(environmentId: string): Promise<EnvCredentialRow[]> {
   return invoke<EnvCredentialRow[]>("list_env_credentials_cmd", { environmentId });
 }

@@ -15,7 +15,7 @@ use rmcp::{
 use tokio::sync::Mutex;
 
 use crate::app::events::{AppEvent, EventBus};
-use crate::app::settings::auto_approve_tools;
+use crate::app::settings::{auto_approve_tools, confirmation_timeout_secs};
 use crate::exec::pool::ExecChannelPool;
 use crate::mcp::session_mapper::SessionMapper;
 use crate::tools::confirm::{ConfirmRegistry, ConfirmResult};
@@ -169,8 +169,11 @@ impl ServerHandler for FridayMcpServer {
             // when auto-approve mode is enabled (global setting). The
             // auto-approve log below must fire exactly when a Low/High tool
             // skips confirmation — hence the else-if on the same gate.
+            // Wait time is configurable via the `confirmation_timeout_secs`
+            // setting (issue #22: 120s hardcode starved long unattended runs).
             let auto_approve = auto_approve_tools(&self.pool).await;
             if should_confirm(risk_level, auto_approve) {
+                let confirm_timeout_secs = confirmation_timeout_secs(&self.pool).await;
                 let confirm_id = uuid::Uuid::new_v4().to_string();
                 let (tx, rx) = tokio::sync::oneshot::channel();
 
@@ -198,7 +201,7 @@ impl ServerHandler for FridayMcpServer {
                     },
                 );
 
-                match tokio::time::timeout(Duration::from_secs(120), rx).await {
+                match tokio::time::timeout(Duration::from_secs(confirm_timeout_secs), rx).await {
                     Ok(Ok(ConfirmResult::Confirmed)) => {
                         tracing::info!(session_id = %session_id, tool = %tool_name, "tool call confirmed");
                     }
@@ -217,10 +220,10 @@ impl ServerHandler for FridayMcpServer {
                         .into());
                     }
                     Err(_) => {
-                        tracing::warn!(session_id = %session_id, tool = %tool_name, "tool confirmation timed out");
-                        return Ok(CallToolResult::error(vec![ContentBlock::text(
-                            "tool confirmation timed out after 120 seconds",
-                        )])
+                        tracing::warn!(session_id = %session_id, tool = %tool_name, confirm_timeout_secs, "tool confirmation timed out");
+                        return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                            "tool execution blocked: user confirmation not received within {confirm_timeout_secs}s (enable auto-approve mode in settings to skip)",
+                        ))])
                         .into());
                     }
                 }

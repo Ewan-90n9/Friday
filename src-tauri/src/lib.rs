@@ -366,6 +366,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             app::service_repos::delete_service_repo_cmd,
             app::service_repos::list_repo_cache_cmd,
             app::service_repos::delete_repo_cache_cmd,
+            app::settings::get_confirmation_timeout_cmd,
+            app::settings::set_confirmation_timeout_cmd,
         ])
         .run(tauri::generate_context!())?;
     Ok(())

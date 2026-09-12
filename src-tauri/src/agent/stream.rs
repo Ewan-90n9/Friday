@@ -1,6 +1,8 @@
 use super::spawn::AgentProcess;
 use crate::app::events::{AppEvent, EventBus};
+use crate::app::session::MessageRow;
 use serde_json::Value;
+use std::fmt::Write as _;
 use tokio_util::sync::CancellationToken;
 
 /// Tracks a running agent's cancellation token and background task handle.
@@ -8,6 +10,121 @@ use tokio_util::sync::CancellationToken;
 pub struct RunningAgent {
     pub cancel: CancellationToken,
     pub handle: tokio::task::JoinHandle<()>,
+}
+
+/// Retry parameters for a resume spawn whose session id the CLI rejected
+/// ("Session ID ... is already in use", issue #21): the stream consumer
+/// respawns once WITHOUT the resume flag, with Friday's own record of the
+/// conversation injected into the prompt (the CLI-side history is unreachable
+/// behind the stale lock). The new agent session id captured from the retry
+/// stream overwrites the stale one, so later turns resume normally again.
+pub struct ResumeRetry {
+    pub user_message: String,
+    pub prompt_override_path: Option<std::path::PathBuf>,
+}
+
+/// codeagentcli (Claude-Code-style CLI) refuses to resume a session whose id
+/// it still considers "in use" — a per-session lock left behind by a previous
+/// run that exited without cleanup. The error goes to stderr and the process
+/// exits non-zero before producing any stdout NDJSON.
+/// Example (issue #21): `Error: Session ID e3afdf0c-... is already in use.`
+fn is_session_in_use_error(line: &str) -> bool {
+    line.contains("Session ID") && line.contains("already in use")
+}
+
+/// 单条消息注入重试 prompt 时的字符上限：用户消息 2000、agent 文本 1000。
+/// 工具调用只保留「名称（状态）」一行，输出不注入（体积大且结论通常在文本里）。
+const HISTORY_USER_MAX_CHARS: usize = 2000;
+const HISTORY_AGENT_TEXT_MAX_CHARS: usize = 1000;
+/// 整段历史的字符上限：超限时保留最近的部分（诊断结论通常在尾部）。
+const HISTORY_TOTAL_MAX_CHARS: usize = 8000;
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max).collect();
+        format!("{truncated}…（已截断）")
+    }
+}
+
+/// Compact conversation-history block for the fresh-session retry prompt,
+/// built from Friday's own message store (the CLI-side history is unreachable
+/// when its session lock is stale). Excludes the in-flight exchange (the
+/// streaming agent message and the user message right before it — the retry
+/// prompt carries the current user message itself). Returns None when there
+/// is no prior exchange to inject.
+fn format_recent_history(messages: &[MessageRow], agent_message_id: &str) -> Option<String> {
+    let inflight_pos = messages.iter().position(|m| m.id == agent_message_id)?;
+    // 在途 agent 消息的前一条是本轮用户消息（由重试 prompt 自带），再之前的才是历史
+    let history_end = inflight_pos.checked_sub(1)?;
+    if history_end == 0 {
+        return None;
+    }
+
+    let mut out = String::new();
+    for msg in &messages[..history_end] {
+        match msg.role.as_str() {
+            "user" => {
+                let Some(content) = msg.content.as_deref() else { continue };
+                if content.trim().is_empty() {
+                    continue;
+                }
+                let _ = writeln!(out, "[用户] {}", truncate_chars(content, HISTORY_USER_MAX_CHARS));
+            }
+            "agent" => {
+                if msg.parts.is_empty() {
+                    if let Some(content) = msg.content.as_deref() {
+                        if !content.trim().is_empty() {
+                            let _ = writeln!(
+                                out,
+                                "[助手] {}",
+                                truncate_chars(content, HISTORY_AGENT_TEXT_MAX_CHARS)
+                            );
+                        }
+                    }
+                    continue;
+                }
+                for part in &msg.parts {
+                    match part.part_type.as_str() {
+                        "text" => {
+                            if let Some(text) = part.text.as_deref() {
+                                if !text.trim().is_empty() {
+                                    let _ = writeln!(
+                                        out,
+                                        "[助手] {}",
+                                        truncate_chars(text, HISTORY_AGENT_TEXT_MAX_CHARS)
+                                    );
+                                }
+                            }
+                        }
+                        "tool" => {
+                            let name = part.tool_name.as_deref().unwrap_or("tool");
+                            let status = part.tool_status.as_deref().unwrap_or("unknown");
+                            let _ = writeln!(out, "[工具] {name}（{status}）");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if out.is_empty() {
+        return None;
+    }
+
+    // 整体截断：保留最近的历史（结尾部分），前缀标注省略
+    let total = out.chars().count();
+    if total > HISTORY_TOTAL_MAX_CHARS {
+        let tail: String = out
+            .chars()
+            .skip(total - HISTORY_TOTAL_MAX_CHARS)
+            .collect();
+        return Some(format!("（更早的对话已省略）\n{tail}"));
+    }
+    Some(out)
 }
 
 /// Parse a single NDJSON line and return the corresponding AppEvent(s).
@@ -299,15 +416,20 @@ impl MessageAccumulator {
 }
 
 /// Read all lines from a reader, logging each as warn!.
-/// Returns the number of lines read.
-async fn read_stderr_lines<R: tokio::io::AsyncRead + Unpin>(reader: R, session_id: &str) -> u64 {
+/// Returns the number of lines read and whether any line matched the
+/// "Session ID ... is already in use" pattern (issue #21).
+async fn read_stderr_lines<R: tokio::io::AsyncRead + Unpin>(reader: R, session_id: &str) -> (u64, bool) {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let mut lines = BufReader::new(reader).lines();
     let mut count = 0u64;
+    let mut session_conflict = false;
     loop {
         match lines.next_line().await {
             Ok(Some(line)) => {
                 tracing::warn!(session_id = %session_id, raw = %line, "stderr line");
+                if is_session_in_use_error(&line) {
+                    session_conflict = true;
+                }
                 count += 1;
             }
             Ok(None) => break,
@@ -317,7 +439,19 @@ async fn read_stderr_lines<R: tokio::io::AsyncRead + Unpin>(reader: R, session_i
             }
         }
     }
-    count
+    (count, session_conflict)
+}
+
+/// One consume attempt's outcome: terminal, or the CLI rejected the resume
+/// session id and the caller should retry with a fresh agent session.
+enum AttemptOutcome {
+    Finished,
+    RetryWithFreshSession(AgentProcess),
+}
+
+enum ExitReason {
+    Normal,
+    Cancelled,
 }
 
 /// Consume the stdout stream of an agent process, parse NDJSON lines,
@@ -325,12 +459,10 @@ async fn read_stderr_lines<R: tokio::io::AsyncRead + Unpin>(reader: R, session_i
 /// - stdout EOF + exit 0 → DiagnosisDone
 /// - stdout EOF + exit ≠0 → AgentCrashed
 /// - cancellation → AgentStopped
-enum ExitReason {
-    Normal,
-    Cancelled,
-}
-
-#[tracing::instrument(skip(agent, bus, pool, agents, cancel, embedding, vec_store))]
+/// - resume spawn rejected with "Session ID ... already in use" (issue #21,
+///   每次最多一次) → retry once with a fresh agent session (no resume flag),
+///   Friday 本地对话历史注入 prompt 补偿 CLI 侧上下文丢失。
+#[tracing::instrument(skip(agent, bus, pool, agents, cancel, embedding, vec_store, resume_retry))]
 pub async fn consume_stream(
     agent: AgentProcess,
     bus: EventBus,
@@ -341,7 +473,50 @@ pub async fn consume_stream(
     cancel: CancellationToken,
     embedding: Option<std::sync::Arc<crate::knowledge::embedding::EmbeddingService>>,
     vec_store: Option<std::sync::Arc<crate::knowledge::vec_store::VecStore>>,
+    resume_retry: Option<ResumeRetry>,
 ) {
+    let mut agent = agent;
+    let mut resume_retry = resume_retry;
+    loop {
+        let outcome = consume_attempt(
+            agent,
+            &bus,
+            &session_id,
+            &agent_message_id,
+            &pool,
+            &agents,
+            cancel.clone(),
+            embedding.clone(),
+            vec_store.clone(),
+            resume_retry.take(),
+        )
+        .await;
+        match outcome {
+            AttemptOutcome::Finished => return,
+            AttemptOutcome::RetryWithFreshSession(next) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    "retrying with fresh agent session after session-id-in-use rejection"
+                );
+                agent = next;
+            }
+        }
+    }
+}
+
+#[tracing::instrument(skip(agent, bus, pool, agents, cancel, embedding, vec_store, resume_retry))]
+async fn consume_attempt(
+    agent: AgentProcess,
+    bus: &EventBus,
+    session_id: &str,
+    agent_message_id: &str,
+    pool: &sqlx::SqlitePool,
+    agents: &std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, RunningAgent>>>,
+    cancel: CancellationToken,
+    embedding: Option<std::sync::Arc<crate::knowledge::embedding::EmbeddingService>>,
+    vec_store: Option<std::sync::Arc<crate::knowledge::vec_store::VecStore>>,
+    resume_retry: Option<ResumeRetry>,
+) -> AttemptOutcome {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     let AgentProcess { mut child, stdout, stderr, .. } = agent;
@@ -349,9 +524,9 @@ pub async fn consume_stream(
     let mut lines = reader.lines();
     let mut agent_session_captured = false;
     let mut line_count = 0u64;
-    let mut accumulator = MessageAccumulator::new(agent_message_id.clone());
+    let mut accumulator = MessageAccumulator::new(agent_message_id.to_string());
 
-    let stderr_sid = session_id.clone();
+    let stderr_sid = session_id.to_string();
     let stderr_handle = tokio::spawn(async move {
         read_stderr_lines(stderr, &stderr_sid).await
     });
@@ -373,19 +548,19 @@ pub async fn consume_stream(
                             if let Some(agent_id) = extract_session_id(&line) {
                                 tracing::info!(agent_id = %agent_id, "captured agent session id");
                                 let _ = crate::app::session::update_agent_session_id(
-                                    &pool, &session_id, &agent_id,
+                                    pool, session_id, &agent_id,
                                 ).await;
                                 agent_session_captured = true;
                             }
                         }
 
-                        let events = parse_event(&line, &session_id);
+                        let events = parse_event(&line, session_id);
                         for event in &events {
                             accumulator.handle_event(event);
                         }
                         for event in events {
                             tracing::debug!(event_type = ?std::mem::discriminant(&event), "emitting event");
-                            bus.emit(&session_id, event);
+                            bus.emit(session_id, event);
                         }
                     }
                     Ok(None) => {
@@ -401,8 +576,8 @@ pub async fn consume_stream(
             _ = cancel.cancelled() => {
                 tracing::info!(session_id = %session_id, "cancellation received, killing child");
                 child.kill().await.ok();
-                bus.emit(&session_id, AppEvent::AgentStopped {
-                    session_id: session_id.clone(),
+                bus.emit(session_id, AppEvent::AgentStopped {
+                    session_id: session_id.to_string(),
                 });
                 exit_reason = ExitReason::Cancelled;
                 break;
@@ -413,14 +588,62 @@ pub async fn consume_stream(
     let status = child.wait().await;
     let exit_ok = status.as_ref().map(|s| s.success()).unwrap_or(false);
 
-    let _ = stderr_handle.await;
+    let (_, session_conflict) = stderr_handle.await.unwrap_or((0, false));
+
+    // issue #21：复用的 agent_session_id 被 CLI 以「already in use」拒绝，
+    // 且未产生任何 stdout——说明旧会话锁死，resume 不可达。带重试配置时
+    // 自动降级为全新会话（不传 resume flag），本地历史注入 prompt 补偿上下文。
+    // 新会话 id 会在重试流中被捕获并覆盖存量值，后续轮次恢复正常 resume。
+    if matches!(exit_reason, ExitReason::Normal)
+        && session_conflict
+        && line_count == 0
+    {
+        match resume_retry {
+            Some(retry) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    "agent session resume rejected (session id in use), falling back to fresh agent session"
+                );
+                let history = match crate::app::session::get_session_messages(pool, session_id).await {
+                    Ok(messages) => format_recent_history(&messages, agent_message_id),
+                    Err(e) => {
+                        tracing::warn!(?e, session_id = %session_id, "failed to load session history for retry prompt");
+                        None
+                    }
+                };
+                match super::spawn::spawn_active(
+                    pool,
+                    session_id.to_string(),
+                    retry.user_message.clone(),
+                    None,
+                    retry.prompt_override_path.clone(),
+                    None,
+                    history.as_deref(),
+                )
+                .await
+                {
+                    Ok(next) => return AttemptOutcome::RetryWithFreshSession(next),
+                    Err(e) => {
+                        tracing::error!(?e, session_id = %session_id, "fresh-session respawn failed after session-id conflict");
+                        // 落到下方通用崩溃处理
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    "session-id-in-use crash detected but no retry configured"
+                );
+            }
+        }
+    }
 
     let (final_status, fallback_outcome) = match exit_reason {
         ExitReason::Normal => {
             if exit_ok {
                 tracing::info!(session_id = %session_id, exit_ok, "child process exited normally");
-                bus.emit(&session_id, AppEvent::DiagnosisDone {
-                    session_id: session_id.clone(),
+                bus.emit(session_id, AppEvent::DiagnosisDone {
+                    session_id: session_id.to_string(),
                     conclusion: String::new(),
                 });
                 ("done", crate::knowledge::experience::Outcome::Uncertain)
@@ -430,8 +653,8 @@ pub async fn consume_stream(
                     Err(e) => format!("wait error: {}", e),
                 };
                 tracing::info!(session_id = %session_id, "child process crashed");
-                bus.emit(&session_id, AppEvent::AgentCrashed {
-                    session_id: session_id.clone(),
+                bus.emit(session_id, AppEvent::AgentCrashed {
+                    session_id: session_id.to_string(),
                     reason,
                 });
                 ("error", crate::knowledge::experience::Outcome::Negative)
@@ -442,19 +665,19 @@ pub async fn consume_stream(
         }
     };
 
-    accumulator.flush_to_db(&pool).await;
-    if let Err(e) = crate::app::session::update_message_status(&pool, &agent_message_id, final_status).await {
+    accumulator.flush_to_db(pool).await;
+    if let Err(e) = crate::app::session::update_message_status(pool, agent_message_id, final_status).await {
         tracing::error!(?e, message_id = %agent_message_id, "failed to update message status");
     }
 
     {
         let mut map = agents.lock().await;
-        map.remove(&session_id);
+        map.remove(session_id);
     }
 
     if let (Some(embedding), Some(vec_store)) = (embedding, vec_store) {
         let pool_clone = pool.clone();
-        let session_id_clone = session_id.clone();
+        let session_id_clone = session_id.to_string();
         tokio::spawn(async move {
             crate::knowledge::memory::generate_memory(
                 pool_clone,
@@ -468,6 +691,8 @@ pub async fn consume_stream(
     } else {
         tracing::warn!(session_id = %session_id, "memory resources not available, skipping memory generation");
     }
+
+    AttemptOutcome::Finished
 }
 
 #[cfg(test)]
@@ -678,9 +903,27 @@ mod tests {
             .unwrap();
         writer.shutdown().await.unwrap();
 
-        let count = read_stderr_lines(reader, "test-session").await;
+        let (count, conflict) = read_stderr_lines(reader, "test-session").await;
 
         assert_eq!(count, 3);
+        assert!(!conflict);
+    }
+
+    #[tokio::test]
+    async fn test_read_stderr_lines_detects_session_conflict() {
+        use tokio::io::{duplex, AsyncWriteExt};
+
+        let (mut writer, reader) = duplex(1024);
+        writer
+            .write_all(b"some noise\nError: Session ID abc-123 is already in use.\n")
+            .await
+            .unwrap();
+        writer.shutdown().await.unwrap();
+
+        let (count, conflict) = read_stderr_lines(reader, "test-session").await;
+
+        assert_eq!(count, 2);
+        assert!(conflict, "already in use 行应被识别为会话冲突");
     }
 
     #[tokio::test]
@@ -688,8 +931,327 @@ mod tests {
         use tokio::io::duplex;
 
         let (_, reader) = duplex(1024);
-        let count = read_stderr_lines(reader, "test-session").await;
+        let (count, conflict) = read_stderr_lines(reader, "test-session").await;
         assert_eq!(count, 0);
+        assert!(!conflict);
+    }
+
+    // ---- issue #21: session-id-in-use 检测与全新会话重试 ----
+
+    use crate::app::session::MessagePartRow;
+
+    #[test]
+    fn test_is_session_in_use_error_matches_incident_line() {
+        let line = "Error: Session ID e3afdf0c-951e-4299-acad-51974107ea08 is already in use.";
+        assert!(is_session_in_use_error(line));
+    }
+
+    #[test]
+    fn test_is_session_in_use_error_matches_without_error_prefix() {
+        let line = "Session ID abc is already in use";
+        assert!(is_session_in_use_error(line));
+    }
+
+    #[test]
+    fn test_is_session_in_use_error_rejects_other_lines() {
+        assert!(!is_session_in_use_error("Error: API key invalid"));
+        assert!(!is_session_in_use_error("Error: Session not found"));
+        assert!(!is_session_in_use_error(""));
+    }
+
+    fn msg(id: &str, role: &str, content: Option<&str>, seq: i64) -> MessageRow {
+        MessageRow {
+            id: id.to_string(),
+            role: role.to_string(),
+            content: content.map(|s| s.to_string()),
+            status: Some("done".to_string()),
+            seq,
+            parts: vec![],
+        }
+    }
+
+    fn text_part(text: &str) -> MessagePartRow {
+        MessagePartRow {
+            part_type: "text".to_string(),
+            seq: 0,
+            text: Some(text.to_string()),
+            tool_name: None,
+            tool_args: None,
+            tool_status: None,
+            tool_output: None,
+            tool_elapsed_ms: None,
+        }
+    }
+
+    fn tool_part(name: &str, status: &str) -> MessagePartRow {
+        MessagePartRow {
+            part_type: "tool".to_string(),
+            seq: 1,
+            text: None,
+            tool_name: Some(name.to_string()),
+            tool_args: None,
+            tool_status: Some(status.to_string()),
+            tool_output: None,
+            tool_elapsed_ms: None,
+        }
+    }
+
+    #[test]
+    fn test_format_recent_history_includes_prior_exchange_only() {
+        let mut prior_agent = msg("m2", "agent", None, 1);
+        prior_agent.parts = vec![text_part("已定位到内存泄漏")];
+        let messages = vec![
+            msg("m1", "user", Some("OOM 排查"), 0),
+            prior_agent,
+            msg("m3", "user", Some("继续排查"), 2),
+            msg("m4", "agent", None, 3),
+        ];
+        let history = format_recent_history(&messages, "m4").unwrap();
+        assert!(history.contains("OOM 排查"));
+        assert!(history.contains("已定位到内存泄漏"));
+        assert!(!history.contains("继续排查"), "当前在途用户消息不应进入历史");
+    }
+
+    #[test]
+    fn test_format_recent_history_renders_tool_part_compactly() {
+        let mut prior_agent = msg("m2", "agent", None, 1);
+        prior_agent.parts = vec![tool_part("jvm_gc_stats", "completed"), text_part("结论")];
+        let messages = vec![
+            msg("m1", "user", Some("问题"), 0),
+            prior_agent,
+            msg("m3", "user", Some("现在"), 2),
+            msg("m4", "agent", None, 3),
+        ];
+        let history = format_recent_history(&messages, "m4").unwrap();
+        assert!(history.contains("jvm_gc_stats"));
+        assert!(history.contains("completed"));
+        assert!(history.contains("结论"));
+    }
+
+    #[test]
+    fn test_format_recent_history_none_when_only_inflight_exchange() {
+        let messages = vec![
+            msg("m1", "user", Some("第一问"), 0),
+            msg("m2", "agent", None, 1),
+        ];
+        assert!(format_recent_history(&messages, "m2").is_none());
+    }
+
+    #[test]
+    fn test_format_recent_history_none_when_agent_message_not_found() {
+        let messages = vec![msg("m1", "user", Some("问"), 0)];
+        assert!(format_recent_history(&messages, "missing-id").is_none());
+    }
+
+    #[test]
+    fn test_format_recent_history_truncates_long_messages() {
+        let long: String = "长".repeat(5000);
+        let messages = vec![
+            msg("m1", "user", Some(&long), 0),
+            msg("m2", "user", Some("继续"), 1),
+            msg("m3", "agent", None, 2),
+        ];
+        let history = format_recent_history(&messages, "m3").unwrap();
+        let total: usize = history.chars().count();
+        assert!(total < 3000, "超长历史应被截断，实际 {total} 字符");
+    }
+
+    /// 构造一个假 agent CLI（Windows .cmd）：
+    /// - `--help`：输出含 `--sessions` 的帮助（session flag 探测命中）；
+    /// - 带 `--sessions`：复现 issue #21 —— stderr 打 `Error: Session ID ... is
+    ///   already in use.` 并以退出码 1 崩溃，不产生任何 stdout；
+    /// - 不带（全新会话）：把 stdin prompt 原样字节落盘到 dump_path（用
+    ///   PowerShell 流拷贝——`more` 会按代码页转码破坏 UTF-8），输出正常 NDJSON。
+    #[cfg(windows)]
+    fn write_fake_agent_cmd(dir: &std::path::Path, dump_path: &std::path::Path) -> std::path::PathBuf {
+        let script = format!(
+            "@echo off\r\n\
+             echo %* | findstr /C:\"--help\" >nul 2>&1\r\n\
+             if %errorlevel%==0 goto :help\r\n\
+             echo %* | findstr /C:\"--sessions\" >nul 2>&1\r\n\
+             if %errorlevel%==0 goto :conflict\r\n\
+             goto :run\r\n\
+             :help\r\n\
+             echo usage: fake-agent [options]\r\n\
+             echo   --sessions ^<id^>  resume session\r\n\
+             exit /b 0\r\n\
+             :conflict\r\n\
+             echo Error: Session ID e3afdf0c-stale is already in use. 1>&2\r\n\
+             exit /b 1\r\n\
+             :run\r\n\
+             powershell -NoProfile -Command \"$s=[Console]::OpenStandardInput();$f=[System.IO.File]::Create('{dump}');$s.CopyTo($f);$f.Close()\"\r\n\
+             echo {{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"fresh-agent-session\"}}\r\n\
+             echo {{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"retry answer\"}}]}}}}\r\n\
+             echo {{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"retry answer\"}}\r\n\
+             exit /b 0\r\n",
+            dump = dump_path.display(),
+        );
+        let path = dir.join("fake-agent.cmd");
+        std::fs::write(&path, script).unwrap();
+        path
+    }
+
+    /// 复现 issue #21 场景的完整数据库 + 会话状态：
+    /// 历史一轮对话 → 存量 agent_session_id（已被 CLI 锁死）→ 用户发新消息。
+    #[cfg(windows)]
+    async fn setup_conflict_scenario(
+        pool: &sqlx::SqlitePool,
+        session_id: &str,
+        agent_path: &str,
+    ) -> String {
+        sqlx::query(
+            "INSERT INTO agents (id, provider, display_name, path, version, source, is_active, detected_at, created_at) \
+             VALUES ('test-agent-id', 'codeagentcli', 'FakeAgent', ?, NULL, 'manual', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        )
+        .bind(agent_path)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        // 历史一轮：用户问 + agent 答（带文本 part）
+        let u1 = crate::app::session::insert_message(pool, session_id, "user", Some("OOM 排查一下"), Some("done"), 0).await.unwrap();
+        let _ = u1;
+        let a1 = crate::app::session::insert_message(pool, session_id, "agent", None, Some("done"), 1).await.unwrap();
+        crate::app::session::insert_text_part(pool, &a1, 0, "已定位到内存泄漏").await.unwrap();
+
+        // 存量 agent_session_id（CLI 侧锁未释放）
+        crate::app::session::update_agent_session_id(pool, session_id, "e3afdf0c-stale").await.unwrap();
+
+        // 当前在途：用户新消息 + streaming agent 消息
+        crate::app::session::insert_message(pool, session_id, "user", Some("继续排查"), Some("done"), 2).await.unwrap();
+        crate::app::session::insert_message(pool, session_id, "agent", None, Some("streaming"), 3).await.unwrap()
+    }
+
+    #[cfg(windows)]
+    async fn last_agent_message_status(
+        pool: &sqlx::SqlitePool,
+        session_id: &str,
+    ) -> (String, Vec<String>) {
+        let messages = crate::app::session::get_session_messages(pool, session_id).await.unwrap();
+        let last = messages.last().unwrap();
+        let texts: Vec<String> = last
+            .parts
+            .iter()
+            .filter(|p| p.part_type == "text")
+            .filter_map(|p| p.text.clone())
+            .collect();
+        (last.status.clone().unwrap_or_default(), texts)
+    }
+
+    /// issue #21：复用被锁死的 agent_session_id spawn 后，CLI 立即崩溃
+    /// （stderr 报 already in use、无任何 stdout）。带 ResumeRetry 时必须自动
+    /// 以全新会话重试：消息状态 done、回答落库、agent_session_id 更新为新值、
+    /// 重试 prompt 注入本地历史记录。
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_consume_stream_retries_with_fresh_session_on_session_id_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
+        let session = crate::app::session::create_session(&pool, "test").await.unwrap();
+        let sid = session.id.0;
+
+        let dump_path = tmp.path().join("prompt-dump.txt");
+        let fake = write_fake_agent_cmd(tmp.path(), &dump_path);
+        let agent_message_id = setup_conflict_scenario(&pool, &sid, &fake.to_string_lossy()).await;
+
+        // 先以存量 session_id spawn（复现冲突）
+        let process = crate::agent::spawn::spawn_active(
+            &pool,
+            sid.clone(),
+            "继续排查".to_string(),
+            Some("e3afdf0c-stale".to_string()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let agents: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, RunningAgent>>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let bus = EventBus::disabled();
+
+        consume_stream(
+            process,
+            bus,
+            sid.clone(),
+            agent_message_id,
+            pool.clone(),
+            agents,
+            CancellationToken::new(),
+            None,
+            None,
+            Some(ResumeRetry {
+                user_message: "继续排查".to_string(),
+                prompt_override_path: None,
+            }),
+        )
+        .await;
+
+        // 重试后消息正常完成
+        let (status, texts) = last_agent_message_status(&pool, &sid).await;
+        assert_eq!(status, "done", "重试后 agent 消息应为 done");
+        assert!(texts.iter().any(|t| t.contains("retry answer")));
+
+        // agent_session_id 已被新会话覆盖（后续轮次可正常 resume）
+        let new_agent_session = crate::app::session::get_agent_session_id(&pool, &sid).await.unwrap();
+        assert_eq!(new_agent_session.as_deref(), Some("fresh-agent-session"));
+
+        // 重试 prompt 注入了本地历史与当前消息
+        let prompt = std::fs::read_to_string(&dump_path).unwrap();
+        assert!(prompt.contains("此前对话记录"), "重试 prompt 应包含历史记录段");
+        assert!(prompt.contains("已定位到内存泄漏"));
+        assert!(prompt.contains("继续排查"));
+    }
+
+    /// 对照组：不带 ResumeRetry 时维持现状 —— 冲突崩溃直接落 error，
+    /// 存量 agent_session_id 不变。
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_consume_stream_without_retry_reports_crash_on_session_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = db::init(tmp.path().join("friday.db")).await.unwrap();
+        let session = crate::app::session::create_session(&pool, "test").await.unwrap();
+        let sid = session.id.0;
+
+        let dump_path = tmp.path().join("prompt-dump.txt");
+        let fake = write_fake_agent_cmd(tmp.path(), &dump_path);
+        let agent_message_id = setup_conflict_scenario(&pool, &sid, &fake.to_string_lossy()).await;
+
+        let process = crate::agent::spawn::spawn_active(
+            &pool,
+            sid.clone(),
+            "继续排查".to_string(),
+            Some("e3afdf0c-stale".to_string()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let agents: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, RunningAgent>>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+
+        consume_stream(
+            process,
+            EventBus::disabled(),
+            sid.clone(),
+            agent_message_id,
+            pool.clone(),
+            agents,
+            CancellationToken::new(),
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        let (status, _) = last_agent_message_status(&pool, &sid).await;
+        assert_eq!(status, "error");
+
+        let agent_session = crate::app::session::get_agent_session_id(&pool, &sid).await.unwrap();
+        assert_eq!(agent_session.as_deref(), Some("e3afdf0c-stale"));
     }
 
     use crate::infra::db;
