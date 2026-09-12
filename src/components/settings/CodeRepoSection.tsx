@@ -10,7 +10,7 @@ function formatBytes(n: number): string {
   return `${(n / 1024 ** 3).toFixed(2)} GB`;
 }
 
-export function CodeRepoSection() {
+export function CodeRepoSection({ refreshKey }: { refreshKey?: number }) {
   const [mappings, setMappings] = useState<ServiceRepoRow[] | null>(null);
   const [cache, setCache] = useState<RepoCacheEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -29,7 +29,7 @@ export function CodeRepoSection() {
 
   useEffect(() => {
     refresh();
-  }, [refresh]);
+  }, [refresh, refreshKey]);
 
   const handleDeleteMapping = async (service: string) => {
     setBusy(`map:${service}`);
@@ -87,7 +87,7 @@ export function CodeRepoSection() {
               onClick={() => handleDeleteMapping(m.service)}
               disabled={busy === `map:${m.service}`}
               aria-label={`删除 ${m.service} 映射`}
-              className="shrink-0 text-muted-foreground hover:text-destructive transition-colors cursor-pointer disabled:opacity-50"
+              className="shrink-0 text-muted-foreground hover:text-destructive transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {busy === `map:${m.service}` ? (
                 <CircleNotch size={14} className="animate-spin" aria-hidden="true" />
@@ -126,8 +126,8 @@ export function CodeRepoSection() {
             <button
               onClick={() => handleDeleteCache(c.url_hash)}
               disabled={busy === `cache:${c.url_hash}`}
-              aria-label="删除缓存仓库"
-              className="shrink-0 text-muted-foreground hover:text-destructive transition-colors cursor-pointer disabled:opacity-50"
+              aria-label={`删除缓存 ${c.repo_url}`}
+              className="shrink-0 text-muted-foreground hover:text-destructive transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {busy === `cache:${c.url_hash}` ? (
                 <CircleNotch size={14} className="animate-spin" aria-hidden="true" />

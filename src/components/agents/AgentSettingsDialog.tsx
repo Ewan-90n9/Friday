@@ -43,6 +43,7 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
   const [confirmAutoApprove, setConfirmAutoApprove] = useState(false);
   const [savingAutoApprove, setSavingAutoApprove] = useState(false);
   const [logsError, setLogsError] = useState<string | null>(null);
+  const [codeRepoKey, setCodeRepoKey] = useState(0);
 
   const handleOpenLogsDir = async () => {
     setLogsError(null);
@@ -85,6 +86,7 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
       loadSettings().then(() => {
         setUrlDraft(useSettingsStore.getState().artifactoryBaseUrl);
       });
+      setCodeRepoKey((k) => k + 1);
     } else {
       setConfirmAutoApprove(false);
     }
@@ -231,7 +233,7 @@ export function AgentSettingsDialog({ open, onClose }: AgentSettingsDialogProps)
 
         {/* Code repos (service mappings + clone cache) */}
         <div className="border-t border-border shrink-0 max-h-[240px] overflow-y-auto">
-          <CodeRepoSection />
+          <CodeRepoSection refreshKey={codeRepoKey} />
         </div>
 
         {/* Runtime logs */}
