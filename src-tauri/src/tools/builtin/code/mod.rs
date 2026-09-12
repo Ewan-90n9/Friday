@@ -235,11 +235,24 @@ impl CodeToolHandler {
             Err(code) if code == "repo_not_found" => {
                 Err(self.fail(ctx, "repo_not_found", "unknown repo_id; call code_open_repo first"))
             }
-            Err(not_ready) => Err(self.fail(
-                ctx,
-                "repo_not_ready",
-                &format!("repo is {not_ready}; poll code_repo_status until ready, do NOT re-open"),
-            )),
+            Err(not_ready) => {
+                // manager 返回 "repo_not_ready: <phase>"；剥前缀取 phase（无前缀时防御性用整串）
+                let phase = not_ready.strip_prefix("repo_not_ready: ").unwrap_or(&not_ready);
+                if phase == "failed" {
+                    // 终态 failed：轮询无意义，指引改为查错误码后换 ref 重开
+                    Err(self.fail(
+                        ctx,
+                        "repo_failed",
+                        "repo open failed; check code_repo_status error_code and re-open with a corrected ref (branch/tag/commit id)",
+                    ))
+                } else {
+                    Err(self.fail(
+                        ctx,
+                        "repo_not_ready",
+                        &format!("repo is {phase}; poll code_repo_status until ready, do NOT re-open"),
+                    ))
+                }
+            }
         }
     }
 
@@ -805,9 +818,9 @@ mod tests {
         assert!(out.data["hint"].as_str().is_some());
     }
 
-    /// repo_not_ready 确定性触发：无效 ref → 终态 failed（worktree_path None）→ 读工具报 not_ready
+    /// repo_failed 确定性触发：无效 ref → 终态 failed（worktree_path None）→ 读工具报 failed + 换 ref 重开指引
     #[tokio::test]
-    async fn test_read_file_on_failed_repo_reports_repo_not_ready() {
+    async fn test_read_file_on_failed_repo_reports_repo_failed() {
         let (deps, _src, _repos, url) = test_deps().await;
         let out = CodeToolHandler { deps: deps.clone(), kind: CodeToolKind::OpenRepo }
             .execute(serde_json::json!({"repo_url": url, "ref": "no-such-branch"}), &ctx())
@@ -832,7 +845,45 @@ mod tests {
             .execute(serde_json::json!({"repo_id": repo_id, "path": "src/Bar.java"}), &ctx())
             .await;
         assert!(!out.success);
+        assert_eq!(out.data["error"], "repo_failed");
+        assert!(out.data["message"].as_str().unwrap().contains("re-open with a corrected ref"));
+    }
+
+    /// cloning 阶段读工具 → repo_not_ready + 自然语言 phase（无 "repo_not_ready: " 前缀泄漏）。
+    /// current_thread 运行时下 open 后无 yield 点，首个读请求必先于管线任务执行——确定性非竞态。
+    #[tokio::test]
+    async fn test_read_file_during_cloning_reports_repo_not_ready() {
+        let (deps, _src, _repos, url) = test_deps().await;
+        let out = CodeToolHandler { deps: deps.clone(), kind: CodeToolKind::OpenRepo }
+            .execute(serde_json::json!({"repo_url": url, "ref": "main"}), &ctx())
+            .await;
+        assert!(out.success, "open failed: {:?}", out.data);
+        let repo_id = out.data["repo_id"].as_str().unwrap().to_string();
+        // 不 sleep 直接读：phase 必为 cloning
+        let out = CodeToolHandler { deps: deps.clone(), kind: CodeToolKind::ReadFile }
+            .execute(serde_json::json!({"repo_id": repo_id, "path": "src/Bar.java"}), &ctx())
+            .await;
+        assert!(!out.success);
         assert_eq!(out.data["error"], "repo_not_ready");
-        assert!(out.data["message"].as_str().unwrap().contains("failed"));
+        let message = out.data["message"].as_str().unwrap();
+        assert!(message.contains("repo is cloning"), "message should read naturally, got: {message}");
+        assert!(!message.contains("repo_not_ready:"), "manager prefix must not leak, got: {message}");
+        // 等终态再结束，避免 tempdir 删除与后台 clone 竞争
+        let mut ready = false;
+        for _ in 0..300 {
+            let st = CodeToolHandler { deps: deps.clone(), kind: CodeToolKind::RepoStatus }
+                .execute(serde_json::json!({"repo_id": repo_id}), &ctx())
+                .await;
+            let status = st.data["status"].as_str().unwrap_or("");
+            if status == "ready" {
+                ready = true;
+                break;
+            }
+            if status == "failed" {
+                panic!("clone failed: {:?}", st.data);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(ready, "not ready in 15s");
     }
 }
