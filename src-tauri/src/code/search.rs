@@ -28,7 +28,7 @@ pub fn resolve_in_worktree(worktree: &Path, rel: &str) -> Result<PathBuf, String
     let joined = wt_canon.join(rel);
     let canon = joined
         .canonicalize()
-        .map_err(|_| format!("path not found in repo: {rel}"))?;
+        .map_err(|e| format!("path not found in repo: {rel}: {e}"))?;
     if canon.starts_with(&wt_canon) {
         Ok(canon)
     } else {
@@ -100,7 +100,7 @@ pub struct SearchOutput {
     pub truncated: bool,
 }
 
-/// 正则搜索（尊重 .gitignore；跳过二进制与 >5MB 文件）
+/// 正则搜索（尊重 .gitignore；跳过二进制与 >5MB 文件）；walk 错误（如权限拒绝）静默跳过（只读工具可接受）
 pub fn search(
     worktree: &Path,
     pattern: &str,
@@ -109,6 +109,8 @@ pub fn search(
     max_results: usize,
 ) -> Result<SearchOutput, String> {
     let re = Regex::new(pattern).map_err(|e| format!("invalid regex pattern: {e}"))?;
+    let context = context.min(MAX_CONTEXT_LINES);
+    let max_results = max_results.min(MAX_RESULTS_CAP);
     let mut builder = WalkBuilder::new(worktree);
     builder.require_git(false);
     if let Some(g) = glob {
@@ -163,7 +165,7 @@ pub fn search(
     Ok(SearchOutput { matches, truncated })
 }
 
-/// 列文件（尊重 .gitignore；glob 白名单或 path 子目录二选一或全仓）
+/// 列文件（尊重 .gitignore；glob 白名单或 path 子目录二选一或全仓）；walk 错误（如权限拒绝）静默跳过（只读工具可接受）
 pub fn list_files(
     worktree: &Path,
     subpath: Option<&str>,
@@ -181,6 +183,8 @@ pub fn list_files(
     }
     let mut builder = WalkBuilder::new(&root);
     builder.require_git(false);
+    // walk 顺序确定化：截断保留字典序最小者，而非 FS 枚举顺序碰到的
+    builder.sort_by_file_name(Ord::cmp);
     if let Some(g) = glob {
         let mut ob = OverrideBuilder::new(&root);
         ob.add(g).map_err(|e| format!("invalid glob '{g}': {e}"))?;
@@ -242,7 +246,11 @@ mod tests {
     fn test_read_file_rejects_escape_and_missing() {
         let tmp = fixture_worktree();
         let wt = tmp.path();
-        assert!(read_file(wt, "../outside.txt", 1, 10).is_err());
+        // worktree 外真实存在的文件：canonicalize 成功，必须由前缀校验拒绝
+        let outside = tmp.path().parent().unwrap().join("outside.txt");
+        std::fs::write(&outside, "outside\n").unwrap();
+        assert!(read_file(wt, "../outside.txt", 1, 10).is_err(), "escape via prefix check");
+        let _ = std::fs::remove_file(&outside);
         assert!(read_file(wt, "no-such.txt", 1, 10).is_err());
         assert!(read_file(wt, "src/bin.dat", 1, 10).is_err(), "binary rejected");
     }
@@ -291,6 +299,48 @@ mod tests {
         let out = search(tmp.path(), "hit", None, 0, 3).unwrap();
         assert_eq!(out.matches.len(), 3);
         assert!(out.truncated);
+    }
+
+    #[test]
+    fn test_search_extreme_context_and_max_results_clamped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let body: String = (0..20).map(|i| format!("line{i}\n")).collect();
+        std::fs::write(tmp.path().join("big.txt"), body).unwrap();
+        // context=usize::MAX：内部 clamp 到 MAX_CONTEXT_LINES，不 panic、上下文不越界
+        let out = search(tmp.path(), "line15", None, usize::MAX, usize::MAX).unwrap();
+        assert_eq!(out.matches.len(), 1);
+        let m = &out.matches[0];
+        assert_eq!(m.line, 16);
+        assert_eq!(m.context_before.len(), MAX_CONTEXT_LINES);
+        assert_eq!(m.context_before[0].0, 16 - MAX_CONTEXT_LINES);
+        assert_eq!(m.context_after.len(), 20 - 16, "clamped by file end");
+        // max_results=0：首命中即截断
+        let out = search(tmp.path(), "line", None, 0, 0).unwrap();
+        assert_eq!(out.matches.len(), 0);
+        assert!(out.truncated);
+    }
+
+    #[test]
+    fn test_list_files_cap_is_deterministic_lexicographic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("src");
+        std::fs::create_dir_all(&dir).unwrap();
+        // 大小写混用：NTFS 目录枚举按 upcase 表排序（a* 在 B* 前），二进制
+        // Ord::cmp 则 B* 在 a* 前——两种顺序的前 LIST_MAX 名不同，可判别截断
+        // 是否确定性保留字典序最小者
+        for i in 0..600 {
+            let name = if i < 300 { format!("a{i:03}.txt") } else { format!("B{i:03}.txt") };
+            std::fs::write(dir.join(name), "x\n").unwrap();
+        }
+        let (files, truncated) = list_files(tmp.path(), Some("src"), None).unwrap();
+        assert!(truncated);
+        assert_eq!(files.len(), LIST_MAX);
+        assert_eq!(files[0], "src/B300.txt", "binary-smallest name kept");
+        assert!(files.contains(&"src/B599.txt".to_string()), "keeps lexicographically smallest 500");
+        assert!(!files.contains(&"src/a299.txt".to_string()), "not walk-order 500");
+        let mut sorted = files.clone();
+        sorted.sort();
+        assert_eq!(files, sorted);
     }
 
     #[test]
