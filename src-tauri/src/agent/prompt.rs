@@ -37,6 +37,7 @@ const TOOL_GUIDANCE: &str = "## 工具使用
 - 堆快照分析（本机 MAT 引擎）：jvm_heap_dump 拉回完成后自动预热建索引，用 heap_open(local_path) 获取总览（预热命中秒回）→ heap_leak_suspects（泄漏嫌疑）/ heap_dominator_tree（支配树下钻）→ heap_path_to_gc_roots（引用链定责）→ heap_object_info / heap_references / heap_threads / heap_histogram 按需下钻；object_id 取自 heap_dominator_tree / heap_histogram / heap_references 的返回。全程自主完成根因分析，不要让用户手动开 MAT。分析结束调 heap_close 释放内存。
 - arthas 动态诊断（attach 到运行中的 JVM）：list_processes 找 PID → arthas_open(environment, pid)（首次自动下发 arthas 包并 attach，需确认；已 attach 秒回）→ arthas_* 工具诊断（dashboard / thread / sc / sm / jad / watch / trace / stack / monitor / tt / ognl / vmtool / memory / jvm / sysprop / vmoption / profiler 等；args 对象的字段与 arthas 命令参数一致）→ 完成后 arthas_close 或留给空闲自动回收。容器环境：先 k8s_find_pods 定位 Pod，arthas_open 与后续 arthas_* 诊断工具都带相同的 pod 参数。注意：堆快照走 jvm_heap_dump（不用 arthas 的 heapdump）；arthas_open 报「运行用户不一致且未录入凭证」时，引导用户在环境管理中为该环境添加对应 JVM 用户的凭证后重试；arthas_not_open 报「正在 attach」时稍候重试即可。
 - JFR 飞行记录（低开销全维度观测）：性能类问题（CPU 飙高、慢请求、GC 异常、锁竞争）优先 jfr_record(environment, pid, duration_secs) 热开启录制（目标 JDK 11+，profile 档开销 1~3%；调用立即返回 recording_id，长录制不会超时）→ 轮询 jfr_record_status(recording_id) 至终态：recording（进行中，稍候再查，勿重复启动）/ downloading（带 transfer_id，可轮询 transfer_status 看进度）/ completed（自动预热后用 jfr_quick_analysis(local_path) 一键诊断 / jfr_rules(local_path) 规则引擎）/ failed（看 error_code：pod_failed = 目标 Pod 已崩溃，重新 k8s_find_pods 定位新 Pod 后重录；transfer_failed = 远端文件保留，file_download 可断点续传重试；record_not_found = 落盘超时，可 file_download 手动拉回）→ 按维度下钻：jfr_gc_detail / jfr_hot_methods / jfr_thread_cpu / jfr_thread_contention / jfr_io_hotspots / jfr_memory_leaks / jfr_safepoints / jfr_stack_trace_search / jfr_correlate / jfr_request_waterfall；两次录制对比用 jfr_compare(baseline_local_path, target_local_path)。目标 JDK 8 不支持 JFR 热开启，改用 arthas_profiler。
+- 读源码（栈帧回源/业务逻辑确认）：先 code_get_repo(服务名) 查记忆的代码仓；有记忆 → 向用户确认仓地址仍对 + 确认本次部署的 ref（分支经常变，last_ref 仅作提示）；无记忆 → 问用户仓地址和 ref（分支/tag/commitid）。然后 code_open_repo(repo_url, ref, service) → 轮询 code_repo_status 到 ready（cloning/fetching 稍候再查、勿重复 open；同 url+ref 幂等）→ code_read_file / code_search / code_list_files 读码：线程栈类名用 code_list_files(glob=\"**/类名.java\") 或 code_search(\"class 类名\") 定位，栈帧行号直接对 code_read_file 的行号。发现代码与部署不匹配（栈帧行号对不上、jad 反编译与源码不一致、搜不到预期符号）→ 问用户部署的 commitid（部署系统/镜像 label/META-INF/MANIFEST 的 Implementation-Build）重新 code_open_repo。stale_warning 要告知用户代码可能非最新；源码与部署版本可能不一致，可用 arthas jad 交叉验证。
 - 用户提到的环境先与 list_environments 的结果匹配；没有匹配时引导用户在右侧「环境」面板添加，不要瞎猜 host。";
 
 pub fn build_system_prompt(override_path: Option<&Path>) -> String {
@@ -258,5 +259,17 @@ mod tests {
         assert!(TOOL_GUIDANCE.contains("jfr_quick_analysis"));
         assert!(TOOL_GUIDANCE.contains("jfr_compare"));
         assert!(TOOL_GUIDANCE.contains("arthas_profiler"), "JDK 8 fallback guidance required");
+    }
+
+    #[test]
+    fn test_tool_guidance_mentions_code_tools() {
+        assert!(TOOL_GUIDANCE.contains("code_get_repo"));
+        assert!(TOOL_GUIDANCE.contains("code_open_repo"));
+        assert!(TOOL_GUIDANCE.contains("code_repo_status"));
+        assert!(TOOL_GUIDANCE.contains("code_read_file"));
+        assert!(TOOL_GUIDANCE.contains("code_search"));
+        assert!(TOOL_GUIDANCE.contains("code_list_files"));
+        assert!(TOOL_GUIDANCE.contains("commitid"));
+        assert!(TOOL_GUIDANCE.contains("jad"), "cross-check with arthas jad guidance");
     }
 }
