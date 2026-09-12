@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// 工具分类。声明顺序即面板分组展示顺序（environment → k8s → jvm → heap → jfr → arthas → file_transfer → builtin）。
+/// 工具分类。声明顺序即面板分组展示顺序（environment → k8s → jvm → heap → jfr → arthas → code → file_transfer → builtin）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCategory {
@@ -10,6 +10,7 @@ pub enum ToolCategory {
     Heap,
     Jfr,
     Arthas,
+    Code,
     FileTransfer,
     Builtin,
 }
@@ -28,6 +29,7 @@ mod tests {
             (ToolCategory::Heap, "heap"),
             (ToolCategory::Jfr, "jfr"),
             (ToolCategory::Arthas, "arthas"),
+            (ToolCategory::Code, "code"),
             (ToolCategory::FileTransfer, "file_transfer"),
             (ToolCategory::Builtin, "builtin"),
         ];
@@ -41,5 +43,7 @@ mod tests {
     fn test_declaration_order_k8s_after_environment() {
         assert!(ToolCategory::Environment < ToolCategory::K8s);
         assert!(ToolCategory::K8s < ToolCategory::Jvm);
+        assert!(ToolCategory::Arthas < ToolCategory::Code);
+        assert!(ToolCategory::Code < ToolCategory::FileTransfer);
     }
 }

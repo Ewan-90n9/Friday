@@ -33,6 +33,7 @@ pub struct AppState {
     pub analyzer: Arc<crate::analyzer::HeapAnalyzerManager>,
     pub jmc: Arc<crate::jfr::JmcManager>,
     pub arthas: Arc<crate::arthas::manager::ArthasManager>,
+    pub code_repos: Arc<crate::code::CodeRepoManager>,
     pub tunnels: Arc<crate::exec::tunnel::TunnelManager>,
     pub exec_pool: Arc<Mutex<crate::exec::pool::ExecChannelPool>>,
     pub confirm_registry: Arc<Mutex<crate::tools::confirm::ConfirmRegistry>>,
@@ -193,6 +194,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 arthas_shared,
             ));
 
+            // 代码仓读取：本机 git clone 缓存 + worktree（code_* 工具，全部本地只读）
+            let code_manager = Arc::new(crate::code::CodeRepoManager::new(paths.repos_dir()));
+            let code_deps = Arc::new(crate::tools::builtin::code::CodeToolDeps {
+                manager: code_manager.clone(),
+                db: pool.clone(),
+            });
+
             let mut tool_registry = crate::tools::registry::ToolRegistry::new();
             tool_registry.register(crate::tools::builtin::echo_tool_def());
             tool_registry.register(crate::tools::builtin::run_command::run_command_tool_def(
@@ -242,6 +250,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 pool.clone(),
                 paths.artifacts_dir(),
             );
+            crate::tools::builtin::code::register_all(&mut tool_registry, code_deps);
             let tool_registry = Arc::new(tool_registry);
 
             // SSH 连接池空闲清理巡检：每 60s 清理空闲超 10min 的连接。
@@ -312,6 +321,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 analyzer: analyzer_manager,
                 jmc: jmc_manager,
                 arthas: arthas_manager,
+                code_repos: code_manager,
                 tunnels,
                 exec_pool,
                 confirm_registry,
